@@ -88,6 +88,10 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/install.commit",
         ),
+        PROGRAM_UPDATE_CHECK_REQUEST_FILE=os.environ.get(
+            "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
+            "/var/lib/webmanager-updater/requests/check",
+        ),
     )
 
     if test_config:

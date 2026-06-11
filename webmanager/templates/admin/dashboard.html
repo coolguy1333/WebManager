@@ -9,6 +9,17 @@
   <span class="head-meta">{{ users|length }} accounts</span>
 </section>
 
+{% if can_manage_access %}
+<section class="panel access-callout">
+  <div>
+    <p class="eyebrow">Resource ACLs</p>
+    <h2>Pools and site access</h2>
+    <p>Group sites into pools and grant Viewer or Operator access to users and groups.</p>
+  </div>
+  <a class="button primary" href="{{ url_for('admin.access_dashboard') }}">Manage pools &rarr;</a>
+</section>
+{% endif %}
+
 {% if google_access_unrestricted %}
 <div class="flash warning" role="alert">
   <div>
@@ -85,7 +96,7 @@
       <p>GitHub checks never install code automatically. Only an exact commit approved here may be installed.</p>
     </div>
     <span class="pill {{ 'ready' if update_status.state == 'current' else 'cloning' if update_status.state in ['testing', 'backing_up', 'installing'] else 'error' if update_status.state == 'error' else '' }}">
-      {{ update_status.state|replace('_', ' ') }}
+      {{ "not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ') }}
     </span>
   </div>
   <div class="panel program-update-card">
@@ -99,13 +110,19 @@
         <small>Available: <code>{{ update_status.available_commit[:12] }}</code></small>
       {% endif %}
     </div>
-    {% if update_status.update_available and update_status.state == 'available' %}
-    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will stop briefly while all persistent data is backed up.">
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="button primary" type="submit" data-loading-text="Approving...">Approve and install</button>
-    </form>
-    {% endif %}
+    <div class="button-row">
+      <form method="post" action="{{ url_for('admin.check_program_update') }}" data-loading>
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <button class="button ghost" type="submit" data-loading-text="Requesting...">Check now</button>
+      </form>
+      {% if update_status.update_available and update_status.state == 'available' %}
+      <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will stop briefly while all persistent data is backed up.">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
+        <button class="button primary" type="submit" data-loading-text="Approving...">Approve and install</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 </section>
 {% endif %}

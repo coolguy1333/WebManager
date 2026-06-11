@@ -83,15 +83,16 @@
             <h3>{{ site.name }}</h3>
           </a>
           <p class="site-source">{{ site.repository_name }} / {{ site.folder }}</p>
-          {% if show_all %}<span class="table-meta">Owner: {{ site.owner_name or site.owner_email }}</span>{% endif %}
+          {% if site.pool_name %}<span class="table-meta">Pool: {{ site.pool_name }}</span>{% endif %}
+          {% if show_all or site.user_id != g.user.id %}<span class="table-meta">Owner: {{ site.owner_name or site.owner_email }}</span>{% endif %}
           <div class="site-card-foot">
             <span class="backend-label">{{ site.runtime_backend or "Not started" }}</span>
             <div class="card-actions">
               {% if site.status == "running" %}
-                <a href="{{ site_public_url(site) }}" target="_blank" rel="noopener">Open</a>
+                <a href="{{ site_public_url(site) }}">Open</a>
               {% endif %}
               <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
-                {{ "Manage" if manage_all or site.user_id == g.user.id else "View" }} &rarr;
+                {{ "Manage" if site.id in manageable_site_ids else "View" }} &rarr;
               </a>
             </div>
           </div>

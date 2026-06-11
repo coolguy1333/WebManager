@@ -22,7 +22,7 @@
       {% if g.user %}
         <nav class="topnav" aria-label="Main navigation">
           <a href="{{ url_for('deployments.dashboard') }}">Dashboard</a>
-          {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") %}
+          {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") or has_permission("access.manage") %}
             <a href="{{ url_for('admin.dashboard') }}">Admin</a>
           {% endif %}
           <span class="user-profile" title="{{ g.user.email or g.user.username }}">

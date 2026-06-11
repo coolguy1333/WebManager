@@ -13,7 +13,7 @@ DEFAULT_STATUS = {
     "installed_commit": None,
     "available_commit": None,
     "update_available": False,
-    "message": "No update check has completed yet.",
+    "message": "No update check has completed yet. Select Check now to run one.",
     "checked_at": None,
 }
 
@@ -47,6 +47,25 @@ def request_program_update(commit):
     try:
         with os.fdopen(descriptor, "w", encoding="ascii") as handle:
             handle.write(f"{commit}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    except Exception:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
+def request_program_update_check():
+    path = Path(current_app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".check.",
+        dir=path.parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+            handle.write("check\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)

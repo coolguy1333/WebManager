@@ -63,6 +63,7 @@ from urllib.parse import urlsplit
 print(urlsplit(sys.argv[1]).port or "")
 PY
 )
+SITE_PUBLIC_SCHEME=http
 
 if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
     echo
@@ -139,6 +140,18 @@ EOF
                 echo "Check that DNS points to this server and ports 80 and 443 are reachable." >&2
                 exit 1
             fi
+            ;;
+    esac
+fi
+
+if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
+    echo
+    echo "The dashboard certificate does not automatically cover deployed site subdomains."
+    echo "HTTPS site links require wildcard TLS coverage for *.$PUBLIC_HOST."
+    read -r -p "Are *.$PUBLIC_HOST site addresses already covered by HTTPS? [y/N]: " SITE_TLS_ANSWER
+    case $SITE_TLS_ANSWER in
+        [Yy] | [Yy][Ee][Ss])
+            SITE_PUBLIC_SCHEME=https
             ;;
     esac
 fi
@@ -222,7 +235,7 @@ set_env WEBMANAGER_GOOGLE_REDIRECT_URI "$CALLBACK_URL"
 set_env WEBMANAGER_GOOGLE_ALLOWED_DOMAINS "$ALLOWED_DOMAINS"
 set_env WEBMANAGER_GOOGLE_ALLOWED_EMAILS "$ALLOWED_EMAILS"
 set_env WEBMANAGER_SITE_BASE_DOMAIN "$PUBLIC_HOST"
-set_env WEBMANAGER_SITE_PUBLIC_SCHEME "${PUBLIC_URL%%:*}"
+set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"
 
 SITE_GATEWAY_PORT=$(sed -n 's/^WEBMANAGER_SITE_GATEWAY_PORT=//p' "$ENV_FILE" | tail -n 1)
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
@@ -266,7 +279,9 @@ fi
 echo
 echo "Google sign-in is configured."
 echo "Open: $PUBLIC_URL/auth/login"
-echo "Site addresses: ${PUBLIC_URL%%:*}://<site-name>.$PUBLIC_HOST"
+echo "Site addresses: $SITE_PUBLIC_SCHEME://<site-name>.$PUBLIC_HOST"
 echo "DNS required: *.$PUBLIC_HOST must point to this server."
-echo "HTTPS also requires a wildcard certificate or upstream proxy for *.$PUBLIC_HOST."
+if [[ $SITE_PUBLIC_SCHEME == http ]]; then
+    echo "Site links use HTTP until wildcard HTTPS is configured for *.$PUBLIC_HOST."
+fi
 echo

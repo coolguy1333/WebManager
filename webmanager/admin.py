@@ -14,6 +14,7 @@ from flask import (
 )
 
 from .access_control import (
+    ACCESS_MANAGE,
     GROUPS_MANAGE,
     USERS_MANAGE,
     admin_access_required,
@@ -22,11 +23,16 @@ from .access_control import (
 )
 from .db import get_db
 from .security import login_required, validate_csrf
-from .update_status import read_update_status, request_program_update
+from .update_status import (
+    read_update_status,
+    request_program_update,
+    request_program_update_check,
+)
 
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 GROUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{1,59}$")
+ACCESS_ROLES = {"", "viewer", "operator"}
 
 
 def _permission_codes(database):
@@ -45,9 +51,35 @@ def _selected_permissions(database):
     return selected
 
 
+def _replace_acl(database, table, scope_column, scope_id, users, groups):
+    grants = []
+    for subject, rows in (("user", users), ("group", groups)):
+        for row in rows:
+            role = request.form.get(f"{subject}_role_{row['id']}", "")
+            if role not in ACCESS_ROLES:
+                abort(400, "Unknown access role.")
+            if role:
+                grants.append(
+                    (
+                        scope_id,
+                        row["id"] if subject == "user" else None,
+                        row["id"] if subject == "group" else None,
+                        role,
+                    )
+                )
+    database.execute(f"DELETE FROM {table} WHERE {scope_column} = ?", (scope_id,))
+    database.executemany(
+        f"""
+        INSERT INTO {table} ({scope_column}, user_id, group_id, role)
+        VALUES (?, ?, ?, ?)
+        """,
+        grants,
+    )
+
+
 @bp.get("/")
 @login_required
-@admin_access_required(USERS_MANAGE, GROUPS_MANAGE)
+@admin_access_required(USERS_MANAGE, GROUPS_MANAGE, ACCESS_MANAGE)
 def dashboard():
     database = get_db()
     users = database.execute(
@@ -96,6 +128,7 @@ def dashboard():
         permissions=permissions,
         can_manage_users=has_permission(USERS_MANAGE),
         can_manage_groups=has_permission(GROUPS_MANAGE),
+        can_manage_access=has_permission(ACCESS_MANAGE),
         super_admin=is_admin(),
         update_status=read_update_status() if is_admin() else None,
         google_access_unrestricted=not (
@@ -103,6 +136,175 @@ def dashboard():
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
         ),
     )
+
+
+@bp.get("/access")
+@login_required
+@admin_access_required(ACCESS_MANAGE)
+def access_dashboard():
+    database = get_db()
+    users = database.execute(
+        """
+        SELECT id, username, email, display_name, is_active
+        FROM users
+        ORDER BY COALESCE(display_name, email, username) COLLATE NOCASE
+        """
+    ).fetchall()
+    groups = database.execute(
+        "SELECT id, name FROM groups ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    pools = database.execute(
+        """
+        SELECT pools.*, COUNT(pool_sites.site_id) AS site_count
+        FROM pools
+        LEFT JOIN pool_sites ON pool_sites.pool_id = pools.id
+        GROUP BY pools.id
+        ORDER BY pools.name COLLATE NOCASE
+        """
+    ).fetchall()
+    sites = database.execute(
+        """
+        SELECT sites.id, sites.name, sites.slug,
+               users.display_name AS owner_name, users.email AS owner_email,
+               pools.id AS pool_id, pools.name AS pool_name
+        FROM sites
+        JOIN users ON users.id = sites.user_id
+        LEFT JOIN pool_sites ON pool_sites.site_id = sites.id
+        LEFT JOIN pools ON pools.id = pool_sites.pool_id
+        ORDER BY sites.name COLLATE NOCASE
+        """
+    ).fetchall()
+    pool_acl = {
+        (row["pool_id"], "user" if row["user_id"] is not None else "group",
+         row["user_id"] if row["user_id"] is not None else row["group_id"]): row["role"]
+        for row in database.execute("SELECT * FROM pool_acl").fetchall()
+    }
+    site_acl = {
+        (row["site_id"], "user" if row["user_id"] is not None else "group",
+         row["user_id"] if row["user_id"] is not None else row["group_id"]): row["role"]
+        for row in database.execute("SELECT * FROM site_acl").fetchall()
+    }
+    return render_template(
+        "admin/access.html",
+        title="Pools and access",
+        users=users,
+        groups=groups,
+        pools=pools,
+        sites=sites,
+        pool_acl=pool_acl,
+        site_acl=site_acl,
+    )
+
+
+@bp.post("/pools")
+@login_required
+@admin_access_required(ACCESS_MANAGE)
+def create_pool():
+    validate_csrf()
+    name = request.form.get("name", "").strip()
+    description = request.form.get("description", "").strip()
+    if not GROUP_NAME_RE.fullmatch(name):
+        flash("Pool names must be 2-60 letters, numbers, spaces, dots, dashes, or underscores.", "error")
+        return redirect(url_for("admin.access_dashboard"))
+    try:
+        database = get_db()
+        database.execute(
+            "INSERT INTO pools (name, description) VALUES (?, ?)",
+            (name, description[:300] or None),
+        )
+        database.commit()
+    except sqlite3.IntegrityError:
+        database.rollback()
+        flash("A pool with that name already exists.", "error")
+    else:
+        flash(f"Pool {name} created.", "success")
+    return redirect(url_for("admin.access_dashboard"))
+
+
+@bp.post("/pools/<int:pool_id>")
+@login_required
+@admin_access_required(ACCESS_MANAGE)
+def update_pool(pool_id):
+    validate_csrf()
+    database = get_db()
+    pool = database.execute("SELECT * FROM pools WHERE id = ?", (pool_id,)).fetchone()
+    if pool is None:
+        abort(404)
+    name = request.form.get("name", "").strip()
+    description = request.form.get("description", "").strip()
+    if not GROUP_NAME_RE.fullmatch(name):
+        flash("Enter a valid pool name.", "error")
+        return redirect(url_for("admin.access_dashboard"))
+    users = database.execute("SELECT id FROM users").fetchall()
+    groups = database.execute("SELECT id FROM groups").fetchall()
+    valid_site_ids = {
+        row["id"] for row in database.execute("SELECT id FROM sites").fetchall()
+    }
+    site_ids = {
+        int(value) for value in request.form.getlist("sites") if value.isdigit()
+    }
+    if not site_ids <= valid_site_ids:
+        abort(400, "Unknown site.")
+    try:
+        database.execute(
+            """
+            UPDATE pools
+            SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (name, description[:300] or None, pool_id),
+        )
+        database.execute("DELETE FROM pool_sites WHERE pool_id = ?", (pool_id,))
+        if site_ids:
+            placeholders = ",".join("?" for _ in site_ids)
+            database.execute(
+                f"DELETE FROM pool_sites WHERE site_id IN ({placeholders})",
+                tuple(sorted(site_ids)),
+            )
+            database.executemany(
+                "INSERT INTO pool_sites (pool_id, site_id) VALUES (?, ?)",
+                ((pool_id, site_id) for site_id in sorted(site_ids)),
+            )
+        _replace_acl(database, "pool_acl", "pool_id", pool_id, users, groups)
+        database.commit()
+    except sqlite3.IntegrityError:
+        database.rollback()
+        flash("That pool name or assignment conflicts with an existing pool.", "error")
+    else:
+        flash(f"Pool {name} updated.", "success")
+    return redirect(url_for("admin.access_dashboard"))
+
+
+@bp.post("/pools/<int:pool_id>/delete")
+@login_required
+@admin_access_required(ACCESS_MANAGE)
+def delete_pool(pool_id):
+    validate_csrf()
+    database = get_db()
+    pool = database.execute("SELECT * FROM pools WHERE id = ?", (pool_id,)).fetchone()
+    if pool is None:
+        abort(404)
+    database.execute("DELETE FROM pools WHERE id = ?", (pool_id,))
+    database.commit()
+    flash(f"Pool {pool['name']} deleted. Its sites were not deleted.", "success")
+    return redirect(url_for("admin.access_dashboard"))
+
+
+@bp.post("/sites/<int:site_id>/access")
+@login_required
+@admin_access_required(ACCESS_MANAGE)
+def update_site_access(site_id):
+    validate_csrf()
+    database = get_db()
+    site = database.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+    if site is None:
+        abort(404)
+    users = database.execute("SELECT id FROM users").fetchall()
+    groups = database.execute("SELECT id FROM groups").fetchall()
+    _replace_acl(database, "site_acl", "site_id", site_id, users, groups)
+    database.commit()
+    flash(f"Direct access for {site['name']} updated.", "success")
+    return redirect(url_for("admin.access_dashboard"))
 
 
 @bp.post("/updates/install")
@@ -129,6 +331,25 @@ def install_program_update():
     else:
         flash(
             "Update approved. WebManager will test, back up all data, and install it.",
+            "success",
+        )
+    return redirect(url_for("admin.dashboard"))
+
+
+@bp.post("/updates/check")
+@login_required
+def check_program_update():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+
+    try:
+        request_program_update_check()
+    except OSError as exc:
+        flash(f"Could not request an update check: {exc}", "error")
+    else:
+        flash(
+            "Update check requested. Refresh this page in a few seconds.",
             "success",
         )
     return redirect(url_for("admin.dashboard"))

@@ -58,6 +58,9 @@ class WebManagerTestCase(unittest.TestCase):
                 "PROGRAM_UPDATE_REQUEST_FILE": str(
                     root / "update-requests" / "install.commit"
                 ),
+                "PROGRAM_UPDATE_CHECK_REQUEST_FILE": str(
+                    root / "update-requests" / "check"
+                ),
             }
         )
         self.client = self.app.test_client()
@@ -493,6 +496,150 @@ class WebManagerTestCase(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 302)
 
+    def test_direct_site_viewer_can_see_but_not_control_site(self):
+        owner_id = self.add_user("owner")
+        viewer_id = self.add_user("viewer")
+        repository_root = Path(self.temp_directory.name) / "direct-view-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                INSERT INTO site_acl (site_id, user_id, role)
+                VALUES (?, ?, 'viewer')
+                """,
+                (site_id, viewer_id),
+            )
+            database.commit()
+        self.login_user(viewer_id)
+
+        dashboard = self.client.get("/")
+        self.assertIn(b"Demo", dashboard.data)
+        self.assertIn(b"View &rarr;", dashboard.data)
+        self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
+        denied = self.client.post(
+            f"/sites/{site_id}/start",
+            data={"_csrf_token": self.csrf()},
+        )
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(
+            self.client.get(f"/repositories/{repository_id}/select").status_code,
+            404,
+        )
+
+    def test_pool_group_operator_can_control_only_pooled_site(self):
+        owner_id = self.add_user("owner")
+        operator_id = self.add_user("operator")
+        repository_root = Path(self.temp_directory.name) / "pool-operator-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            group_id = database.execute(
+                "INSERT INTO groups (name) VALUES ('Web operators')"
+            ).lastrowid
+            pool_id = database.execute(
+                "INSERT INTO pools (name) VALUES ('Production')"
+            ).lastrowid
+            database.execute(
+                "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
+                (operator_id, group_id),
+            )
+            database.execute(
+                "INSERT INTO pool_sites (pool_id, site_id) VALUES (?, ?)",
+                (pool_id, site_id),
+            )
+            database.execute(
+                """
+                INSERT INTO pool_acl (pool_id, group_id, role)
+                VALUES (?, ?, 'operator')
+                """,
+                (pool_id, group_id),
+            )
+            database.commit()
+        self.login_user(operator_id)
+
+        dashboard = self.client.get("/")
+        self.assertIn(b"Pool: Production", dashboard.data)
+        self.assertIn(b"Manage &rarr;", dashboard.data)
+        with patch.object(
+            self.app.extensions["runtime_manager"],
+            "start_site",
+            return_value="nginx",
+        ):
+            response = self.client.post(
+                f"/sites/{site_id}/start",
+                data={"_csrf_token": self.csrf()},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            self.client.get(f"/repositories/{repository_id}/select").status_code,
+            404,
+        )
+
+    def test_admin_can_assign_pool_access_and_delete_pool_without_site(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        owner_id = self.add_user("owner")
+        viewer_id = self.add_user("viewer")
+        repository_root = Path(self.temp_directory.name) / "admin-pool-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        self.login_user(admin_id)
+
+        access_page = self.client.get("/admin/access")
+        self.assertEqual(access_page.status_code, 200)
+        self.assertIn(b"Pools and access", access_page.data)
+        self.assertIn(b"Direct site access", access_page.data)
+
+        response = self.client.post(
+            "/admin/pools",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Customer sites",
+                "description": "Delegated customer deployments",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            pool_id = get_db().execute(
+                "SELECT id FROM pools WHERE name = 'Customer sites'"
+            ).fetchone()["id"]
+
+        response = self.client.post(
+            f"/admin/pools/{pool_id}",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Customer sites",
+                "sites": [str(site_id)],
+                f"user_role_{viewer_id}": "viewer",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.login_user(viewer_id)
+        self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
+
+        self.login_user(admin_id)
+        response = self.client.post(
+            f"/admin/pools/{pool_id}/delete",
+            data={"_csrf_token": self.csrf()},
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNotNone(
+                get_db().execute(
+                    "SELECT id FROM sites WHERE id = ?", (site_id,)
+                ).fetchone()
+            )
+        self.login_user(viewer_id)
+        self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 404)
+
     def test_final_active_admin_cannot_be_demoted(self):
         admin_id = self.add_user("admin", is_admin=True)
         self.login_user(admin_id)
@@ -596,6 +743,28 @@ class WebManagerTestCase(unittest.TestCase):
         request_path = Path(self.app.config["PROGRAM_UPDATE_REQUEST_FILE"])
         self.assertEqual(request_path.read_text(encoding="ascii").strip(), commit)
 
+    def test_only_super_admin_can_request_program_update_check(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.post(
+            "/admin/updates/check",
+            data={"_csrf_token": self.csrf()},
+        )
+        self.assertEqual(response.status_code, 403)
+
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.post(
+            "/admin/updates/check",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Update check requested", response.data)
+        check_path = Path(
+            self.app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"]
+        )
+        self.assertEqual(check_path.read_text(encoding="ascii").strip(), "check")
+
     def test_program_update_approval_rejects_stale_commit(self):
         available = "c" * 40
         Path(self.app.config["PROGRAM_UPDATE_STATUS_FILE"]).write_text(
@@ -665,6 +834,17 @@ class WebManagerTestCase(unittest.TestCase):
 
         response = self.client.get("/")
         self.assertIn(b"https://demo-site.webmanager.example", response.data)
+        self.assertNotIn(
+            b'href="https://demo-site.webmanager.example" target="_blank"',
+            response.data,
+        )
+
+        response = self.client.get(f"/sites/{site['id']}")
+        self.assertIn(b'href="https://demo-site.webmanager.example"', response.data)
+        self.assertNotIn(
+            b'href="https://demo-site.webmanager.example" target="_blank"',
+            response.data,
+        )
 
     def test_site_subdomain_slugs_are_unique_across_users(self):
         alice_id = self.add_user("alice")
@@ -1277,6 +1457,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("OnUnitActiveSec=15min", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("PathChanged=", path_unit)
+        self.assertIn("requests/check", path_unit)
         self.assertIn("ProtectSystem=full", service)
         self.assertIn("ReadWritePaths=/opt/webmanager", service)
         self.assertIn("--self-update", installer)
@@ -1287,6 +1468,10 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
         self.assertIn("server_name *.$SITE_BASE_DOMAIN", installer)
+        self.assertNotIn(
+            'set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"',
+            installer,
+        )
         self.assertIn("WEBMANAGER_GOOGLE_CLIENT_SECRET", setup)
         self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
         self.assertNotIn("Configure Google sign-in now?", setup)
@@ -1300,6 +1485,11 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("Client secret is required. Try again.", google_setup)
         self.assertIn("Allow unrestricted Google sign-in? [y/N]:", google_setup)
+        self.assertIn("wildcard TLS coverage", google_setup)
+        self.assertIn(
+            'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
+            google_setup,
+        )
 
     def test_legacy_user_schema_migrates_without_losing_users(self):
         with tempfile.TemporaryDirectory() as directory:

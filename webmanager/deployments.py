@@ -9,9 +9,12 @@ from flask import Blueprint, abort, current_app, flash, g, redirect, render_temp
 from .access_control import (
     RESOURCE_MANAGE_ALL,
     RESOURCE_VIEW_ALL,
+    can_manage_site,
     can_manage_resource,
+    can_view_site,
     can_view_resource,
     has_permission,
+    site_access_levels,
 )
 from .db import get_db
 from .git_service import (
@@ -77,7 +80,8 @@ def owned_repository(repository_id: int, manage=False):
 
 
 def owned_site(site_id: int, manage=False):
-    site = get_db().execute(
+    database = get_db()
+    site = database.execute(
         """
         SELECT sites.*, repositories.name AS repository_name,
                repositories.url AS repository_url,
@@ -90,10 +94,8 @@ def owned_site(site_id: int, manage=False):
         """,
         (site_id,),
     ).fetchone()
-    allowed = (
-        can_manage_resource(site["user_id"])
-        if site is not None and manage
-        else site is not None and can_view_resource(site["user_id"])
+    allowed = site is not None and (
+        can_manage_site(site, database) if manage else can_view_site(site, database)
     )
     if not allowed:
         abort(404)
@@ -105,20 +107,34 @@ def owned_site(site_id: int, manage=False):
 def dashboard():
     database = get_db()
     show_all = has_permission(RESOURCE_VIEW_ALL) or has_permission(RESOURCE_MANAGE_ALL)
-    site_where = "" if show_all else "WHERE sites.user_id = ?"
-    parameters = () if show_all else (g.user["id"],)
     sites = database.execute(
-        f"""
+        """
         SELECT sites.*, repositories.name AS repository_name,
-               users.display_name AS owner_name, users.email AS owner_email
+               users.display_name AS owner_name, users.email AS owner_email,
+               pools.name AS pool_name
         FROM sites JOIN repositories ON repositories.id = sites.repository_id
         JOIN users ON users.id = sites.user_id
-        {site_where}
+        LEFT JOIN pool_sites ON pool_sites.site_id = sites.id
+        LEFT JOIN pools ON pools.id = pool_sites.pool_id
         ORDER BY sites.created_at DESC
-        """,
-        parameters,
+        """
     ).fetchall()
+    access_levels = site_access_levels(database, g.user["id"])
+    if not show_all:
+        sites = [
+            site
+            for site in sites
+            if site["user_id"] == g.user["id"] or site["id"] in access_levels
+        ]
+    manageable_site_ids = {
+        site["id"]
+        for site in sites
+        if site["user_id"] == g.user["id"]
+        or has_permission(RESOURCE_MANAGE_ALL)
+        or access_levels.get(site["id"], 0) >= 2
+    }
     repository_where = "" if show_all else "WHERE repositories.user_id = ?"
+    parameters = () if show_all else (g.user["id"],)
     repositories = database.execute(
         f"""
         SELECT repositories.*, COUNT(sites.id) AS site_count,
@@ -153,6 +169,7 @@ def dashboard():
         refresh_max=MAX_REFRESH_MINUTES,
         show_all=show_all,
         manage_all=has_permission(RESOURCE_MANAGE_ALL),
+        manageable_site_ids=manageable_site_ids,
     )
 
 
@@ -440,6 +457,7 @@ def deploy_repository(repository_id):
 @login_required
 def site_detail(site_id):
     site = owned_site(site_id)
+    database = get_db()
     return render_template(
         "site_detail.html",
         title=site["name"],
@@ -447,7 +465,8 @@ def site_detail(site_id):
         host=request_hostname(),
         public_url=site_public_url(site),
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
-        can_manage=can_manage_resource(site["user_id"]),
+        can_manage=can_manage_site(site, database),
+        can_manage_repository=can_manage_resource(site["user_id"]),
     )
 
 

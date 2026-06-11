@@ -194,6 +194,9 @@ Each deployed site receives one internal port from `8100` through `8999`.
 System Nginx accepts wildcard HTTP traffic on port `80` and forwards it to the
 loopback-only gateway on port `8090`. HTTPS can terminate at an upstream
 proxy/CDN, or at system Nginx after a wildcard certificate is installed.
+Dashboard HTTPS does not automatically cover deployed site names. The setup
+helper asks separately whether wildcard TLS covers
+`*.webmanager.example.com`; until it does, generated Open links use HTTP.
 
 The internal site ports should not be opened in UFW or a cloud firewall.
 
@@ -311,6 +314,8 @@ page can:
 - Create and delete permission groups
 - Assign users to one or more groups
 - Choose the permissions granted by each group
+- Create Proxmox-style resource pools for sites
+- Grant Viewer or Operator access to a pool or an individual site
 
 Available permissions:
 
@@ -320,6 +325,21 @@ Available permissions:
 | `Manage all resources` | Start, stop, edit, refresh, schedule, deploy, and delete across users |
 | `Manage users` | Activate accounts and assign group memberships |
 | `Manage groups` | Create and edit permission groups |
+| `Manage pools and access` | Create pools and assign site ACLs to users or groups |
+
+Each site can belong to one pool. Pool access and direct site access use two
+roles:
+
+| Site role | Access |
+| --- | --- |
+| `Viewer` | See the site in the dashboard, inspect its details, and open it |
+| `Operator` | Viewer access plus start, stop, restart, edit Nginx configuration, and delete |
+
+Use **Admin > Pools and site access** to assign sites and roles. A direct site
+grant is useful for an exception without exposing the whole pool. When several
+grants apply, the strongest role wins. Site ACLs do not grant repository
+control, so source updates and deployment settings remain with the repository
+owner or a user with `Manage all resources`.
 
 Super administrators bypass all permission checks. Delegated administrators
 cannot grant permissions they do not already possess. WebManager also prevents
@@ -1239,6 +1259,10 @@ The Debian installer creates a systemd timer that checks the configured GitHub
 branch every 15 minutes. Checks never install code. When a newer commit is
 available, a super administrator must open **Admin**, review the exact commit,
 and select **Approve and install**.
+
+Setup runs the first check immediately. A super administrator can also select
+**Check now** in the Admin page; this asks the hardened systemd updater service
+to run without granting the web process root access.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.

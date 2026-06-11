@@ -7,6 +7,7 @@ CONFIG_DIR=/etc/webmanager
 STATE_DIR=/var/lib/webmanager-updater
 STATUS_FILE=$STATE_DIR/status.json
 REQUEST_FILE=$STATE_DIR/requests/install.commit
+CHECK_REQUEST_FILE=$STATE_DIR/requests/check
 BACKUP_ROOT=$STATE_DIR/backups
 LOCK_FILE=/run/lock/webmanager-update.lock
 SERVICE_FILE=/etc/systemd/system/webmanager.service
@@ -26,6 +27,7 @@ fi
 install -d -o root -g webmanager -m 0710 "$STATE_DIR"
 install -d -o webmanager -g webmanager -m 0750 "$STATE_DIR/requests"
 install -d -o root -g root -m 0750 "$BACKUP_ROOT"
+rm -f "$CHECK_REQUEST_FILE"
 
 write_status() {
     local state=$1

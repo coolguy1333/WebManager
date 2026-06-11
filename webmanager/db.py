@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS group_permissions (
     PRIMARY KEY (group_id, permission_code)
 );
 
+CREATE TABLE IF NOT EXISTS pools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS repositories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -93,6 +101,40 @@ CREATE TABLE IF NOT EXISTS sites (
 );
 
 CREATE INDEX IF NOT EXISTS sites_user_id_idx ON sites(user_id);
+
+CREATE TABLE IF NOT EXISTS pool_sites (
+    pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+    site_id INTEGER NOT NULL UNIQUE REFERENCES sites(id) ON DELETE CASCADE,
+    PRIMARY KEY (pool_id, site_id)
+);
+
+CREATE TABLE IF NOT EXISTS pool_acl (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('viewer', 'operator')),
+    CHECK((user_id IS NOT NULL) != (group_id IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS pool_acl_user_uq
+ON pool_acl(pool_id, user_id) WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS pool_acl_group_uq
+ON pool_acl(pool_id, group_id) WHERE group_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS site_acl (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('viewer', 'operator')),
+    CHECK((user_id IS NOT NULL) != (group_id IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS site_acl_user_uq
+ON site_acl(site_id, user_id) WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS site_acl_group_uq
+ON site_acl(site_id, group_id) WHERE group_id IS NOT NULL;
 """
 
 
@@ -178,6 +220,11 @@ def _seed_permissions(database):
             "groups.manage",
             "Manage groups",
             "Create, edit, and delete permission groups.",
+        ),
+        (
+            "access.manage",
+            "Manage pools and access",
+            "Create resource pools and grant users or groups access to sites.",
         ),
     )
     database.executemany(

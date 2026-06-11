@@ -209,9 +209,6 @@ PY
 )
     if [[ -n $SITE_BASE_DOMAIN ]]; then
         set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"
-        if [[ $GOOGLE_REDIRECT_URI == https://* ]]; then
-            set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"
-        fi
     fi
 fi
 chown root:webmanager "$CONFIG_DIR/webmanager.env"
@@ -328,6 +325,9 @@ systemctl restart webmanager
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
     systemctl enable --now webmanager-update.timer
     systemctl enable --now webmanager-update.path
+    if [[ $SELF_UPDATE -eq 0 ]]; then
+        systemctl start webmanager-update.service
+    fi
 else
     systemctl disable --now webmanager-update.timer 2>/dev/null || true
     systemctl disable --now webmanager-update.path 2>/dev/null || true

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% macro role_select(name, current) %}
+<select name="{{ name }}" aria-label="Access role">
+  <option value="" {% if not current %}selected{% endif %}>No access</option>
+  <option value="viewer" {% if current == "viewer" %}selected{% endif %}>Viewer</option>
+  <option value="operator" {% if current == "operator" %}selected{% endif %}>Operator</option>
+</select>
+{% endmacro %}
+{% block content %}
+<section class="page-head compact">
+  <div>
+    <a class="back-link" href="{{ url_for('admin.dashboard') }}">&larr; Administration</a>
+    <p class="eyebrow">Resource ACLs</p>
+    <h1>Pools and access</h1>
+    <p>Viewer can inspect and open sites. Operator can also start, stop, restart, edit, and delete sites.</p>
+  </div>
+  <span class="head-meta">{{ pools|length }} pools</span>
+</section>
+
+<section class="panel access-guide">
+  <strong>How access is calculated</strong>
+  <p>Site ownership, super-admin, and global resource permissions still apply. Pool and direct-site roles are combined, and the strongest role wins.</p>
+</section>
+
+<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Inventory groups</p>
+      <h2>Resource pools</h2>
+      <p>A site can belong to one pool. Moving it into another pool updates its inherited access.</p>
+    </div>
+  </div>
+  <div class="admin-group-grid">
+    <form class="panel admin-group-card" method="post" action="{{ url_for('admin.create_pool') }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <p class="eyebrow">New pool</p>
+      <label>Pool name<input name="name" maxlength="60" placeholder="Production" required></label>
+      <label>Description<textarea name="description" maxlength="300" rows="3" placeholder="Sites managed by this team"></textarea></label>
+      <button class="button primary" type="submit" data-loading-text="Creating...">Create pool</button>
+    </form>
+
+    {% for pool in pools %}
+    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_pool', pool_id=pool.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <div class="admin-card-head">
+        <div>
+          <p class="eyebrow">Pool</p>
+          <h3>{{ pool.name }}</h3>
+        </div>
+        <span class="count-badge">{{ pool.site_count }} sites</span>
+      </div>
+      <label>Pool name<input name="name" maxlength="60" value="{{ pool.name }}" required></label>
+      <label>Description<textarea name="description" maxlength="300" rows="2">{{ pool.description or "" }}</textarea></label>
+      <fieldset class="permission-fieldset">
+        <legend>Sites</legend>
+        <div class="access-site-list">
+          {% for site in sites %}
+          <label class="compact-check">
+            <input type="checkbox" name="sites" value="{{ site.id }}" {% if site.pool_id == pool.id %}checked{% endif %}>
+            <span>{{ site.name }}{% if site.pool_id and site.pool_id != pool.id %}<small>Currently in {{ site.pool_name }}</small>{% endif %}</span>
+          </label>
+          {% else %}
+          <small>No sites have been deployed.</small>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <details class="acl-editor">
+        <summary>Pool access</summary>
+        <div class="acl-grid">
+          {% for user in users %}
+          <label>
+            <span>{{ user.display_name or user.email or user.username }} <small>User{% if not user.is_active %}, disabled{% endif %}</small></span>
+            {{ role_select("user_role_" ~ user.id, pool_acl.get((pool.id, "user", user.id), "")) }}
+          </label>
+          {% endfor %}
+          {% for group in groups %}
+          <label>
+            <span>{{ group.name }} <small>Group</small></span>
+            {{ role_select("group_role_" ~ group.id, pool_acl.get((pool.id, "group", group.id), "")) }}
+          </label>
+          {% endfor %}
+        </div>
+      </details>
+      <div class="admin-card-foot">
+        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_pool', pool_id=pool.id) }}" data-confirm-button="Delete this pool? Sites remain deployed, but inherited access is removed.">Delete pool</button>
+        <button class="button primary small" type="submit" data-loading-text="Saving...">Save pool</button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Exceptions</p>
+      <h2>Direct site access</h2>
+      <p>Use direct grants when someone needs access to one site without access to its entire pool.</p>
+    </div>
+  </div>
+  <div class="admin-group-grid">
+    {% for site in sites %}
+    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <div class="admin-card-head">
+        <div>
+          <p class="eyebrow">Site</p>
+          <h3>{{ site.name }}</h3>
+          <span class="table-sub">{{ site.slug }}{% if site.pool_name %} / {{ site.pool_name }}{% endif %}</span>
+        </div>
+      </div>
+      <div class="acl-grid">
+        {% for user in users %}
+        <label>
+          <span>{{ user.display_name or user.email or user.username }} <small>User</small></span>
+          {{ role_select("user_role_" ~ user.id, site_acl.get((site.id, "user", user.id), "")) }}
+        </label>
+        {% endfor %}
+        {% for group in groups %}
+        <label>
+          <span>{{ group.name }} <small>Group</small></span>
+          {{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}
+        </label>
+        {% endfor %}
+      </div>
+      <div class="admin-card-foot">
+        <small>Owner: {{ site.owner_name or site.owner_email }}</small>
+        <button class="button primary small" type="submit" data-loading-text="Saving...">Save direct access</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="panel empty-state">
+      <h3>No sites deployed</h3>
+      <p>Direct access controls appear after the first site is created.</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

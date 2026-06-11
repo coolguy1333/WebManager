@@ -1374,6 +1374,62 @@ pre {
   align-items: start;
 }
 
+.access-callout,
+.access-guide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px;
+}
+
+.access-callout p,
+.access-guide p {
+  margin-bottom: 0;
+}
+
+.access-guide {
+  display: block;
+}
+
+.access-site-list,
+.acl-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.access-site-list {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.acl-editor {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.acl-editor summary {
+  padding: 13px;
+  color: #d5dbe4;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.acl-editor .acl-grid {
+  padding: 0 13px 13px;
+}
+
+.acl-grid label {
+  grid-template-columns: minmax(0, 1fr) 140px;
+  align-items: center;
+}
+
+.acl-grid select {
+  height: 38px;
+  padding: 0 10px;
+}
+
 .admin-user-card,
 .admin-group-card {
   display: grid;
@@ -1561,6 +1617,15 @@ pre {
   .program-update-card {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .access-callout {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .acl-grid label {
+    grid-template-columns: 1fr;
   }
 
   .table-wrap {
