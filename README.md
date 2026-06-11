@@ -1,0 +1,1417 @@
+# WebManager for Debian Linux
+
+WebManager is a self-hosted control panel for deploying static websites from Git repositories.
+
+## Simple setup
+
+Before starting, point a domain such as `webmanager.example.com` at the Debian server.
+
+Then open a terminal in this project folder and run:
+
+```bash
+bash setup.sh
+```
+
+The script:
+
+1. Installs Python, Git, Nginx, and WebManager.
+2. Asks whether to configure Google sign-in.
+3. Can configure HTTPS automatically with Let's Encrypt.
+4. Shows the exact callback URL to enter in Google Cloud.
+5. Asks for the Google client ID and client secret.
+
+When prompted by the Google setup:
+
+1. Open the displayed Google Cloud link.
+2. Configure the OAuth consent screen if Google asks.
+3. Create an OAuth client with type **Web application**.
+4. Paste the exact **Authorized redirect URI** shown in the terminal.
+5. Paste the resulting client ID and secret back into the terminal.
+
+When setup finishes, open:
+
+```text
+https://webmanager.example.com
+```
+
+Then:
+
+1. Sign in with Google.
+2. Paste a Git repository URL.
+3. Choose the folder containing `index.html`.
+4. Click **Deploy site**.
+
+WebManager starts automatically now and after every reboot.
+
+If Google setup was skipped, run it later:
+
+```bash
+bash configure-google.sh
+```
+
+### Getting the project onto the server
+
+If the project is already on the Debian server, skip this section.
+
+Otherwise, install Git and clone the project:
+
+```bash
+sudo apt update
+sudo apt install -y git
+git clone "REPLACE_WITH_REPOSITORY_URL" webmanager
+cd webmanager
+bash setup.sh
+```
+
+Replace the sample repository URL with the URL for this project.
+
+### Remove WebManager
+
+Keep all accounts and repository data:
+
+```bash
+bash uninstall.sh
+```
+
+Delete WebManager and all of its stored data:
+
+```bash
+bash uninstall.sh --purge
+```
+
+Everything below is optional reference material for custom networking, private repositories, HTTPS, backups, and troubleshooting.
+
+## Reference
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Network ports](#network-ports)
+- [Quick installation](#quick-installation)
+- [Verify the installation](#verify-the-installation)
+- [First-time setup](#first-time-setup)
+- [Deploy a website](#deploy-a-website)
+- [Repository requirements](#repository-requirements)
+- [Private Git repositories](#private-git-repositories)
+- [Firewall setup](#firewall-setup)
+- [Domain name and HTTPS](#domain-name-and-https)
+- [Configuration](#configuration)
+- [Service management](#service-management)
+- [Logs and troubleshooting](#logs-and-troubleshooting)
+- [Backup and restore](#backup-and-restore)
+- [Upgrade](#upgrade)
+- [Uninstall](#uninstall)
+- [Development](#development)
+- [Security checklist](#security-checklist)
+
+## Features
+
+- Separate user accounts
+- Per-user repository and site ownership
+- First-account super administrator
+- User activation, permission groups, and delegated administration
+- Read-only and full-control access across users' deployments
+- Public HTTP(S) Git repository support
+- SSH Git repository support
+- Automatic `index.html` and `index.htm` discovery
+- Selectable document root within a repository
+- Automatic collision-free site ports
+- Generated Nginx server configurations
+- Browser-based Nginx configuration editor
+- Static single-page application fallback
+- Start, stop, restart, refresh, and delete controls
+- Per-repository automatic Git refresh intervals
+- GitHub update checks with super-admin-approved installation
+- Debian systemd service
+- Waitress application server
+- Nginx reverse proxy for the dashboard
+- Unprivileged Nginx process for deployed sites
+- Persistent SQLite database and repository storage
+- Health endpoint for monitoring
+- Google OpenID Connect sign-in
+- Optional Google Workspace domain and email allowlists
+
+## Requirements
+
+### Supported operating system
+
+- Debian 12 or newer
+- A normal Debian installation using systemd
+- `root` access or a user with `sudo`
+- A domain name for production Google sign-in
+
+The automatic installer is intended for a Debian host or virtual machine. It is not designed for shared hosting without root access. Google permits insecure HTTP callbacks only for localhost development, so a production server should use a domain and HTTPS.
+
+### Network access
+
+The server needs outbound access to:
+
+- Debian package repositories
+- Python package indexes
+- Any Git hosts used by deployments
+
+### Hardware
+
+WebManager itself is small. A basic server is normally enough:
+
+- 1 CPU core
+- 512 MB RAM minimum
+- 1 GB RAM recommended
+- Disk space for cloned repositories and backups
+
+Large repositories may require more memory, storage, and clone time.
+
+## Network ports
+
+The default installation uses:
+
+| Port | Bind address | Purpose |
+| --- | --- | --- |
+| `5000/tcp` | `127.0.0.1` | Internal Waitress dashboard server |
+| `8080/tcp` | All interfaces | Public Nginx dashboard endpoint |
+| `8100-8999/tcp` | All interfaces | Deployed static websites |
+
+Port `5000` should not be exposed publicly. Debian's system Nginx forwards dashboard traffic from port `8080` to `127.0.0.1:5000`.
+
+Each deployed site receives one unique port from `8100` through `8999`.
+
+When `configure-google.sh` sets up HTTPS, the dashboard moves to standard ports `80` and `443`. The deployed-site range remains unchanged.
+
+Before installation, check for port conflicts:
+
+```bash
+sudo ss -ltnp
+```
+
+If another service already uses port `8080`, either stop that service or edit `deploy/debian/nginx-dashboard.conf` before installation.
+
+## Quick installation
+
+From the downloaded project folder:
+
+```bash
+bash setup.sh
+```
+
+The script performs the entire installation and prints the dashboard URL. Run the same command again to upgrade.
+
+When the project was cloned from GitHub, setup automatically uses its HTTPS
+`origin` and current branch for program updates. For a downloaded archive,
+setup asks for the GitHub repository URL and branch.
+
+For unattended setup or to configure the source explicitly:
+
+```bash
+bash setup.sh \
+  --update-repository https://github.com/OWNER/WebManager.git \
+  --update-branch main
+```
+
+The source folder must not be `/opt/webmanager`; that path is managed by the installer.
+
+## Verify the installation
+
+Check the WebManager service:
+
+```bash
+sudo systemctl status webmanager --no-pager
+```
+
+Check the system Nginx service:
+
+```bash
+sudo systemctl status nginx --no-pager
+```
+
+Test the local application health endpoint:
+
+```bash
+curl http://127.0.0.1:5000/healthz
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+Before HTTPS configuration, test the dashboard through Nginx:
+
+```bash
+curl -I http://127.0.0.1:8080/
+```
+
+After Google and HTTPS configuration, test the public address:
+
+```bash
+curl -I https://webmanager.example.com/
+```
+
+Open:
+
+```text
+https://webmanager.example.com
+```
+
+If the page does not open, review [Firewall setup](#firewall-setup) and [Logs and troubleshooting](#logs-and-troubleshooting).
+
+## First-time setup
+
+### 1. Configure Google sign-in
+
+If setup did not already configure Google:
+
+```bash
+bash configure-google.sh
+```
+
+For production, the helper can configure HTTPS with Let's Encrypt. It then pauses while you create a Google OAuth client and shows the exact callback URL to use.
+
+If the Google OAuth consent screen is in **Testing** mode, add each permitted Google account as a test user in Google Cloud. Otherwise, Google may reject the sign-in before returning to WebManager.
+
+### 2. Sign in
+
+Open the HTTPS address configured during setup and select **Continue with Google**.
+
+The first successful sign-in automatically creates the WebManager account. WebManager stores Google's stable account identifier, verified email, display name, and optional profile picture. It never receives or stores the Google password.
+
+Each Google account gets separate repositories and deployments.
+
+### Administration, groups, and permissions
+
+The first Google account that signs in becomes the initial **super
+administrator**. On an upgraded installation, the oldest existing account is
+promoted automatically if no administrator exists.
+
+Administrators have an **Admin** link in the navigation. The administration
+page can:
+
+- Enable or disable user accounts
+- Promote additional super administrators
+- Create and delete permission groups
+- Assign users to one or more groups
+- Choose the permissions granted by each group
+
+Available permissions:
+
+| Permission | Access |
+| --- | --- |
+| `View all resources` | Read-only access to every user's sites and repositories |
+| `Manage all resources` | Start, stop, edit, refresh, schedule, deploy, and delete across users |
+| `Manage users` | Activate accounts and assign group memberships |
+| `Manage groups` | Create and edit permission groups |
+
+Super administrators bypass all permission checks. Delegated administrators
+cannot grant permissions they do not already possess. WebManager also prevents
+an administrator from disabling their own account or removing the final active
+super administrator.
+
+Disabled users are signed out on their next request and cannot complete Google
+sign-in until an administrator reactivates them.
+
+### 3. Restrict who may sign in
+
+By default, any Google account with a verified email can create a WebManager account.
+
+To restrict access, run:
+
+```bash
+bash configure-google.sh
+```
+
+Enter one or both of:
+
+- Google Workspace domains, such as `example.com`
+- Individual Google account emails
+
+When both lists are present, an account is accepted when its verified email is listed or Google's `hd` claim matches an allowed Workspace domain.
+
+### Link an account from an older WebManager version
+
+If this installation already has username/password users, link each old username to its Google email before that user signs in:
+
+```bash
+sudo -u webmanager env \
+  WEBMANAGER_DATA_DIR=/var/lib/webmanager \
+  /opt/webmanager/.venv/bin/flask \
+  --app /opt/webmanager/run.py \
+  link-google-user \
+  --username OLD_USERNAME \
+  --email PERSON@example.com
+```
+
+At the next matching Google sign-in, the old user record is upgraded in place. Its repositories, deployments, ports, and configurations remain attached to the same user ID.
+
+## Deploy a website
+
+### 1. Prepare the repository
+
+The repository must contain a ready-to-serve static website with one of:
+
+```text
+index.html
+index.htm
+```
+
+The index file may be in the repository root or in a subfolder such as:
+
+```text
+public/
+dist/
+build/
+docs/
+site/
+```
+
+### 2. Inspect the repository
+
+From the dashboard:
+
+1. Enter the Git repository URL.
+2. Optionally enter a branch name.
+3. Select **Clone and inspect**.
+
+Supported URL examples:
+
+```text
+https://github.com/example/project.git
+ssh://git@github.com/example/project.git
+git@github.com:example/project.git
+```
+
+Local paths and `file://` URLs are rejected.
+
+### 3. Select the document root
+
+WebManager searches the cloned repository for `index.html` and `index.htm`.
+
+Choose the folder that should become the site's document root. Dependency and metadata directories such as `.git`, `node_modules`, `.venv`, and `__pycache__` are ignored.
+
+### 4. Configure the deployment
+
+Enter:
+
+- A site name
+- An optional port
+- Whether single-page application fallback should be enabled
+
+If no port is entered, WebManager selects the first available port in the configured range.
+
+With SPA fallback enabled, routes such as `/account/settings` load the selected index page when no matching file exists.
+
+### 5. Open the site
+
+After deployment:
+
+```text
+http://SERVER_IP:ASSIGNED_PORT
+```
+
+The assigned port is shown on the dashboard and site detail page.
+
+### Automatic repository updates
+
+Each saved repository has an **Automatic updates** control on the dashboard.
+
+Enter an interval in minutes and select **Save**. WebManager accepts intervals
+from `5` minutes through `43200` minutes (30 days). Leave the field blank and
+save to disable automatic updates.
+
+The schedule is stored in SQLite and resumes after WebManager or Debian
+restarts. The dashboard shows the next scheduled run in UTC and the date of the
+last successful pull.
+
+Scheduled updates use a fresh shallow clone and an atomic directory swap. A
+failed clone leaves the currently hosted files unchanged. WebManager also
+rejects an update if it would remove a folder or index file used by an existing
+deployment. The error appears beside the repository, and the next scheduled
+attempt still runs at the configured interval.
+
+## Repository requirements
+
+WebManager hosts static files. It does not currently run application build commands.
+
+### Supported directly
+
+- Plain HTML, CSS, and JavaScript
+- Prebuilt React, Vue, Svelte, Angular, or other frontend output
+- Static documentation
+- Static assets and single-page applications
+
+### Not built automatically
+
+WebManager does not automatically run:
+
+```text
+npm install
+npm run build
+yarn build
+pnpm build
+vite build
+gatsby build
+hugo
+jekyll
+```
+
+For a frontend framework, commit or publish its generated output folder to the Git repository, then select that folder during deployment.
+
+For example, a Vite project normally needs a committed or generated `dist/index.html`. WebManager should deploy `dist`, not the unbuilt source directory.
+
+### Not supported as application runtimes
+
+This version does not launch:
+
+- Node.js servers
+- Python web applications
+- PHP applications
+- Databases
+- Docker Compose projects
+- Server-side rendered applications
+
+It is specifically a static website manager.
+
+## Private Git repositories
+
+SSH deploy keys are the recommended way to access private repositories.
+
+WebManager runs Git as the restricted `webmanager` Linux account with:
+
+```text
+HOME=/var/lib/webmanager
+```
+
+Interactive password prompts are disabled.
+
+### Create an SSH key
+
+Create the SSH directory:
+
+```bash
+sudo install -d \
+  -o webmanager \
+  -g webmanager \
+  -m 0700 \
+  /var/lib/webmanager/.ssh
+```
+
+Generate an Ed25519 key:
+
+```bash
+sudo -u webmanager \
+  ssh-keygen \
+  -t ed25519 \
+  -f /var/lib/webmanager/.ssh/id_ed25519 \
+  -N ""
+```
+
+Display the public key:
+
+```bash
+sudo cat /var/lib/webmanager/.ssh/id_ed25519.pub
+```
+
+Add that public key to the Git provider as a read-only deploy key.
+
+### Add the Git host key
+
+For GitHub:
+
+```bash
+sudo -u webmanager \
+  ssh-keyscan github.com \
+  | sudo tee /var/lib/webmanager/.ssh/known_hosts >/dev/null
+```
+
+For GitLab:
+
+```bash
+sudo -u webmanager \
+  ssh-keyscan gitlab.com \
+  | sudo tee /var/lib/webmanager/.ssh/known_hosts >/dev/null
+```
+
+Set ownership and permissions:
+
+```bash
+sudo chown webmanager:webmanager /var/lib/webmanager/.ssh/known_hosts
+sudo chmod 0600 /var/lib/webmanager/.ssh/known_hosts
+```
+
+Verify the host fingerprint through a trusted source before accepting it on an Internet-facing production server.
+
+### Test repository access
+
+Test without cloning:
+
+```bash
+sudo -u webmanager \
+  env HOME=/var/lib/webmanager GIT_TERMINAL_PROMPT=0 \
+  git ls-remote git@github.com:OWNER/REPOSITORY.git
+```
+
+Replace the sample URL with the private repository URL.
+
+If refs are returned, WebManager should be able to clone the repository.
+
+## Firewall setup
+
+The required public ports are:
+
+```text
+80/tcp
+443/tcp
+8100-8999/tcp
+```
+
+Port `8080` is used only by the initial HTTP dashboard before automatic HTTPS configuration. Do not expose port `5000`.
+
+### UFW
+
+The installer adds rules automatically only when UFW is installed and already active.
+
+Check UFW:
+
+```bash
+sudo ufw status verbose
+```
+
+Add the rules manually when needed:
+
+```bash
+sudo ufw allow 8080/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 8100:8999/tcp
+sudo ufw reload
+```
+
+To restrict the dashboard to one administrator IP:
+
+```bash
+sudo ufw delete allow 8080/tcp
+sudo ufw allow from ADMIN_IP to any port 8080 proto tcp
+```
+
+Replace `ADMIN_IP` with the public IP that should manage WebManager.
+
+### Cloud firewall or security group
+
+Virtual servers from cloud providers may have a firewall outside Debian. Allow:
+
+- TCP `8080` for the dashboard
+- TCP `80` and `443` for the HTTPS dashboard
+- TCP `8100-8999` for deployed sites
+
+Restrict dashboard port `8080` to trusted IP addresses when possible.
+
+### Verify listening ports
+
+```bash
+sudo ss -ltnp | grep -E ':(5000|8080|81[0-9][0-9]|8[2-9][0-9][0-9])\b'
+```
+
+## Domain name and HTTPS
+
+The default setup uses HTTP on port `8080`. HTTPS is strongly recommended before exposing the dashboard to the Internet.
+
+The instructions below secure the dashboard. They do not automatically add domains or TLS certificates to sites deployed on ports `8100-8999`.
+
+The easiest option is:
+
+```bash
+bash configure-google.sh
+```
+
+Answer `Y` when it offers to configure HTTPS with Let's Encrypt. The manual steps below are for custom setups.
+
+### 1. Configure DNS
+
+Create an `A` record:
+
+```text
+webmanager.example.com -> SERVER_IPV4_ADDRESS
+```
+
+Create an `AAAA` record too if the server uses public IPv6.
+
+Wait for DNS to resolve:
+
+```bash
+getent hosts webmanager.example.com
+```
+
+### 2. Update the dashboard Nginx server
+
+Edit:
+
+```bash
+sudo nano /etc/nginx/sites-available/webmanager
+```
+
+Change the listening and server-name lines to:
+
+```nginx
+listen 80;
+listen [::]:80;
+server_name webmanager.example.com;
+```
+
+Leave the existing `location /` proxy block in place.
+
+Validate and reload:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Allow HTTP and HTTPS through the firewall:
+
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+### 3. Install Certbot
+
+```bash
+sudo apt update
+sudo apt install -y certbot python3-certbot-nginx
+```
+
+Request the certificate:
+
+```bash
+sudo certbot --nginx -d webmanager.example.com
+```
+
+Follow Certbot's prompts and choose HTTP-to-HTTPS redirection.
+
+Test certificate renewal:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+### 4. Enable secure session cookies
+
+Edit:
+
+```bash
+sudo nano /etc/webmanager/webmanager.env
+```
+
+Set:
+
+```text
+WEBMANAGER_SESSION_COOKIE_SECURE=1
+```
+
+Restart:
+
+```bash
+sudo systemctl restart webmanager
+```
+
+Open:
+
+```text
+https://webmanager.example.com
+```
+
+### Protect the HTTPS configuration
+
+The Debian installer preserves an existing dashboard Nginx file at:
+
+```text
+/etc/nginx/sites-available/webmanager
+```
+
+It is still a good idea to back up domain and Certbot changes before an upgrade:
+
+```bash
+sudo cp \
+  /etc/nginx/sites-available/webmanager \
+  /root/webmanager-nginx-backup.conf
+```
+
+After an upgrade, validate the configuration:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+## Configuration
+
+The production environment file is:
+
+```text
+/etc/webmanager/webmanager.env
+```
+
+Default contents:
+
+```text
+WEBMANAGER_DATA_DIR=/var/lib/webmanager
+WEBMANAGER_HOST=127.0.0.1
+WEBMANAGER_PORT=5000
+WEBMANAGER_SITE_PORT_MIN=8100
+WEBMANAGER_SITE_PORT_MAX=8999
+WEBMANAGER_NGINX_BINARY=/usr/sbin/nginx
+WEBMANAGER_TRUST_PROXY=1
+WEBMANAGER_SESSION_COOKIE_SECURE=0
+WEBMANAGER_GOOGLE_CLIENT_ID=
+WEBMANAGER_GOOGLE_CLIENT_SECRET=
+WEBMANAGER_GOOGLE_REDIRECT_URI=
+WEBMANAGER_GOOGLE_ALLOWED_DOMAINS=
+WEBMANAGER_GOOGLE_ALLOWED_EMAILS=
+WEBMANAGER_AUTO_REFRESH_ENABLED=1
+WEBMANAGER_AUTO_REFRESH_POLL_SECONDS=30
+WEBMANAGER_DEBUG=0
+PYTHONUNBUFFERED=1
+PYTHONDONTWRITEBYTECODE=1
+GIT_TERMINAL_PROMPT=0
+```
+
+### Application settings
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WEBMANAGER_DATA_DIR` | `/var/lib/webmanager` | Database, repositories, logs, secret, and managed Nginx state; keep this default in production |
+| `WEBMANAGER_HOST` | `127.0.0.1` | Internal dashboard bind address; keep loopback-only behind Nginx |
+| `WEBMANAGER_PORT` | `5000` | Internal Waitress dashboard port |
+| `WEBMANAGER_SITE_PORT_MIN` | `8100` | First assignable site port |
+| `WEBMANAGER_SITE_PORT_MAX` | `8999` | Last assignable site port |
+| `WEBMANAGER_NGINX_BINARY` | `/usr/sbin/nginx` | Nginx executable used for deployed sites |
+| `WEBMANAGER_TRUST_PROXY` | `1` | Trust one local reverse-proxy hop |
+| `WEBMANAGER_SESSION_COOKIE_SECURE` | `0` | Send session cookies only over HTTPS when set to `1` |
+| `WEBMANAGER_GOOGLE_CLIENT_ID` | empty | Google OAuth web client ID |
+| `WEBMANAGER_GOOGLE_CLIENT_SECRET` | empty | Google OAuth client secret |
+| `WEBMANAGER_GOOGLE_REDIRECT_URI` | empty | Exact authorized callback URL |
+| `WEBMANAGER_GOOGLE_ALLOWED_DOMAINS` | empty | Comma-separated Workspace `hd` claims |
+| `WEBMANAGER_GOOGLE_ALLOWED_EMAILS` | empty | Comma-separated verified Google emails |
+| `WEBMANAGER_AUTO_REFRESH_ENABLED` | `1` | Enables the background repository scheduler |
+| `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
+| `WEBMANAGER_DEBUG` | `0` | Flask debugging; keep disabled in production |
+
+After editing the file:
+
+```bash
+sudo systemctl restart webmanager
+```
+
+The hardened systemd unit grants write access to `/var/lib/webmanager`. Changing `WEBMANAGER_DATA_DIR` also requires a matching systemd `ReadWritePaths` override. Keeping the Debian default is recommended.
+
+### Changing the dashboard internal port
+
+If `WEBMANAGER_PORT` changes, update `proxy_pass` in:
+
+```text
+/etc/nginx/sites-available/webmanager
+```
+
+For example:
+
+```nginx
+proxy_pass http://127.0.0.1:NEW_PORT;
+```
+
+Then run:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart webmanager
+```
+
+Keeping the default internal port is recommended.
+
+### Changing the deployed-site port range
+
+Change both:
+
+```text
+WEBMANAGER_SITE_PORT_MIN
+WEBMANAGER_SITE_PORT_MAX
+```
+
+Then update UFW, the cloud firewall, and any network security groups to allow the same range.
+
+Existing deployments keep their assigned database ports. Choose a new range that still includes existing ports or recreate those deployments.
+
+## Service management
+
+Start WebManager:
+
+```bash
+sudo systemctl start webmanager
+```
+
+Stop WebManager and its child site processes:
+
+```bash
+sudo systemctl stop webmanager
+```
+
+Restart:
+
+```bash
+sudo systemctl restart webmanager
+```
+
+Enable startup at boot:
+
+```bash
+sudo systemctl enable webmanager
+```
+
+Disable startup at boot:
+
+```bash
+sudo systemctl disable webmanager
+```
+
+Display status:
+
+```bash
+sudo systemctl status webmanager --no-pager
+```
+
+Reload Debian's system Nginx:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+## Installed files and directories
+
+```text
+/opt/webmanager/
+  run.py
+  requirements.txt
+  README.md
+  webmanager/
+  .venv/
+
+/var/lib/webmanager/
+  webmanager.sqlite3
+  secret.key
+  repositories/
+  nginx/
+    nginx.conf
+    nginx.pid
+    conf.d/
+    temp/
+    access.log
+    error.log
+  logs/
+  .ssh/
+
+/etc/webmanager/
+  webmanager.env
+  updater.env
+
+/etc/systemd/system/
+  webmanager.service
+  webmanager-update.service
+  webmanager-update.timer
+  webmanager-update.path
+
+/usr/local/sbin/
+  webmanager-update
+
+/var/lib/webmanager-updater/
+  status.json
+  requests/
+  backups/
+  Temporary check directories
+
+/etc/nginx/sites-available/
+  webmanager
+
+/etc/nginx/sites-enabled/
+  webmanager
+```
+
+Ownership:
+
+- Application code: `root:root`
+- Runtime data: `webmanager:webmanager`
+- Environment file: `root:webmanager`
+
+Do not manually run WebManager as root.
+
+## Logs and troubleshooting
+
+### Dashboard does not load
+
+Check the service:
+
+```bash
+sudo systemctl status webmanager --no-pager
+sudo journalctl -u webmanager -n 100 --no-pager
+```
+
+Check the health endpoint:
+
+```bash
+curl -v http://127.0.0.1:5000/healthz
+```
+
+If the health endpoint works but port `8080` does not, inspect system Nginx:
+
+```bash
+sudo nginx -t
+sudo systemctl status nginx --no-pager
+sudo tail -n 100 /var/log/nginx/error.log
+```
+
+### Nginx returns `502 Bad Gateway`
+
+This normally means system Nginx cannot reach Waitress.
+
+Run:
+
+```bash
+sudo systemctl restart webmanager
+sudo journalctl -u webmanager -n 100 --no-pager
+sudo ss -ltnp | grep ':5000'
+```
+
+Confirm `proxy_pass` uses the same host and port as `/etc/webmanager/webmanager.env`.
+
+### Repository clone fails
+
+View service logs:
+
+```bash
+sudo journalctl -u webmanager -n 100 --no-pager
+```
+
+Test repository access as the service account:
+
+```bash
+sudo -u webmanager \
+  env HOME=/var/lib/webmanager GIT_TERMINAL_PROMPT=0 \
+  git ls-remote REPOSITORY_URL
+```
+
+Common causes:
+
+- Incorrect repository URL
+- Missing deploy key
+- Deploy key not added to the repository
+- Missing SSH host key
+- Branch does not exist
+- Server has no outbound Internet access
+
+### No index page is found
+
+Confirm the repository contains:
+
+```text
+index.html
+```
+
+Or:
+
+```text
+index.htm
+```
+
+If the project requires a build, generate and commit the output directory first.
+
+### A deployed site does not open
+
+Check its assigned port in the dashboard, then run:
+
+```bash
+sudo ss -ltnp | grep ':ASSIGNED_PORT'
+```
+
+Check the managed Nginx error log:
+
+```bash
+sudo tail -n 100 /var/lib/webmanager/nginx/error.log
+```
+
+Validate the managed Nginx configuration:
+
+```bash
+sudo -u webmanager \
+  /usr/sbin/nginx \
+  -t \
+  -p /var/lib/webmanager/nginx/ \
+  -c nginx.conf
+```
+
+Check firewall rules:
+
+```bash
+sudo ufw status verbose
+```
+
+Also check the cloud provider's firewall or security group.
+
+### Port already in use
+
+Identify the process:
+
+```bash
+sudo ss -ltnp | grep ':PORT'
+```
+
+Choose another site port or change the configured range.
+
+### Permission denied
+
+Inspect path permissions:
+
+```bash
+sudo namei -l /var/lib/webmanager
+sudo find /var/lib/webmanager -maxdepth 2 -printf '%M %u:%g %p\n'
+```
+
+Restore expected ownership:
+
+```bash
+sudo chown -R webmanager:webmanager /var/lib/webmanager
+sudo chmod 0750 /var/lib/webmanager
+sudo systemctl restart webmanager
+```
+
+### View logs continuously
+
+Dashboard and service:
+
+```bash
+sudo journalctl -u webmanager -f
+```
+
+System Nginx:
+
+```bash
+sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+```
+
+Managed site Nginx:
+
+```bash
+sudo tail -f \
+  /var/lib/webmanager/nginx/access.log \
+  /var/lib/webmanager/nginx/error.log
+```
+
+Fallback static-server logs, if Nginx is unavailable:
+
+```text
+/var/lib/webmanager/logs/site-SITE_ID.log
+```
+
+## Backup and restore
+
+The data directory contains:
+
+- Google account identifiers and profile details
+- Repository records
+- Cloned repositories
+- Site records and assigned ports
+- Edited Nginx configurations
+- Application secret
+- Runtime logs
+
+Store backups securely.
+
+### Create a backup
+
+Stop WebManager for a consistent SQLite and repository snapshot:
+
+```bash
+sudo systemctl stop webmanager
+sudo tar \
+  -C /var/lib \
+  -czf /root/webmanager-backup-$(date +%F).tar.gz \
+  webmanager
+sudo systemctl start webmanager
+```
+
+Verify the archive:
+
+```bash
+sudo tar -tzf /root/webmanager-backup-$(date +%F).tar.gz | head
+```
+
+### Restore a backup
+
+Install WebManager first if it is not installed, then stop it:
+
+```bash
+sudo systemctl stop webmanager
+```
+
+Move the current data directory out of the way:
+
+```bash
+sudo mv /var/lib/webmanager /var/lib/webmanager.before-restore
+```
+
+Extract the backup:
+
+```bash
+sudo tar -C /var/lib -xzf /root/webmanager-backup-YYYY-MM-DD.tar.gz
+```
+
+Restore ownership:
+
+```bash
+sudo chown -R webmanager:webmanager /var/lib/webmanager
+sudo chmod 0750 /var/lib/webmanager
+```
+
+Start and verify:
+
+```bash
+sudo systemctl start webmanager
+curl http://127.0.0.1:5000/healthz
+```
+
+Keep `/var/lib/webmanager.before-restore` until the restored installation is confirmed.
+
+## Upgrade
+
+### Super-admin-approved application updates
+
+The Debian installer creates a systemd timer that checks the configured GitHub
+branch every 15 minutes. Checks never install code. When a newer commit is
+available, a super administrator must open **Admin**, review the exact commit,
+and select **Approve and install**.
+
+This updates WebManager itself and is separate from per-repository website
+refresh schedules in the dashboard.
+
+Before installing a new commit, the updater:
+
+1. Clones the configured branch into an isolated temporary directory.
+2. Verifies that the URL is an HTTPS `github.com` repository.
+3. Rejects force-pushed or rewritten history.
+4. Requires approval for that exact 40-character commit from a super admin.
+5. Creates a clean virtual environment and runs the full test suite.
+6. Stops WebManager and backs up `/var/lib/webmanager`,
+   `/etc/webmanager`, the installed application, and service definitions.
+7. Installs the candidate and waits for the health endpoint.
+8. Automatically restores both the previous application and all persistent
+   data if installation or health verification fails.
+
+The database, repositories, secrets, Google configuration, Nginx dashboard
+configuration, and deployed-site data remain in `/var/lib/webmanager` and
+`/etc/webmanager`. Successful updates preserve them. The three most recent
+pre-update backups are retained under `/var/lib/webmanager-updater/backups`.
+
+Check update status:
+
+```bash
+sudo systemctl status webmanager-update.timer --no-pager
+sudo systemctl list-timers webmanager-update.timer
+```
+
+Run a check immediately:
+
+```bash
+sudo systemctl start webmanager-update.service
+sudo journalctl -u webmanager-update.service -n 100 --no-pager
+```
+
+Configuration is stored in:
+
+```text
+/etc/webmanager/updater.env
+```
+
+Example:
+
+```text
+WEBMANAGER_UPDATE_ENABLED=1
+WEBMANAGER_UPDATE_REPOSITORY=https://github.com/OWNER/WebManager.git
+WEBMANAGER_UPDATE_BRANCH=main
+```
+
+Only use a repository controlled by trusted maintainers. An approved update
+runs the repository's installer as root after its tests pass, so super admins
+should verify the commit before approving it.
+
+Disable GitHub update checks:
+
+```bash
+sudo sed -i 's/^WEBMANAGER_UPDATE_ENABLED=.*/WEBMANAGER_UPDATE_ENABLED=0/' \
+  /etc/webmanager/updater.env
+sudo systemctl disable --now webmanager-update.timer
+sudo systemctl disable --now webmanager-update.path
+```
+
+Re-enable them:
+
+```bash
+sudo sed -i 's/^WEBMANAGER_UPDATE_ENABLED=.*/WEBMANAGER_UPDATE_ENABLED=1/' \
+  /etc/webmanager/updater.env
+sudo systemctl enable --now webmanager-update.timer
+sudo systemctl enable --now webmanager-update.path
+```
+
+### 1. Back up data
+
+Use the backup procedure above before upgrading.
+
+### 2. Update the source checkout
+
+From the original source directory:
+
+```bash
+git pull
+```
+
+Or replace the source directory with the new release.
+
+### 3. Back up custom dashboard Nginx configuration
+
+If a domain, HTTPS, or custom proxy settings were added:
+
+```bash
+sudo cp \
+  /etc/nginx/sites-available/webmanager \
+  /root/webmanager-nginx-before-upgrade.conf
+```
+
+### 4. Run the installer again
+
+```bash
+bash setup.sh
+```
+
+The installer:
+
+- Replaces application code in `/opt/webmanager`
+- Recreates or updates the virtual environment
+- Preserves `/var/lib/webmanager`
+- Preserves an existing `/etc/webmanager/webmanager.env`
+- Preserves an existing `/etc/nginx/sites-available/webmanager`
+- Restarts the service
+
+### 5. Verify custom Nginx settings
+
+The installer preserves an existing `/etc/nginx/sites-available/webmanager`. Confirm the active configuration:
+
+```bash
+sudo nginx -T | less
+```
+
+Compare with the backup if needed, then run:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart webmanager
+```
+
+## Uninstall
+
+Run uninstall commands from the WebManager source folder.
+
+### Remove the application but keep data
+
+```bash
+bash uninstall.sh
+```
+
+This removes:
+
+- `/opt/webmanager`
+- `/etc/webmanager`
+- The systemd service
+- The dashboard Nginx configuration
+
+It preserves:
+
+```text
+/var/lib/webmanager
+```
+
+### Remove everything
+
+Warning: this permanently removes users, repositories, configurations, logs, and the database.
+
+```bash
+bash uninstall.sh --purge
+```
+
+Create and verify a backup first.
+
+The uninstaller does not remove shared Debian packages such as Python, Git, or Nginx.
+
+## Development
+
+### Create a development environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### Run tests
+
+```bash
+python -m unittest discover -v
+```
+
+### Run locally
+
+```bash
+python run.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:5000
+```
+
+Without `WEBMANAGER_DATA_DIR`, development data is stored in the source directory's `instance/` folder.
+
+### Development environment variables
+
+Example:
+
+```bash
+export WEBMANAGER_DATA_DIR="$PWD/instance"
+export WEBMANAGER_HOST=127.0.0.1
+export WEBMANAGER_PORT=5000
+export WEBMANAGER_SITE_PORT_MIN=8100
+export WEBMANAGER_SITE_PORT_MAX=8999
+export WEBMANAGER_NGINX_BINARY=nginx
+export WEBMANAGER_GOOGLE_CLIENT_ID="CLIENT_ID.apps.googleusercontent.com"
+export WEBMANAGER_GOOGLE_CLIENT_SECRET="CLIENT_SECRET"
+export WEBMANAGER_GOOGLE_REDIRECT_URI="http://localhost:5000/auth/google/callback"
+export WEBMANAGER_DEBUG=1
+python run.py
+```
+
+Do not enable debug mode on an Internet-facing server.
+
+## Security checklist
+
+Before exposing WebManager publicly:
+
+1. Enable HTTPS for the dashboard.
+2. Set `WEBMANAGER_SESSION_COOKIE_SECURE=1`.
+3. Configure Google domain or email allowlists unless every Google account should be allowed.
+4. Restrict dashboard access by firewall or VPN when possible.
+5. Do not expose internal port `5000`.
+6. Use read-only SSH deploy keys for private repositories.
+7. Keep Debian, Nginx, Python packages, and WebManager updated.
+8. Back up `/var/lib/webmanager`.
+9. Store backups away from the server.
+10. Review Google OAuth consent-screen and test-user settings before production use.
+
+The Nginx editor enforces each site's assigned port, document root, and symlink protection. It also rejects proxy, include, write, module, and other unsafe directives. Users can still publish files from repositories they control, so account access should remain limited to trusted people.

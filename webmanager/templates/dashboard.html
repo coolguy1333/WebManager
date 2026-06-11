@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Deployment workspace</p>
+    <h1>Sites at a glance</h1>
+    <p>Deploy, monitor, and manage static projects from one place.</p>
+  </div>
+  <div class="head-meta">
+    <span class="status-dot running"></span>
+    <span>{{ summary.running }} live</span>
+  </div>
+</section>
+
+<section class="summary-grid" aria-label="Deployment summary">
+  <div class="summary-card">
+    <span>Total sites</span>
+    <strong>{{ sites|length }}</strong>
+  </div>
+  <div class="summary-card success">
+    <span>Running</span>
+    <strong>{{ summary.running }}</strong>
+  </div>
+  <div class="summary-card">
+    <span>Stopped</span>
+    <strong>{{ summary.stopped }}</strong>
+  </div>
+  <div class="summary-card {% if summary.attention %}danger{% endif %}">
+    <span>Needs attention</span>
+    <strong>{{ summary.attention }}</strong>
+  </div>
+</section>
+
+<section class="panel deploy-panel">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">New deployment</p>
+      <h2>Inspect a Git repository</h2>
+      <p>WebManager clones the source and finds every folder containing an index page.</p>
+    </div>
+    <span class="step-badge">Step 1 of 2</span>
+  </div>
+  <form class="deploy-form" method="post" action="{{ url_for('deployments.inspect_repository') }}" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <label class="grow">
+      Repository URL
+      <input type="text" inputmode="url" name="repository_url" maxlength="2048" placeholder="https://github.com/you/project.git" required>
+    </label>
+    <label>
+      Branch <span class="muted">(optional)</span>
+      <input name="branch" maxlength="200" placeholder="main">
+    </label>
+    <button class="button primary" type="submit" data-loading-text="Cloning repository...">Clone and inspect</button>
+  </form>
+  <div class="panel-note">
+    <span class="note-icon">i</span>
+    <span>Supports public HTTPS repositories and private repositories available through the server's SSH deploy key.</span>
+  </div>
+</section>
+
+<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Live inventory</p>
+      <h2>Deployments</h2>
+    </div>
+    <span class="range-label">Port range {{ port_min }}-{{ port_max }}</span>
+  </div>
+  {% if sites %}
+    <div class="site-grid">
+      {% for site in sites %}
+        <article class="site-card status-{{ site.status }}">
+          <div class="site-card-top">
+            <span class="status-dot {{ site.status }}"></span>
+            <span class="status-label">{{ site.status }}</span>
+            <span class="port-chip">:{{ site.port }}</span>
+          </div>
+          <a class="site-card-title" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
+            <h3>{{ site.name }}</h3>
+          </a>
+          <p class="site-source">{{ site.repository_name }} / {{ site.folder }}</p>
+          {% if show_all %}<span class="table-meta">Owner: {{ site.owner_name or site.owner_email }}</span>{% endif %}
+          <div class="site-card-foot">
+            <span class="backend-label">{{ site.runtime_backend or "Not started" }}</span>
+            <div class="card-actions">
+              {% if site.status == "running" %}
+                <a href="http://{{ host }}:{{ site.port }}" target="_blank" rel="noopener">Open</a>
+              {% endif %}
+              <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
+                {{ "Manage" if manage_all or site.user_id == g.user.id else "View" }} &rarr;
+              </a>
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">&lt;/&gt;</div>
+      <h3>No sites deployed yet</h3>
+      <p>Start with a repository URL above. WebManager will guide you through choosing the correct site folder.</p>
+    </div>
+  {% endif %}
+</section>
+
+{% if repositories %}
+<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Source library</p>
+      <h2>Repositories</h2>
+    </div>
+    <span class="count-badge">{{ summary.repositories }} total</span>
+  </div>
+  <div class="table-wrap panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>Status</th>
+          <th>Sites</th>
+          <th>Automatic updates</th>
+          <th>Updated</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for repository in repositories %}
+        <tr>
+          <td data-label="Repository">
+            <strong>{{ repository.name }}</strong>
+            <span class="table-sub">{{ repository.url }}</span>
+            {% if show_all %}<span class="table-meta">Owner: {{ repository.owner_name or repository.owner_email }}</span>{% endif %}
+            {% if repository.branch %}<span class="table-meta">Branch: {{ repository.branch }}</span>{% endif %}
+            {% if repository.error %}<span class="table-error">{{ repository.error }}</span>{% endif %}
+          </td>
+          <td data-label="Status"><span class="pill {{ repository.status }}">{{ repository.status }}</span></td>
+          <td data-label="Sites">{{ repository.site_count }}</td>
+          <td data-label="Auto update">
+            {% if manage_all or repository.user_id == g.user.id %}
+            <form class="auto-refresh-form" method="post" action="{{ url_for('deployments.schedule_repository_refresh', repository_id=repository.id) }}" data-loading>
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+              <label>
+                <span class="sr-only">Refresh interval in minutes</span>
+                <span class="interval-control">
+                  <span>Every</span>
+                  <input
+                    class="interval-input"
+                    type="number"
+                    name="auto_refresh_minutes"
+                    min="{{ refresh_min }}"
+                    max="{{ refresh_max }}"
+                    value="{{ repository.auto_refresh_minutes or '' }}"
+                    placeholder="Off"
+                    aria-label="Automatic refresh interval in minutes"
+                  >
+                  <span>min</span>
+                </span>
+              </label>
+              <button class="button ghost small" type="submit" data-loading-text="Saving...">Save</button>
+            </form>
+            {% if repository.auto_refresh_minutes %}
+              <span class="table-meta">Next: {{ repository.next_refresh_at or "pending" }} UTC</span>
+            {% else %}
+              <span class="table-meta">Leave blank to keep disabled.</span>
+            {% endif %}
+            {% else %}
+              <span class="table-meta">{{ repository.auto_refresh_minutes or "Off" }}{% if repository.auto_refresh_minutes %} minutes{% endif %}</span>
+            {% endif %}
+          </td>
+          <td data-label="Updated">
+            {{ (repository.last_refreshed_at or repository.updated_at)[:10] }}
+            <span class="table-meta">
+              {{ "Last successful pull" if repository.last_refreshed_at else "Repository added" }}
+            </span>
+          </td>
+          <td class="table-actions" data-label="Actions">
+            {% if manage_all or repository.user_id == g.user.id %}
+            {% if repository.status == "ready" %}
+              <a class="button ghost small" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">Deploy</a>
+            {% endif %}
+            <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+              <button class="button ghost small" type="submit" data-loading-text="{{ 'Retrying...' if repository.status == 'error' else 'Refreshing...' }}">
+                {{ "Retry" if repository.status == "error" else "Refresh" }}
+              </button>
+            </form>
+            <form method="post" action="{{ url_for('deployments.delete_repository', repository_id=repository.id) }}" data-confirm="Delete this repository and every site created from it?">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+              <button class="button danger-text small" type="submit">Delete</button>
+            </form>
+            {% else %}
+              <span class="muted">Read only</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

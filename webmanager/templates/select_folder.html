@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head compact">
+  <div>
+    <a class="back-link" href="{{ url_for('deployments.dashboard') }}">&larr; Dashboard</a>
+    <p class="eyebrow">Repository inspected</p>
+    <h1>Select a site folder</h1>
+    <p><strong>{{ repository.name }}</strong><span class="separator">/</span>{{ repository.url }}</p>
+  </div>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button ghost" type="submit" data-loading-text="Refreshing...">Refresh source</button>
+    </form>
+    <span class="step-badge">Step 2 of 2</span>
+  </div>
+</section>
+
+{% if candidates %}
+<form class="deploy-layout" method="post" action="{{ url_for('deployments.deploy_repository', repository_id=repository.id) }}" data-loading>
+  <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+  <section>
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Index pages found</p>
+        <h2>Choose document root</h2>
+      </div>
+      <span class="count-badge">{{ candidates|length }} found</span>
+    </div>
+    <div class="folder-list">
+      {% for candidate in candidates %}
+      <label class="folder-option">
+        <input type="radio" name="folder" value="{{ candidate.folder }}" {% if loop.first %}checked{% endif %} required>
+        <span class="folder-radio"></span>
+        <span class="folder-icon">/</span>
+        <span class="folder-info">
+          <strong>{{ "Repository root" if candidate.folder == "." else candidate.folder }}</strong>
+          <small>{{ candidate.index_file }}</small>
+        </span>
+        <span class="folder-depth">depth {{ candidate.depth }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </section>
+
+  <aside class="panel deploy-settings">
+    <div>
+      <p class="eyebrow">Deployment settings</p>
+      <h2>Make it live</h2>
+    </div>
+    <label>
+      Site name
+      <input name="site_name" value="{{ suggested_name }}" maxlength="80" required>
+    </label>
+    <label>
+      Port <span class="muted">(optional)</span>
+      <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" placeholder="Automatic">
+      <small>Available range: {{ port_min }}-{{ port_max }}</small>
+    </label>
+    <label class="check-row">
+      <input type="checkbox" name="spa_fallback" checked>
+      <span>
+        <strong>Single-page app fallback</strong>
+        <small>Unknown routes load the selected index page.</small>
+      </span>
+    </label>
+    <div class="selected-folder">
+      <span>Selected folder</span>
+      <code data-selected-folder>{{ candidates[0].folder }}</code>
+    </div>
+    <button class="button primary wide" type="submit" data-loading-text="Deploying site...">Deploy site</button>
+    <p class="hint centered">A unique port and Nginx config will be created.</p>
+  </aside>
+</form>
+{% else %}
+<section class="panel empty-state large">
+  <div class="empty-icon">404</div>
+  <h2>No index page found</h2>
+  <p>This repository does not contain an <code>index.html</code> or <code>index.htm</code> outside ignored dependency folders.</p>
+  <div class="button-row">
+    <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button primary" type="submit" data-loading-text="Refreshing...">Refresh repository</button>
+    </form>
+    <a class="button ghost" href="{{ url_for('deployments.dashboard') }}">Try another repository</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

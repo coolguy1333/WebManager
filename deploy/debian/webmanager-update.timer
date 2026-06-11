@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically check GitHub for available WebManager updates
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=3min
+Persistent=true
+Unit=webmanager-update.service
+
+[Install]
+WantedBy=timers.target

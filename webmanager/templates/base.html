@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{{ title }} | WebManager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
+        <span class="brand-mark">W</span>
+        <span class="brand-copy">
+          <strong>WebManager</strong>
+          <small>Static deployment control</small>
+        </span>
+      </a>
+      {% if g.user %}
+        <nav class="topnav" aria-label="Main navigation">
+          <a href="{{ url_for('deployments.dashboard') }}">Dashboard</a>
+          {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") %}
+            <a href="{{ url_for('admin.dashboard') }}">Admin</a>
+          {% endif %}
+          <span class="user-profile" title="{{ g.user.email or g.user.username }}">
+            <span class="user-avatar">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
+            <span class="user-identity">
+              <strong>{{ g.user.display_name or g.user.username }}</strong>
+              <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
+            </span>
+          </span>
+          <form method="post" action="{{ url_for('auth.logout') }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button class="button ghost small" type="submit">Sign out</button>
+          </form>
+        </nav>
+      {% endif %}
+    </header>
+
+    <main class="content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack" aria-live="polite">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">
+                <span>{{ message }}</span>
+                <button class="flash-close" type="button" aria-label="Dismiss message">&times;</button>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

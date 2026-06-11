@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel empty-state large">
+  <div class="empty-icon">!</div>
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <a class="button primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">Go back</a>
+</section>
+{% endblock %}
+

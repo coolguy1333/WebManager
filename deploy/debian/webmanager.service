@@ -1,0 +1,40 @@
+[Unit]
+Description=WebManager Git static-site control panel
+Documentation=file:/opt/webmanager/README.md
+Wants=network-online.target nginx.service
+After=network-online.target nginx.service
+
+[Service]
+Type=simple
+User=webmanager
+Group=webmanager
+WorkingDirectory=/opt/webmanager
+Environment=HOME=/var/lib/webmanager
+EnvironmentFile=/etc/webmanager/webmanager.env
+ExecStart=/opt/webmanager/.venv/bin/python /opt/webmanager/run.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/webmanager
+ReadWritePaths=/var/lib/webmanager-updater/requests
+
+[Install]
+WantedBy=multi-user.target

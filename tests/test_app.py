@@ -1,0 +1,1242 @@
+import os
+import json
+import socket
+import sqlite3
+import tempfile
+import unittest
+import urllib.request
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from flask import redirect
+
+from webmanager import create_app
+from webmanager.auth import oauth
+from webmanager.db import get_db
+from webmanager.git_service import (
+    GitError,
+    clone_repository,
+    find_index_folders,
+    resolve_folder,
+    validate_repo_url,
+)
+from webmanager.nginx import (
+    NginxConfigError,
+    build_main_config,
+    build_site_config,
+    config_uses_port,
+    validate_site_config,
+)
+from webmanager.repository_refresh import MAX_REFRESH_MINUTES
+from webmanager.services import RuntimeErrorDetail, allocate_port
+
+
+class WebManagerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.temp_directory = tempfile.TemporaryDirectory()
+        root = Path(self.temp_directory.name)
+        self.app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(root / "test.sqlite3"),
+                "REPOSITORY_ROOT": str(root / "repositories"),
+                "NGINX_ROOT": str(root / "nginx"),
+                "LOG_ROOT": str(root / "logs"),
+                "SITE_PORT_MIN": 43100,
+                "SITE_PORT_MAX": 43120,
+                "NGINX_BINARY": "definitely-not-installed-nginx",
+                "GOOGLE_CLIENT_ID": "test-client.apps.googleusercontent.com",
+                "GOOGLE_CLIENT_SECRET": "test-client-secret",
+                "GOOGLE_REDIRECT_URI": "https://webmanager.example/auth/google/callback",
+                "PROGRAM_UPDATE_STATUS_FILE": str(root / "update-status.json"),
+                "PROGRAM_UPDATE_REQUEST_FILE": str(
+                    root / "update-requests" / "install.commit"
+                ),
+            }
+        )
+        self.client = self.app.test_client()
+        with self.app.app_context():
+            self.google_oauth = oauth.google
+
+    def tearDown(self):
+        self.temp_directory.cleanup()
+
+    def csrf(self):
+        with self.client.session_transaction() as session:
+            session["_csrf_token"] = "test-csrf"
+        return "test-csrf"
+
+    def add_user(
+        self,
+        username,
+        email=None,
+        google_sub=None,
+        *,
+        is_admin=False,
+        is_active=True,
+    ):
+        with self.app.app_context():
+            database = get_db()
+            cursor = database.execute(
+                """
+                INSERT INTO users (
+                    username, password_hash, email, google_sub, auth_provider,
+                    is_admin, is_active
+                ) VALUES (?, 'legacy-password-hash', ?, ?, ?, ?, ?)
+                """,
+                (
+                    username,
+                    email,
+                    google_sub,
+                    "google" if google_sub else "legacy",
+                    int(is_admin),
+                    int(is_active),
+                ),
+            )
+            database.commit()
+            return cursor.lastrowid
+
+    def login_user(self, user_id):
+        with self.client.session_transaction() as session:
+            session["user_id"] = user_id
+
+    def google_claims(self, **overrides):
+        claims = {
+            "sub": "google-subject-123",
+            "email": "alice@example.com",
+            "email_verified": True,
+            "name": "Alice Example",
+            "picture": "https://example.com/alice.png",
+        }
+        claims.update(overrides)
+        return claims
+
+    def google_callback(self, claims=None):
+        with self.client.session_transaction() as session:
+            session["google_oidc_nonce"] = "test-nonce"
+        with patch.object(
+            self.google_oauth,
+            "authorize_access_token",
+            return_value={"userinfo": claims or self.google_claims()},
+        ):
+            return self.client.get("/auth/google/callback")
+
+    def add_repository(self, user_id, document_root):
+        repository_root = document_root.parent
+        with self.app.app_context():
+            database = get_db()
+            cursor = database.execute(
+                """
+                INSERT INTO repositories (user_id, name, url, local_path, status)
+                VALUES (?, 'demo', 'https://example.com/demo.git', ?, 'ready')
+                """,
+                (user_id, str(repository_root)),
+            )
+            database.commit()
+            return cursor.lastrowid
+
+    def add_site(
+        self,
+        user_id,
+        repository_id,
+        document_root,
+        *,
+        port=43100,
+        status="stopped",
+        runtime_backend=None,
+    ):
+        config = build_site_config("Demo", document_root, "index.html", port, True)
+        with self.app.app_context():
+            database = get_db()
+            repository = database.execute(
+                "SELECT local_path FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            repository_root = Path(repository["local_path"]).resolve()
+            resolved_document_root = Path(document_root).resolve()
+            try:
+                relative_folder = resolved_document_root.relative_to(repository_root)
+            except ValueError:
+                folder = "."
+            else:
+                folder = "." if relative_folder == Path(".") else relative_folder.as_posix()
+            cursor = database.execute(
+                """
+                INSERT INTO sites (
+                    user_id, repository_id, name, slug, folder, document_root,
+                    index_file, port, spa_fallback, nginx_config, status,
+                    runtime_backend
+                ) VALUES (?, ?, 'Demo', 'demo', ?, ?, 'index.html', ?, 1, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    repository_id,
+                    folder,
+                    str(document_root),
+                    port,
+                    config,
+                    status,
+                    runtime_backend,
+                ),
+            )
+            database.commit()
+            return cursor.lastrowid
+
+    def test_login_page_uses_google_only(self):
+        response = self.client.get("/auth/login")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Continue with Google", response.data)
+        self.assertNotIn(b"Password", response.data)
+
+    def test_google_login_starts_oidc_with_configured_callback(self):
+        with patch.object(
+            self.google_oauth,
+            "authorize_redirect",
+            return_value=redirect("https://accounts.google.com/o/oauth2/v2/auth"),
+        ) as authorize:
+            response = self.client.get("/auth/google?next=/sites/7")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("accounts.google.com", response.headers["Location"])
+        self.assertEqual(
+            authorize.call_args.args[0],
+            "https://webmanager.example/auth/google/callback",
+        )
+        self.assertEqual(authorize.call_args.kwargs["prompt"], "select_account")
+        self.assertTrue(authorize.call_args.kwargs["nonce"])
+
+    def test_google_login_rejects_external_return_url(self):
+        with patch.object(
+            self.google_oauth,
+            "authorize_redirect",
+            return_value=redirect("https://accounts.google.com/o/oauth2/v2/auth"),
+        ):
+            response = self.client.get("/auth/google?next=https://evil.example/steal")
+        self.assertEqual(response.status_code, 302)
+        with self.client.session_transaction() as session:
+            self.assertIsNone(session.get("post_login_next"))
+
+    def test_google_callback_creates_user_and_signs_in(self):
+        response = self.google_callback()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/")
+
+        with self.app.app_context():
+            user = get_db().execute("SELECT * FROM users").fetchone()
+            self.assertEqual(user["google_sub"], "google-subject-123")
+            self.assertEqual(user["email"], "alice@example.com")
+            self.assertEqual(user["display_name"], "Alice Example")
+            self.assertEqual(user["is_admin"], 1)
+            user_id = user["id"]
+
+        with self.client.session_transaction() as session:
+            self.assertEqual(session["user_id"], user_id)
+
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Sites at a glance", response.data)
+        self.assertIn(b"Alice Example", response.data)
+
+    def test_health_endpoint_checks_database(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "ok"})
+
+    def test_security_headers_are_set(self):
+        response = self.client.get("/auth/login")
+        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+
+    def test_invalid_csrf_uses_friendly_error_page(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.post("/auth/logout")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Invalid CSRF token", response.data)
+
+    def test_registration_redirects_to_google_login(self):
+        response = self.client.get("/auth/register")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/auth/login"))
+
+    def test_google_callback_rejects_unverified_email(self):
+        response = self.google_callback(self.google_claims(email_verified=False))
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute("SELECT id FROM users").fetchone())
+
+    def test_google_workspace_domain_allowlist_uses_hd_claim(self):
+        self.app.config["GOOGLE_ALLOWED_DOMAINS"] = "example.com"
+        denied = self.google_callback(self.google_claims(email="alice@example.com"))
+        self.assertEqual(denied.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute("SELECT id FROM users").fetchone())
+
+        allowed = self.google_callback(
+            self.google_claims(sub="allowed-subject", hd="example.com")
+        )
+        self.assertEqual(allowed.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNotNone(get_db().execute("SELECT id FROM users").fetchone())
+
+    def test_google_email_allowlist_permits_listed_account(self):
+        self.app.config["GOOGLE_ALLOWED_EMAILS"] = "alice@example.com"
+        response = self.google_callback()
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNotNone(get_db().execute("SELECT id FROM users").fetchone())
+
+    def test_google_login_fails_closed_without_credentials(self):
+        self.app.config["GOOGLE_CLIENT_ID"] = ""
+        response = self.client.get("/auth/google", follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"has not been configured", response.data)
+
+    def test_google_callback_links_existing_user_by_preconfigured_email(self):
+        user_id = self.add_user("legacy-user", email="alice@example.com")
+        response = self.google_callback()
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            self.assertEqual(user["google_sub"], "google-subject-123")
+            self.assertEqual(user["auth_provider"], "google")
+
+    def test_user_cannot_open_another_users_repository(self):
+        alice_id = self.add_user("alice")
+        bob_id = self.add_user("bob")
+        repository_root = Path(self.temp_directory.name) / "other-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(alice_id, repository_root)
+
+        self.login_user(bob_id)
+        response = self.client.get(f"/repositories/{repository_id}/select")
+        self.assertEqual(response.status_code, 404)
+
+        with self.app.app_context():
+            self.assertIsNotNone(get_db().execute("SELECT 1 FROM users WHERE id = ?", (bob_id,)).fetchone())
+
+    def test_non_admin_cannot_open_admin_console(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.get("/admin/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_create_group_and_assign_it_to_user(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        user_id = self.add_user("operator")
+        self.login_user(admin_id)
+
+        response = self.client.post(
+            "/admin/groups",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Operators",
+                "description": "Deployment operators",
+                "permissions": ["resources.view_all", "resources.manage_all"],
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Group Operators created", response.data)
+        with self.app.app_context():
+            group = get_db().execute(
+                "SELECT * FROM groups WHERE name = 'Operators'"
+            ).fetchone()
+
+        response = self.client.post(
+            f"/admin/users/{user_id}",
+            data={
+                "_csrf_token": self.csrf(),
+                "is_active": "on",
+                "groups": [str(group["id"])],
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Updated operator", response.data)
+        with self.app.app_context():
+            permissions = {
+                row["permission_code"]
+                for row in get_db().execute(
+                    """
+                    SELECT group_permissions.permission_code
+                    FROM user_groups
+                    JOIN group_permissions
+                      ON group_permissions.group_id = user_groups.group_id
+                    WHERE user_groups.user_id = ?
+                    """,
+                    (user_id,),
+                ).fetchall()
+            }
+        self.assertEqual(
+            permissions,
+            {"resources.view_all", "resources.manage_all"},
+        )
+
+    def test_view_all_permission_is_read_only_for_other_users_resources(self):
+        owner_id = self.add_user("owner")
+        viewer_id = self.add_user("viewer")
+        repository_root = Path(self.temp_directory.name) / "shared-view-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            group = database.execute(
+                "INSERT INTO groups (name) VALUES ('Auditors')"
+            )
+            database.execute(
+                """
+                INSERT INTO group_permissions (group_id, permission_code)
+                VALUES (?, 'resources.view_all')
+                """,
+                (group.lastrowid,),
+            )
+            database.execute(
+                "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
+                (viewer_id, group.lastrowid),
+            )
+            database.commit()
+        self.login_user(viewer_id)
+
+        dashboard = self.client.get("/")
+        self.assertIn(b"Owner:", dashboard.data)
+        self.assertIn(b"Read only", dashboard.data)
+        self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
+        denied = self.client.post(
+            f"/sites/{site_id}/start",
+            data={"_csrf_token": self.csrf()},
+        )
+        self.assertEqual(denied.status_code, 404)
+
+    def test_manage_all_permission_can_control_other_users_site(self):
+        owner_id = self.add_user("owner")
+        operator_id = self.add_user("operator")
+        repository_root = Path(self.temp_directory.name) / "managed-site-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            group = database.execute(
+                "INSERT INTO groups (name) VALUES ('Global operators')"
+            )
+            database.execute(
+                """
+                INSERT INTO group_permissions (group_id, permission_code)
+                VALUES (?, 'resources.manage_all')
+                """,
+                (group.lastrowid,),
+            )
+            database.execute(
+                "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
+                (operator_id, group.lastrowid),
+            )
+            database.commit()
+        self.login_user(operator_id)
+
+        with patch.object(
+            self.app.extensions["runtime_manager"],
+            "start_site",
+            return_value="nginx",
+        ):
+            response = self.client.post(
+                f"/sites/{site_id}/start",
+                data={"_csrf_token": self.csrf()},
+            )
+        self.assertEqual(response.status_code, 302)
+
+    def test_final_active_admin_cannot_be_demoted(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.post(
+            f"/admin/users/{admin_id}",
+            data={
+                "_csrf_token": self.csrf(),
+                "is_active": "on",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"final active administrator", response.data)
+        with self.app.app_context():
+            admin = get_db().execute(
+                "SELECT * FROM users WHERE id = ?",
+                (admin_id,),
+            ).fetchone()
+            self.assertEqual(admin["is_admin"], 1)
+
+    def test_delegated_user_manager_cannot_grant_permissions_they_lack(self):
+        manager_id = self.add_user("manager")
+        target_id = self.add_user("target")
+        with self.app.app_context():
+            database = get_db()
+            user_managers = database.execute(
+                "INSERT INTO groups (name) VALUES ('User managers')"
+            ).lastrowid
+            operators = database.execute(
+                "INSERT INTO groups (name) VALUES ('Operators')"
+            ).lastrowid
+            database.execute(
+                """
+                INSERT INTO group_permissions (group_id, permission_code)
+                VALUES (?, 'users.manage')
+                """,
+                (user_managers,),
+            )
+            database.execute(
+                """
+                INSERT INTO group_permissions (group_id, permission_code)
+                VALUES (?, 'resources.manage_all')
+                """,
+                (operators,),
+            )
+            database.execute(
+                "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
+                (manager_id, user_managers),
+            )
+            database.commit()
+        self.login_user(manager_id)
+
+        response = self.client.post(
+            f"/admin/users/{target_id}",
+            data={
+                "_csrf_token": self.csrf(),
+                "is_active": "on",
+                "groups": [str(operators)],
+            },
+        )
+        self.assertEqual(response.status_code, 403)
+        with self.app.app_context():
+            membership = get_db().execute(
+                "SELECT 1 FROM user_groups WHERE user_id = ? AND group_id = ?",
+                (target_id, operators),
+            ).fetchone()
+            self.assertIsNone(membership)
+
+    def test_only_super_admin_can_approve_exact_program_update(self):
+        commit = "a" * 40
+        status_path = Path(self.app.config["PROGRAM_UPDATE_STATUS_FILE"])
+        status_path.write_text(
+            json.dumps(
+                {
+                    "state": "available",
+                    "installed_commit": "b" * 40,
+                    "available_commit": commit,
+                    "update_available": True,
+                    "message": "Update available.",
+                    "checked_at": "2026-06-11 12:00:00 UTC",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        user_id = self.add_user("manager")
+        self.login_user(user_id)
+        denied = self.client.post(
+            "/admin/updates/install",
+            data={"_csrf_token": self.csrf(), "commit": commit},
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.post(
+            "/admin/updates/install",
+            data={"_csrf_token": self.csrf(), "commit": commit},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Update approved", response.data)
+        request_path = Path(self.app.config["PROGRAM_UPDATE_REQUEST_FILE"])
+        self.assertEqual(request_path.read_text(encoding="ascii").strip(), commit)
+
+    def test_program_update_approval_rejects_stale_commit(self):
+        available = "c" * 40
+        Path(self.app.config["PROGRAM_UPDATE_STATUS_FILE"]).write_text(
+            json.dumps(
+                {
+                    "state": "available",
+                    "installed_commit": "b" * 40,
+                    "available_commit": available,
+                    "update_available": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+
+        response = self.client.post(
+            "/admin/updates/install",
+            data={"_csrf_token": self.csrf(), "commit": "d" * 40},
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"no longer available", response.data)
+        self.assertFalse(
+            Path(self.app.config["PROGRAM_UPDATE_REQUEST_FILE"]).exists()
+        )
+
+    def test_disabled_user_session_is_rejected(self):
+        user_id = self.add_user("disabled", is_active=False)
+        self.login_user(user_id)
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/auth/login", response.headers["Location"])
+
+    def test_deploy_generates_unique_port_and_owned_site(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("<h1>Hello</h1>", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        self.login_user(user_id)
+
+        with patch("webmanager.services.RuntimeManager.start_site", return_value="builtin"):
+            response = self.client.post(
+                f"/repositories/{repository_id}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "site_name": "Demo Site",
+                    "folder": "public",
+                    "spa_fallback": "on",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            site = get_db().execute("SELECT * FROM sites").fetchone()
+            self.assertEqual(site["user_id"], user_id)
+            self.assertEqual(site["document_root"], str(site_root.resolve()))
+            self.assertTrue(config_uses_port(site["nginx_config"], site["port"]))
+            self.assertIn("try_files $uri $uri/ /index.html", site["nginx_config"])
+
+    def test_builtin_runtime_serves_the_selected_index(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "served-repo"
+        repository_root.mkdir()
+        (repository_root / "Index.HTML").write_text("<h1>Runtime works</h1>", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        config = build_site_config("Runtime", repository_root, "Index.HTML", port, True)
+        with self.app.app_context():
+            database = get_db()
+            cursor = database.execute(
+                """
+                INSERT INTO sites (
+                    user_id, repository_id, name, slug, folder, document_root,
+                    index_file, port, spa_fallback, nginx_config
+                ) VALUES (?, ?, 'Runtime', 'runtime', '.', ?, 'Index.HTML', ?, 1, ?)
+                """,
+                (user_id, repository_id, str(repository_root), port, config),
+            )
+            database.commit()
+            site_id = cursor.lastrowid
+            runtime = self.app.extensions["runtime_manager"]
+            runtime.start_site(site_id)
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+                    self.assertIn(b"Runtime works", response.read())
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/client/route", timeout=5) as response:
+                    self.assertIn(b"Runtime works", response.read())
+            finally:
+                runtime.stop_site(site_id)
+
+    def test_management_pages_render_for_owned_site(self):
+        user_id = self.add_user("alice", email="alice@example.com")
+        repository_root = Path(self.temp_directory.name) / "render-repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        site_id = self.add_site(user_id, repository_id, site_root)
+        self.login_user(user_id)
+
+        pages = {
+            f"/repositories/{repository_id}/select": b"Select a site folder",
+            f"/sites/{site_id}": b"Hosting details",
+            f"/sites/{site_id}/config": b"Edit Nginx config",
+        }
+        for path, expected in pages.items():
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(expected, response.data)
+
+    def test_repository_auto_refresh_schedule_can_be_set_and_disabled(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "scheduled-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/schedule",
+            data={
+                "_csrf_token": self.csrf(),
+                "auto_refresh_minutes": "45",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"every 45 minutes", response.data)
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertEqual(repository["auto_refresh_minutes"], 45)
+            self.assertIsNotNone(repository["next_refresh_at"])
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/schedule",
+            data={
+                "_csrf_token": self.csrf(),
+                "auto_refresh_minutes": "",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"refresh disabled", response.data)
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertIsNone(repository["auto_refresh_minutes"])
+            self.assertIsNone(repository["next_refresh_at"])
+
+    def test_repository_auto_refresh_schedule_validates_interval(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "invalid-schedule-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/schedule",
+            data={
+                "_csrf_token": self.csrf(),
+                "auto_refresh_minutes": str(MAX_REFRESH_MINUTES + 1),
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"must be between", response.data)
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertIsNone(repository["auto_refresh_minutes"])
+
+    def test_scheduled_refresh_rejects_update_that_breaks_deployed_site(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "protected-refresh-repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("live", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        self.add_site(user_id, repository_id, site_root)
+        manager = self.app.extensions["repository_refresh_manager"]
+
+        def invalid_clone(_url, _target, _branch, validate_staging):
+            staging = Path(self.temp_directory.name) / "invalid-staging"
+            staging.mkdir()
+            validate_staging(staging)
+
+        with patch(
+            "webmanager.repository_refresh.clone_repository",
+            side_effect=invalid_clone,
+        ):
+            result = manager.refresh(repository_id)
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("deployed folder", result.message)
+        self.assertEqual((site_root / "index.html").read_text(encoding="utf-8"), "live")
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertIn("deployed folder", repository["error"])
+
+    def test_due_repository_refreshes_are_dispatched(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "due-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                UPDATE repositories
+                SET auto_refresh_minutes = 15,
+                    next_refresh_at = '2000-01-01 00:00:00'
+                WHERE id = ?
+                """,
+                (repository_id,),
+            )
+            database.commit()
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        with patch.object(manager, "refresh") as refresh:
+            count = manager.run_due_once()
+
+        self.assertEqual(count, 1)
+        refresh.assert_called_once_with(repository_id, wait=False)
+
+    def test_successful_scheduled_refresh_records_next_run(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "successful-schedule-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                UPDATE repositories
+                SET auto_refresh_minutes = 20,
+                    next_refresh_at = '2000-01-01 00:00:00',
+                    error = 'old failure'
+                WHERE id = ?
+                """,
+                (repository_id,),
+            )
+            database.commit()
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        with patch("webmanager.repository_refresh.clone_repository"):
+            result = manager.refresh(repository_id)
+
+        self.assertEqual(result.status, "success")
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertIsNotNone(repository["last_refreshed_at"])
+            self.assertIsNotNone(repository["next_refresh_at"])
+            self.assertIsNone(repository["error"])
+
+    def test_due_refresh_skips_repository_already_being_updated(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "busy-refresh-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        manager = self.app.extensions["repository_refresh_manager"]
+
+        with manager.repository_lock(repository_id):
+            result = manager.refresh(repository_id, wait=False)
+
+        self.assertEqual(result.status, "busy")
+
+    def test_config_editor_rejects_removing_assigned_port(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        config = build_site_config("Demo", repository_root, "index.html", 43100, True)
+
+        with self.app.app_context():
+            database = get_db()
+            cursor = database.execute(
+                """
+                INSERT INTO sites (
+                    user_id, repository_id, name, slug, folder, document_root,
+                    index_file, port, spa_fallback, nginx_config
+                ) VALUES (?, ?, 'Demo', 'demo', '.', ?, 'index.html', 43100, 1, ?)
+                """,
+                (user_id, repository_id, str(repository_root), config),
+            )
+            database.commit()
+            site_id = cursor.lastrowid
+
+        self.login_user(user_id)
+        response = self.client.post(
+            f"/sites/{site_id}/config",
+            data={"_csrf_token": self.csrf(), "nginx_config": "server { listen 9999; }"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"assigned port", response.data)
+
+        with self.app.app_context():
+            saved = get_db().execute("SELECT nginx_config FROM sites WHERE id = ?", (site_id,)).fetchone()
+            self.assertEqual(saved["nginx_config"], config)
+
+    def test_site_delete_keeps_record_when_runtime_cannot_stop(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "delete-site-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+        self.login_user(user_id)
+
+        runtime = self.app.extensions["runtime_manager"]
+        with patch.object(
+            runtime,
+            "stop_site",
+            side_effect=RuntimeErrorDetail("reload failed"),
+        ):
+            response = self.client.post(
+                f"/sites/{site_id}/delete",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"was not deleted", response.data)
+        with self.app.app_context():
+            saved = get_db().execute("SELECT id FROM sites WHERE id = ?", (site_id,)).fetchone()
+            self.assertIsNotNone(saved)
+
+    def test_repository_delete_does_not_remove_unmanaged_path(self):
+        user_id = self.add_user("alice")
+        external = Path(self.temp_directory.name) / "external-content"
+        external.mkdir()
+        (external / "index.html").write_text("keep me", encoding="utf-8")
+        with self.app.app_context():
+            database = get_db()
+            cursor = database.execute(
+                """
+                INSERT INTO repositories (user_id, name, url, local_path, status)
+                VALUES (?, 'external', 'https://example.com/external.git', ?, 'ready')
+                """,
+                (user_id, str(external)),
+            )
+            database.commit()
+            repository_id = cursor.lastrowid
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/delete",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"unsafe stored path was not removed", response.data)
+        self.assertTrue((external / "index.html").exists())
+        with self.app.app_context():
+            saved = get_db().execute(
+                "SELECT id FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertIsNone(saved)
+
+    def test_builtin_launch_failure_is_recorded(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "launch-failure-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+
+        with self.app.app_context(), patch(
+            "webmanager.services.subprocess.Popen",
+            side_effect=OSError("permission denied"),
+        ):
+            with self.assertRaises(RuntimeErrorDetail):
+                self.app.extensions["runtime_manager"].start_site(site_id)
+            site = get_db().execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+
+        self.assertEqual(site["status"], "error")
+        self.assertIn("permission denied", site["last_error"])
+
+    def test_nginx_stop_rolls_back_state_when_reload_fails(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "nginx-stop-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(
+            user_id,
+            repository_id,
+            repository_root,
+            status="running",
+            runtime_backend="nginx",
+        )
+        fake_nginx = Path(self.temp_directory.name) / "fake-nginx"
+        fake_nginx.write_text("", encoding="utf-8")
+        self.app.config["NGINX_BINARY"] = str(fake_nginx)
+        runtime = self.app.extensions["runtime_manager"]
+
+        with self.app.app_context(), patch.object(
+            runtime,
+            "_reload_nginx",
+            side_effect=RuntimeErrorDetail("reload failed"),
+        ):
+            with self.assertRaises(RuntimeErrorDetail):
+                runtime.stop_site(site_id)
+            site = get_db().execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+
+        self.assertEqual(site["status"], "running")
+        self.assertEqual(site["runtime_backend"], "nginx")
+
+
+class ServiceUnitTests(unittest.TestCase):
+    def test_debian_self_updater_has_required_safety_controls(self):
+        root = Path(__file__).resolve().parent.parent
+        updater = (root / "deploy" / "debian" / "update.sh").read_text(
+            encoding="utf-8"
+        )
+        timer = (root / "deploy" / "debian" / "webmanager-update.timer").read_text(
+            encoding="utf-8"
+        )
+        path_unit = (
+            root / "deploy" / "debian" / "webmanager-update.path"
+        ).read_text(encoding="utf-8")
+        service = (
+            root / "deploy" / "debian" / "webmanager-update.service"
+        ).read_text(encoding="utf-8")
+        installer = (root / "deploy" / "debian" / "install.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("https://github", updater)
+        self.assertIn("merge-base --is-ancestor", updater)
+        self.assertIn("python\" -m unittest discover", updater)
+        self.assertIn("rollback()", updater)
+        self.assertIn("flock -n", updater)
+        self.assertIn("APPROVED_COMMIT", updater)
+        self.assertIn("webmanager-data.tar.gz", updater)
+        self.assertIn("waiting for super-admin approval", updater)
+        self.assertIn("OnUnitActiveSec=15min", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("PathChanged=", path_unit)
+        self.assertIn("ProtectSystem=full", service)
+        self.assertIn("ReadWritePaths=/opt/webmanager", service)
+        self.assertIn("--self-update", installer)
+        self.assertIn("webmanager-update.timer", installer)
+        self.assertIn("webmanager-update.path", installer)
+
+    def test_legacy_user_schema_migrates_without_losing_users(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "legacy.sqlite3"
+            database = sqlite3.connect(database_path)
+            database.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO users (username, password_hash)
+                VALUES ('legacy-user', 'old-password-hash');
+                """
+            )
+            database.commit()
+            database.close()
+
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test",
+                    "DATABASE": str(database_path),
+                    "REPOSITORY_ROOT": str(root / "repositories"),
+                    "NGINX_ROOT": str(root / "nginx"),
+                    "LOG_ROOT": str(root / "logs"),
+                }
+            )
+            with app.app_context():
+                columns = {
+                    row["name"]
+                    for row in get_db().execute("PRAGMA table_info(users)").fetchall()
+                }
+                user = get_db().execute(
+                    "SELECT * FROM users WHERE username = 'legacy-user'"
+                ).fetchone()
+            self.assertIn("google_sub", columns)
+            self.assertIn("email", columns)
+            self.assertIn("is_admin", columns)
+            self.assertIn("is_active", columns)
+            self.assertEqual(user["password_hash"], "old-password-hash")
+            self.assertEqual(user["is_admin"], 1)
+
+    def test_legacy_repository_schema_gains_refresh_schedule_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "legacy-repositories.sqlite3"
+            database = sqlite3.connect(database_path)
+            database.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE repositories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    branch TEXT,
+                    local_path TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    error TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            database.commit()
+            database.close()
+
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test",
+                    "DATABASE": str(database_path),
+                    "REPOSITORY_ROOT": str(root / "repositories"),
+                    "NGINX_ROOT": str(root / "nginx"),
+                    "LOG_ROOT": str(root / "logs"),
+                }
+            )
+            with app.app_context():
+                columns = {
+                    row["name"]
+                    for row in get_db().execute(
+                        "PRAGMA table_info(repositories)"
+                    ).fetchall()
+                }
+
+            self.assertIn("auto_refresh_minutes", columns)
+            self.assertIn("next_refresh_at", columns)
+            self.assertIn("last_refreshed_at", columns)
+
+    def test_external_data_directory_becomes_flask_instance_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"WEBMANAGER_DATA_DIR": directory}):
+                app = create_app({"TESTING": True, "SECRET_KEY": "test"})
+            self.assertEqual(Path(app.instance_path), Path(directory).resolve())
+            self.assertEqual(Path(app.config["DATABASE"]), Path(directory) / "webmanager.sqlite3")
+
+    def test_index_discovery_and_safe_folder_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "index.html").write_text("root", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs" / "index.htm").write_text("docs", encoding="utf-8")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "index.html").write_text("ignored", encoding="utf-8")
+
+            candidates = find_index_folders(root)
+            self.assertEqual([item["folder"] for item in candidates], [".", "docs"])
+            self.assertEqual(resolve_folder(root, "docs"), (root / "docs").resolve())
+            with self.assertRaises(GitError):
+                resolve_folder(root, "../outside")
+
+    def test_repository_url_validation_rejects_local_paths(self):
+        self.assertEqual(
+            validate_repo_url("https://github.com/example/site.git"),
+            "https://github.com/example/site.git",
+        )
+        self.assertEqual(
+            validate_repo_url("git@github.com:example/site.git"),
+            "git@github.com:example/site.git",
+        )
+        with self.assertRaises(GitError):
+            validate_repo_url("C:/private/repository")
+        with self.assertRaises(GitError):
+            validate_repo_url("file:///private/repository")
+
+    def test_failed_repository_refresh_preserves_existing_clone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "site"
+            target.mkdir()
+            (target / "index.html").write_text("working", encoding="utf-8")
+            failure = SimpleNamespace(returncode=1, stderr="network failed", stdout="")
+
+            with patch("webmanager.git_service.subprocess.run", return_value=failure):
+                with self.assertRaises(GitError):
+                    clone_repository("https://example.com/site.git", target)
+
+            self.assertEqual(
+                (target / "index.html").read_text(encoding="utf-8"),
+                "working",
+            )
+            self.assertEqual(list(root.glob(".site.*")), [])
+
+    def test_successful_repository_refresh_replaces_clone_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "site"
+            target.mkdir()
+            (target / "index.html").write_text("old", encoding="utf-8")
+
+            def fake_clone(command, **_kwargs):
+                staging = Path(command[-1])
+                staging.mkdir()
+                (staging / "index.html").write_text("new", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            with patch("webmanager.git_service.subprocess.run", side_effect=fake_clone):
+                clone_repository("https://example.com/site.git", target)
+
+            self.assertEqual((target / "index.html").read_text(encoding="utf-8"), "new")
+            self.assertEqual(list(root.glob(".site.*")), [])
+
+    def test_port_allocator_avoids_database_and_os_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test",
+                    "DATABASE": str(Path(directory) / "db.sqlite3"),
+                    "REPOSITORY_ROOT": str(Path(directory) / "repositories"),
+                    "NGINX_ROOT": str(Path(directory) / "nginx"),
+                    "LOG_ROOT": str(Path(directory) / "logs"),
+                }
+            )
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            occupied_port = listener.getsockname()[1]
+            try:
+                with app.app_context():
+                    port = allocate_port(get_db(), occupied_port, occupied_port + 5)
+                    self.assertNotEqual(port, occupied_port)
+            finally:
+                listener.close()
+
+    def test_managed_nginx_config_is_isolated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = build_site_config("Demo", root, "index.html", 8123, True)
+            validate_site_config(config, root, 8123)
+            self.assertIn("disable_symlinks on;", config)
+
+            with self.assertRaises(NginxConfigError):
+                validate_site_config(config.replace(root.resolve().as_posix(), "/etc"), root, 8123)
+            with self.assertRaises(NginxConfigError):
+                validate_site_config(config.replace("server {", "include /etc/nginx/nginx.conf;\nserver {"), root, 8123)
+            with self.assertRaises(NginxConfigError):
+                validate_site_config(config.replace("listen 8123;", "listen 9999;"), root, 8123)
+            nested_guard = config.replace(
+                "    disable_symlinks on;\n",
+                "",
+            ).replace(
+                "    location / {\n",
+                "    location / {\n        disable_symlinks on;\n",
+            )
+            with self.assertRaises(NginxConfigError):
+                validate_site_config(nested_guard, root, 8123)
+
+            main_config = build_main_config(root, root / "conf.d")
+            self.assertIn(f'{root.as_posix()}/temp/client_body', main_config)
+
+
+if __name__ == "__main__":
+    unittest.main()

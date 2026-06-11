@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head compact">
+  <div>
+    <a class="back-link" href="{{ url_for('deployments.dashboard') }}">&larr; Dashboard</a>
+    <div class="title-status">
+      <h1>{{ site.name }}</h1>
+      <span class="pill {{ site.status }}">{{ site.status }}</span>
+    </div>
+    <p>{{ site.repository_name }} / {{ site.folder }}</p>
+  </div>
+  <div class="button-row">
+    {% if can_manage %}
+    {% if site.status == "running" %}
+      <a class="button primary" href="http://{{ host }}:{{ site.port }}" target="_blank" rel="noopener">Open site &nearr;</a>
+      <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <button class="button ghost" type="submit" data-loading-text="Restarting...">Restart</button>
+      </form>
+      <form method="post" action="{{ url_for('deployments.stop_site', site_id=site.id) }}" data-loading>
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <button class="button ghost" type="submit" data-loading-text="Stopping...">Stop</button>
+      </form>
+    {% else %}
+      <form method="post" action="{{ url_for('deployments.start_site', site_id=site.id) }}" data-loading>
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <button class="button primary" type="submit" data-loading-text="Starting...">Start site</button>
+      </form>
+    {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+<section class="runtime-banner {{ site.status }}">
+  <div>
+    <span class="status-dot {{ site.status }}"></span>
+    <strong>{{ "Site is live" if site.status == "running" else "Site is not serving traffic" if site.status == "stopped" else "Site needs attention" }}</strong>
+  </div>
+  <span>Last updated {{ site.updated_at }}</span>
+</section>
+
+{% if site.last_error %}
+  <div class="flash error">{{ site.last_error }}</div>
+{% endif %}
+
+<div class="detail-grid">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Runtime</p>
+        <h2>Hosting details</h2>
+      </div>
+    </div>
+    <dl class="detail-list">
+      <div>
+        <dt>Address</dt>
+        <dd class="copy-row">
+          <a href="http://{{ host }}:{{ site.port }}" target="_blank">http://{{ host }}:{{ site.port }}</a>
+          <button class="copy-button" type="button" data-copy="http://{{ host }}:{{ site.port }}">Copy</button>
+        </dd>
+      </div>
+      <div><dt>Assigned port</dt><dd><code>{{ site.port }}</code></dd></div>
+      <div><dt>Backend</dt><dd>{{ site.runtime_backend or "Stopped" }}</dd></div>
+      <div><dt>Process ID</dt><dd>{{ site.runtime_pid or "-" }}</dd></div>
+      <div><dt>SPA fallback</dt><dd>{{ "Enabled" if site.spa_fallback else "Disabled" }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Source</p>
+        <h2>Document root</h2>
+      </div>
+    </div>
+    <dl class="detail-list">
+      <div><dt>Repository</dt><dd>{{ site.repository_url }}</dd></div>
+      <div><dt>Folder</dt><dd><code>{{ site.folder }}</code></dd></div>
+      <div><dt>Index page</dt><dd><code>{{ site.index_file }}</code></dd></div>
+      <div class="stacked"><dt>Local path</dt><dd><code>{{ site.document_root }}</code></dd></div>
+    </dl>
+  </section>
+</div>
+
+<section class="panel config-preview">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Web server</p>
+      <h2>Nginx configuration</h2>
+      <p>{{ "Managed Nginx is available." if nginx_available else "Nginx is unavailable, so the built-in static server is active." }}</p>
+    </div>
+    {% if can_manage %}<a class="button ghost" href="{{ url_for('deployments.edit_config', site_id=site.id) }}">Edit config</a>{% endif %}
+  </div>
+  <details>
+    <summary>Preview configuration</summary>
+    <pre><code>{{ site.nginx_config }}</code></pre>
+  </details>
+</section>
+
+{% if can_manage %}
+<section class="danger-zone panel">
+  <div>
+    <h3>Delete deployment</h3>
+    <p>This removes the site record. The shared repository remains available.</p>
+  </div>
+  <form method="post" action="{{ url_for('deployments.delete_site', site_id=site.id) }}" data-confirm="Delete this deployment?" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <button class="button danger" type="submit" data-loading-text="Deleting...">Delete site</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

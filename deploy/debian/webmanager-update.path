@@ -1,0 +1,10 @@
+[Unit]
+Description=Install a super-admin-approved WebManager update
+
+[Path]
+PathChanged=/var/lib/webmanager-updater/requests/install.commit
+Unit=webmanager-update.service
+
+[Install]
+WantedBy=multi-user.target
+

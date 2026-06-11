@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Authorization</p>
+    <h1>Administration</h1>
+    <p>Manage account access, super administrators, groups, and delegated permissions.</p>
+  </div>
+  <span class="head-meta">{{ users|length }} accounts</span>
+</section>
+
+{% if can_manage_users %}
+<section class="section-block admin-section">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Accounts</p>
+      <h2>Users and access</h2>
+      <p>The first Google account is the initial super administrator.</p>
+    </div>
+  </div>
+  <div class="admin-user-grid">
+    {% for user in users %}
+    <form class="panel admin-user-card" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <div class="admin-card-head">
+        <span class="user-avatar">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
+        <div>
+          <h3>{{ user.display_name or user.username }}</h3>
+          <span class="table-sub">{{ user.email or user.username }}</span>
+        </div>
+        {% if user.is_admin %}<span class="pill ready">Admin</span>{% endif %}
+      </div>
+      <div class="admin-switches">
+        <label class="check-row">
+          <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
+          <span><strong>Active account</strong><small>Can sign in with Google.</small></span>
+        </label>
+        {% if super_admin %}
+        <label class="check-row">
+          <input type="checkbox" name="is_admin" {% if user.is_admin %}checked{% endif %}>
+          <span><strong>Super administrator</strong><small>Bypasses every permission check.</small></span>
+        </label>
+        {% endif %}
+      </div>
+      <fieldset class="permission-fieldset">
+        <legend>Group membership</legend>
+        {% if groups %}
+          {% for group in groups %}
+          <label class="compact-check">
+            <input type="checkbox" name="groups" value="{{ group.id }}" {% if group.id in memberships[user.id] %}checked{% endif %}>
+            <span>{{ group.name }}</span>
+          </label>
+          {% endfor %}
+        {% else %}
+          <small>No groups have been created.</small>
+        {% endif %}
+      </fieldset>
+      <div class="admin-card-foot">
+        <small>Joined {{ user.created_at[:10] }}</small>
+        <button class="button primary small" type="submit" data-loading-text="Saving...">Save user</button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if super_admin %}
+<section class="section-block admin-section">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Program updates</p>
+      <h2>Super-admin approval</h2>
+      <p>GitHub checks never install code automatically. Only an exact commit approved here may be installed.</p>
+    </div>
+    <span class="pill {{ 'ready' if update_status.state == 'current' else 'cloning' if update_status.state in ['testing', 'backing_up', 'installing'] else 'error' if update_status.state == 'error' else '' }}">
+      {{ update_status.state|replace('_', ' ') }}
+    </span>
+  </div>
+  <div class="panel program-update-card">
+    <div class="program-update-copy">
+      <strong>{{ update_status.message }}</strong>
+      {% if update_status.checked_at %}<small>Last checked {{ update_status.checked_at }}</small>{% endif %}
+      {% if update_status.installed_commit %}
+        <small>Installed: <code>{{ update_status.installed_commit[:12] }}</code></small>
+      {% endif %}
+      {% if update_status.available_commit %}
+        <small>Available: <code>{{ update_status.available_commit[:12] }}</code></small>
+      {% endif %}
+    </div>
+    {% if update_status.update_available and update_status.state == 'available' %}
+    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will stop briefly while all persistent data is backed up.">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
+      <button class="button primary" type="submit" data-loading-text="Approving...">Approve and install</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if can_manage_groups %}
+<section class="section-block admin-section">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Delegation</p>
+      <h2>Permission groups</h2>
+      <p>Combine permissions into groups, then assign those groups to users above.</p>
+    </div>
+  </div>
+  <div class="admin-group-grid">
+    <form class="panel admin-group-card" method="post" action="{{ url_for('admin.create_group') }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <p class="eyebrow">New group</p>
+      <label>Group name<input name="name" maxlength="60" placeholder="Operations" required></label>
+      <label>Description<textarea name="description" maxlength="300" rows="3" placeholder="What this group is responsible for"></textarea></label>
+      <fieldset class="permission-fieldset">
+        <legend>Permissions</legend>
+        {% for permission in permissions %}
+        <label class="permission-option">
+          <input type="checkbox" name="permissions" value="{{ permission.code }}">
+          <span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span>
+        </label>
+        {% endfor %}
+      </fieldset>
+      <button class="button primary" type="submit" data-loading-text="Creating...">Create group</button>
+    </form>
+
+    {% for group in groups %}
+    <form class="panel admin-group-card" method="post" action="{{ url_for('admin.update_group', group_id=group.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <div class="admin-card-head">
+        <div>
+          <p class="eyebrow">Group</p>
+          <h3>{{ group.name }}</h3>
+        </div>
+        <span class="count-badge">{{ group.member_count }} members</span>
+      </div>
+      <label>Group name<input name="name" maxlength="60" value="{{ group.name }}" required></label>
+      <label>Description<textarea name="description" maxlength="300" rows="3">{{ group.description or "" }}</textarea></label>
+      <fieldset class="permission-fieldset">
+        <legend>Permissions</legend>
+        {% for permission in permissions %}
+        <label class="permission-option">
+          <input type="checkbox" name="permissions" value="{{ permission.code }}" {% if permission.code in group_permissions[group.id] %}checked{% endif %}>
+          <span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span>
+        </label>
+        {% endfor %}
+      </fieldset>
+      <div class="admin-card-foot">
+        <button
+          class="button danger-text small"
+          type="submit"
+          formaction="{{ url_for('admin.delete_group', group_id=group.id) }}"
+          data-confirm-button="Delete this group? Users will lose its permissions."
+        >Delete group</button>
+        <button class="button primary small" type="submit" data-loading-text="Saving...">Save group</button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

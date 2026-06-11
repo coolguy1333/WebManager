@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="auth-layout">
+  <div class="auth-copy">
+    <p class="eyebrow">Static hosting control plane</p>
+    <h1>Turn a Git folder into a live site.</h1>
+    <p>Clone a repository, choose the folder with your index page, and WebManager handles the port, server config, and hosting process.</p>
+    <div class="feature-row">
+      <span>Git-native</span>
+      <span>Google-secured</span>
+      <span>Nginx-ready</span>
+    </div>
+  </div>
+  <div class="panel auth-card">
+    <div>
+      <p class="eyebrow">Secure access</p>
+      <h2>Sign in to WebManager</h2>
+      <p>Use your verified Google account. WebManager never receives or stores your Google password.</p>
+    </div>
+    {% if google_configured %}
+      <a class="google-button" href="{{ url_for('auth.google_login', next=next_url) }}">
+        <span class="google-mark" aria-hidden="true">G</span>
+        <span>Continue with Google</span>
+      </a>
+      <p class="form-foot">Authentication is handled by Google OpenID Connect.</p>
+    {% else %}
+      <div class="sso-notice">
+        <strong>Google sign-in needs configuration</strong>
+        <p>Add the Google client ID, client secret, and callback URL to <code>/etc/webmanager/webmanager.env</code>, then restart WebManager.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

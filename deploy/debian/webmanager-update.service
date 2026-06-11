@@ -1,0 +1,36 @@
+[Unit]
+Description=Check GitHub and install only super-admin-approved WebManager updates
+Documentation=file:/opt/webmanager/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/webmanager/updater.env
+ExecStart=/usr/local/sbin/webmanager-update
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt/webmanager
+ReadWritePaths=/var/lib/webmanager
+ReadWritePaths=/var/lib/webmanager-updater
+ReadWritePaths=/etc/webmanager
+ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/etc/nginx/sites-available/webmanager
+ReadWritePaths=/etc/nginx/sites-enabled/webmanager
+ReadWritePaths=/usr/local/sbin/webmanager-update
