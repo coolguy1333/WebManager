@@ -984,6 +984,15 @@ class WebManagerTestCase(unittest.TestCase):
 
 
 class ServiceUnitTests(unittest.TestCase):
+    def test_runtime_requirements_include_authlib_requests_integration(self):
+        root = Path(__file__).resolve().parent.parent
+        requirements = (root / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(requirements, r"(?m)^Authlib[<>=]")
+        self.assertRegex(requirements, r"(?m)^requests[<>=]")
+
     def test_debian_self_updater_has_required_safety_controls(self):
         root = Path(__file__).resolve().parent.parent
         updater = (root / "deploy" / "debian" / "update.sh").read_text(
@@ -1026,6 +1035,15 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("WEBMANAGER_GOOGLE_CLIENT_SECRET", setup)
         self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
         self.assertNotIn("Configure Google sign-in now?", setup)
+
+        google_setup = (root / "configure-google.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            r"^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$",
+            google_setup,
+        )
+        self.assertIn("Client secret is required. Try again.", google_setup)
 
     def test_legacy_user_schema_migrates_without_losing_users(self):
         with tempfile.TemporaryDirectory() as directory:

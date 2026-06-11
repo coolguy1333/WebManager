@@ -151,18 +151,26 @@ echo "Google Cloud credentials: https://console.cloud.google.com/apis/credential
 echo
 read -r -p "Press Enter after the OAuth client is created..."
 
-read -r -p "Google client ID: " CLIENT_ID
-if [[ ! $CLIENT_ID =~ \.apps\.googleusercontent\.com$ ]]; then
-    echo "That does not look like a Google OAuth web client ID." >&2
-    exit 1
-fi
+while true; do
+    read -r -p "Google client ID: " CLIENT_ID
+    CLIENT_ID=${CLIENT_ID//$'\r'/}
+    CLIENT_ID="${CLIENT_ID#"${CLIENT_ID%%[![:space:]]*}"}"
+    CLIENT_ID="${CLIENT_ID%"${CLIENT_ID##*[![:space:]]}"}"
+    if [[ $CLIENT_ID =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]; then
+        break
+    fi
+    echo "Enter the complete client ID ending in .apps.googleusercontent.com." >&2
+done
 
-read -r -s -p "Google client secret: " CLIENT_SECRET
-echo
-if [[ -z $CLIENT_SECRET ]]; then
-    echo "Client secret is required." >&2
-    exit 1
-fi
+while true; do
+    read -r -s -p "Google client secret: " CLIENT_SECRET
+    echo
+    CLIENT_SECRET=${CLIENT_SECRET//$'\r'/}
+    if [[ -n $CLIENT_SECRET ]]; then
+        break
+    fi
+    echo "Client secret is required. Try again." >&2
+done
 
 echo
 read -r -p "Allowed Google Workspace domains (comma-separated, blank for any): " ALLOWED_DOMAINS
