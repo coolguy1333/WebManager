@@ -33,11 +33,16 @@ This directory contains:
 | `webmanager-update.timer` | Periodic check-only GitHub polling |
 | `webmanager-update.path` | Starts installation after super-admin approval |
 | `update.sh` | Check, verify approval, back up data, test, install, and roll back |
+| `webmanager-logrotate` | Rotates managed Nginx analytics logs |
 | `webmanager.env` | Default production environment |
 | `nginx-dashboard.conf` | Dashboard reverse-proxy configuration |
 
 Setup also generates `/etc/nginx/sites-available/webmanager-sites` for wildcard
 deployment subdomains. Configure wildcard DNS and wildcard HTTPS coverage for
 the dashboard domain before publishing sites.
+
+For Cloudflare Tunnel, route both the dashboard hostname and a wildcard public
+hostname such as `*.webmanager.example.com` to `http://localhost:8080`.
+WebManager routes the shared tunnel traffic by hostname.
 
 Read the root `README.md` before exposing the service to the Internet. It includes firewall, HTTPS, private repository, backup, upgrade, and troubleshooting instructions.

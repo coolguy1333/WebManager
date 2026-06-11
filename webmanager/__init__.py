@@ -141,7 +141,12 @@ def create_app(test_config=None):
 
     @app.errorhandler(404)
     def not_found(_error):
-        return render_template("error.html", title="Not found", message="That page does not exist."), 404
+        return render_template(
+            "error.html",
+            title="Page not found",
+            message="The page may have moved, or you may not have access to it.",
+            error_code=404,
+        ), 404
 
     @app.errorhandler(400)
     def bad_request(error):
@@ -149,6 +154,7 @@ def create_app(test_config=None):
             "error.html",
             title="Invalid request",
             message=getattr(error, "description", "The request could not be processed."),
+            error_code=400,
         ), 400
 
     @app.errorhandler(403)
@@ -157,6 +163,7 @@ def create_app(test_config=None):
             "error.html",
             title="Access denied",
             message="You do not have permission to open that page.",
+            error_code=403,
         ), 403
 
     @app.errorhandler(413)
@@ -165,6 +172,7 @@ def create_app(test_config=None):
             "error.html",
             title="Request too large",
             message="The submitted request was larger than the allowed limit.",
+            error_code=413,
         ), 413
 
     @app.get("/healthz")

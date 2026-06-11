@@ -1,10 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel empty-state large">
-  <div class="empty-icon">!</div>
+<section class="panel error-page">
+  <div class="error-code">{{ error_code or "!" }}</div>
+  <p class="eyebrow">WebManager</p>
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
-  <a class="button primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">Go back</a>
+  <div class="button-row">
+    <a class="button primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
+      {{ "Return to dashboard" if g.user else "Return to sign in" }}
+    </a>
+    {% if g.user %}<button class="button ghost" type="button" data-history-back>Go back</button>{% endif %}
+  </div>
 </section>
 {% endblock %}
-

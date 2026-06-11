@@ -55,8 +55,8 @@ Then:
 
 1. Sign in with Google.
 2. Paste a Git repository URL.
-3. Choose the folder containing `index.html`.
-4. Click **Deploy site**.
+3. Select one or more folders containing an index page.
+4. Click **Deploy selected sites**.
 
 WebManager starts automatically now and after every reboot.
 
@@ -134,6 +134,10 @@ Everything below is optional reference material for custom networking, private r
 - Generated Nginx server configurations
 - Browser-based Nginx configuration editor
 - Static single-page application fallback
+- Multi-site deployment from one repository inspection
+- Editable site name, hostname slug, source folder, port, and fallback settings
+- Per-site traffic analytics from structured Nginx logs
+- Proxmox-style pools with user and group ACLs
 - Immediate start, stop, restart, update, and delete controls
 - Validated site updates with owner approval or automatic application
 - Per-repository Git update-check intervals
@@ -197,6 +201,17 @@ proxy/CDN, or at system Nginx after a wildcard certificate is installed.
 Dashboard HTTPS does not automatically cover deployed site names. The setup
 helper asks separately whether wildcard TLS covers
 `*.webmanager.example.com`; until it does, generated Open links use HTTP.
+
+Cloudflare Tunnel can carry the dashboard and every hosted site through one
+local service. Route both the dashboard hostname and the wildcard hostname to
+the same tunnel service:
+
+```text
+webmanager.example.com   -> http://localhost:8080
+*.webmanager.example.com -> http://localhost:8080
+```
+
+Nginx routes requests on port `8080` by their original hostname.
 
 The internal site ports should not be opened in UFW or a cloud firewall.
 
@@ -1392,18 +1407,17 @@ sudo systemctl restart webmanager
 
 ## Uninstall
 
-Run uninstall commands from the WebManager source folder.
+Run the installed command from anywhere:
 
 ### Remove the application but keep data
 
 ```bash
-bash uninstall.sh
+sudo webmanager-uninstall
 ```
 
 This removes:
 
 - `/opt/webmanager`
-- `/etc/webmanager`
 - The systemd service
 - The dashboard Nginx configuration
 
@@ -1411,6 +1425,7 @@ It preserves:
 
 ```text
 /var/lib/webmanager
+/etc/webmanager
 ```
 
 ### Remove everything
@@ -1418,7 +1433,7 @@ It preserves:
 Warning: this permanently removes users, repositories, configurations, logs, and the database.
 
 ```bash
-bash uninstall.sh --purge
+sudo webmanager-uninstall --purge
 ```
 
 Create and verify a backup first.

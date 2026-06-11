@@ -9,6 +9,11 @@
   <span class="head-meta">{{ users|length }} accounts</span>
 </section>
 
+<nav class="page-tabs" aria-label="Administration sections">
+  <a class="active" href="{{ url_for('admin.dashboard') }}">Users &amp; groups</a>
+  {% if can_manage_access %}<a href="{{ url_for('admin.access_dashboard') }}">Pools &amp; ACLs</a>{% endif %}
+</nav>
+
 {% if can_manage_access %}
 <section class="panel access-callout">
   <div>

@@ -41,7 +41,15 @@ def build_site_config(
     hostname: str | None = None,
     gateway_port: int | None = None,
 ) -> str:
-    fallback = f"/{index_file}" if spa_fallback else "=404"
+    fallback = f"/{index_file}" if spa_fallback else "@webmanager_not_found"
+    not_found_location = ""
+    if not spa_fallback:
+        not_found_location = """
+    location @webmanager_not_found {
+        default_type text/html;
+        return 404 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>404 Not Found</title><style>body{margin:0;background:#0d1117;color:#f0f6fc;font:16px system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:560px;padding:32px;text-align:center}h1{font-size:72px;margin:0;color:#58a6ff}p{color:#8b949e}a{color:#58a6ff}</style><main><h1>404</h1><h2>Page not found</h2><p>The requested file does not exist on this site.</p><a href="/">Return to the home page</a></main></html>';
+    }
+"""
     if hostname and gateway_port:
         listeners = (
             f"    listen 127.0.0.1:{port};\n"
@@ -69,6 +77,7 @@ server {{
     location ~ /\\. {{
         deny all;
     }}
+{not_found_location}
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
@@ -102,6 +111,12 @@ events {{
 }}
 
 http {{
+    log_format webmanager escape=json
+        '{{"time":"$time_iso8601","host":"$host","status":$status,'
+        '"bytes":$body_bytes_sent,"request_time":$request_time,'
+        '"client":"$http_x_forwarded_for","method":"$request_method",'
+        '"uri":"$request_uri","referer":"$http_referer",'
+        '"agent":"$http_user_agent"}}';
     default_type application/octet-stream;
     types {{
         text/html html htm;
@@ -119,7 +134,7 @@ http {{
         font/woff woff;
         font/woff2 woff2;
     }}
-    access_log "{prefix_path}/access.log";
+    access_log "{prefix_path}/access.log" webmanager;
     client_body_temp_path "{prefix_path}/temp/client_body";
     proxy_temp_path "{prefix_path}/temp/proxy";
     fastcgi_temp_path "{prefix_path}/temp/fastcgi";

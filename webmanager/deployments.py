@@ -16,6 +16,7 @@ from .access_control import (
     has_permission,
     site_access_levels,
 )
+from .analytics import site_analytics
 from .db import get_db
 from .git_service import (
     GitError,
@@ -34,7 +35,7 @@ from .repository_refresh import (
     next_refresh_time,
 )
 from .security import login_required, validate_csrf
-from .services import RuntimeErrorDetail, allocate_port
+from .services import RuntimeErrorDetail, allocate_port, port_is_available
 
 
 bp = Blueprint("deployments", __name__)
@@ -43,6 +44,20 @@ SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 def slugify(value: str) -> str:
     return SLUG_RE.sub("-", value.lower()).strip("-")[:48] or "site"
+
+
+def unique_slug(database, value: str, exclude_site_id: int | None = None) -> str:
+    base = slugify(value)
+    slug = base
+    suffix = 2
+    while database.execute(
+        "SELECT 1 FROM sites WHERE slug = ? AND id != ?",
+        (slug, exclude_site_id or -1),
+    ).fetchone():
+        suffix_text = f"-{suffix}"
+        slug = f"{base[:48 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    return slug
 
 
 def request_hostname() -> str:
@@ -241,6 +256,12 @@ def select_folder(repository_id):
     repository = owned_repository(repository_id, manage=True)
     candidates = find_index_folders(Path(repository["local_path"]))
     suggested_name = repository["name"].replace("_", " ").replace("-", " ").title()
+    for candidate in candidates:
+        candidate["suggested_name"] = (
+            suggested_name
+            if candidate["folder"] == "."
+            else Path(candidate["folder"]).name.replace("_", " ").replace("-", " ").title()
+        )
     return render_template(
         "select_folder.html",
         title="Select site folder",
@@ -250,6 +271,7 @@ def select_folder(repository_id):
         port_min=current_app.config["SITE_PORT_MIN"],
         port_max=current_app.config["SITE_PORT_MAX"],
         site_base_domain=current_app.config["SITE_BASE_DOMAIN"],
+        site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
     )
 
 
@@ -365,92 +387,127 @@ def deploy_repository(repository_id):
     repository = owned_repository(repository_id, manage=True)
     owner_id = repository["user_id"]
     database = get_db()
-    name = request.form.get("site_name", "").strip()
-    folder = request.form.get("folder", "")
-    spa_fallback = request.form.get("spa_fallback") == "on"
-    raw_port = request.form.get("port", "").strip()
-
-    if not name or len(name) > 80:
-        flash("Site name is required and must be 80 characters or fewer.", "error")
-        return redirect(url_for("deployments.select_folder", repository_id=repository_id))
-
-    try:
-        selected = resolve_folder(Path(repository["local_path"]), folder)
-        index_files = {path.name.lower(): path.name for path in selected.iterdir() if path.is_file()}
-        index_file = index_files.get("index.html") or index_files.get("index.htm")
-        if not index_file:
-            raise GitError("The selected folder does not contain an index page.")
-        requested_port = int(raw_port) if raw_port else None
-        port = allocate_port(
-            database,
-            current_app.config["SITE_PORT_MIN"],
-            current_app.config["SITE_PORT_MAX"],
-            requested_port,
+    deployments = []
+    selected_indexes = list(
+        dict.fromkeys(
+            value for value in request.form.getlist("selected") if value.isdigit()
         )
-    except (GitError, RuntimeErrorDetail, ValueError) as exc:
-        message = str(exc) if str(exc) else "Port must be a number."
-        flash(message, "error")
+    )
+    if request.form.get("multi_deploy") == "1" and not selected_indexes:
+        flash("Select at least one site folder to deploy.", "error")
+        return redirect(url_for("deployments.select_folder", repository_id=repository_id))
+    if selected_indexes:
+        for index in selected_indexes:
+            deployments.append(
+                {
+                    "name": request.form.get(f"site_name_{index}", "").strip(),
+                    "folder": request.form.get(f"folder_{index}", ""),
+                    "spa_fallback": request.form.get(f"spa_fallback_{index}") == "on",
+                    "port": "",
+                }
+            )
+    else:
+        deployments.append(
+            {
+                "name": request.form.get("site_name", "").strip(),
+                "folder": request.form.get("folder", ""),
+                "spa_fallback": request.form.get("spa_fallback") == "on",
+                "port": request.form.get("port", "").strip(),
+            }
+        )
+
+    if not deployments or any(
+        not item["name"] or len(item["name"]) > 80 for item in deployments
+    ):
+        flash("Every selected site needs a name of 80 characters or fewer.", "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
 
-    base_slug = slugify(name)
-    slug = base_slug
-    suffix = 2
-    while database.execute(
-        "SELECT 1 FROM sites WHERE slug = ?",
-        (slug,),
-    ).fetchone():
-        slug = f"{base_slug[:43]}-{suffix}"
-        suffix += 1
-
-    hostname = (
-        f"{slug}.{current_app.config['SITE_BASE_DOMAIN']}"
-        if current_app.config["SITE_BASE_DOMAIN"]
-        else None
-    )
-    config = build_site_config(
-        name,
-        selected,
-        index_file,
-        port,
-        spa_fallback,
-        hostname,
-        current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
-    )
-    try:
-        cursor = database.execute(
-            """
-            INSERT INTO sites (
-                user_id, repository_id, name, slug, folder, document_root,
-                index_file, port, spa_fallback, nginx_config, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped')
-            """,
-            (
-                owner_id,
-                repository_id,
-                name,
-                slug,
-                folder,
-                str(selected),
+    created = []
+    for item in deployments:
+        try:
+            selected = resolve_folder(
+                Path(repository["local_path"]),
+                item["folder"],
+            )
+            index_files = {
+                path.name.lower(): path.name
+                for path in selected.iterdir()
+                if path.is_file()
+            }
+            index_file = index_files.get("index.html") or index_files.get("index.htm")
+            if not index_file:
+                raise GitError(
+                    f"{item['folder']} no longer contains an index page."
+                )
+            requested_port = int(item["port"]) if item["port"] else None
+            port = allocate_port(
+                database,
+                current_app.config["SITE_PORT_MIN"],
+                current_app.config["SITE_PORT_MAX"],
+                requested_port,
+            )
+            slug = unique_slug(database, item["name"])
+            hostname = (
+                f"{slug}.{current_app.config['SITE_BASE_DOMAIN']}"
+                if current_app.config["SITE_BASE_DOMAIN"]
+                else None
+            )
+            config = build_site_config(
+                item["name"],
+                selected,
                 index_file,
                 port,
-                int(spa_fallback),
-                config,
-            ),
-        )
-        database.commit()
-    except sqlite3.IntegrityError:
-        flash("That port or site name was allocated by another request. Please try again.", "error")
-        return redirect(url_for("deployments.select_folder", repository_id=repository_id))
+                item["spa_fallback"],
+                hostname,
+                current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+            )
+            cursor = database.execute(
+                """
+                INSERT INTO sites (
+                    user_id, repository_id, name, slug, folder, document_root,
+                    index_file, port, spa_fallback, nginx_config, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped')
+                """,
+                (
+                    owner_id,
+                    repository_id,
+                    item["name"],
+                    slug,
+                    item["folder"],
+                    str(selected),
+                    index_file,
+                    port,
+                    int(item["spa_fallback"]),
+                    config,
+                ),
+            )
+            database.commit()
+        except (GitError, RuntimeErrorDetail, ValueError, sqlite3.IntegrityError) as exc:
+            database.rollback()
+            flash(f"Could not deploy {item['name']}: {exc}", "error")
+            continue
 
-    site_id = cursor.lastrowid
-    try:
-        backend = current_app.extensions["runtime_manager"].start_site(site_id)
-    except RuntimeErrorDetail as exc:
-        flash(f"Site created, but hosting failed: {exc}", "warning")
-    else:
-        label = "Nginx" if backend == "nginx" else "the built-in static server"
-        flash(f"Site deployed at {site_public_url({'slug': slug, 'port': port})} using {label}.", "success")
-    return redirect(url_for("deployments.site_detail", site_id=site_id))
+        site_id = cursor.lastrowid
+        created.append({"id": site_id, "slug": slug, "port": port, "name": item["name"]})
+        try:
+            current_app.extensions["runtime_manager"].start_site(site_id)
+        except RuntimeErrorDetail as exc:
+            flash(f"{item['name']} was created, but hosting failed: {exc}", "warning")
+
+    if not created:
+        return redirect(url_for("deployments.select_folder", repository_id=repository_id))
+    if len(created) == 1:
+        deployed = created[0]
+        flash(
+            f"Site deployed at {site_public_url(deployed)}.",
+            "success",
+        )
+        return redirect(url_for("deployments.site_detail", site_id=deployed["id"]))
+    flash(
+        f"Deployed {len(created)} sites from {repository['name']}.",
+        "success",
+    )
+    return redirect(url_for("deployments.dashboard"))
 
 
 @bp.get("/sites/<int:site_id>")
@@ -458,6 +515,11 @@ def deploy_repository(repository_id):
 def site_detail(site_id):
     site = owned_site(site_id)
     database = get_db()
+    hostname = (
+        f"{site['slug']}.{current_app.config['SITE_BASE_DOMAIN']}"
+        if current_app.config["SITE_BASE_DOMAIN"]
+        else request_hostname()
+    )
     return render_template(
         "site_detail.html",
         title=site["name"],
@@ -467,6 +529,127 @@ def site_detail(site_id):
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
         can_manage=can_manage_site(site, database),
         can_manage_repository=can_manage_resource(site["user_id"]),
+        analytics=site_analytics(
+            Path(current_app.config["NGINX_ROOT"]) / "access.log",
+            hostname,
+        ),
+    )
+
+
+@bp.route("/sites/<int:site_id>/settings", methods=("GET", "POST"))
+@login_required
+def site_settings(site_id):
+    site = owned_site(site_id, manage=True)
+    database = get_db()
+    repository = database.execute(
+        "SELECT * FROM repositories WHERE id = ?",
+        (site["repository_id"],),
+    ).fetchone()
+    candidates = find_index_folders(Path(repository["local_path"]))
+    if request.method == "POST":
+        validate_csrf()
+        name = request.form.get("name", "").strip()
+        slug = slugify(request.form.get("slug", "").strip() or name)
+        folder = request.form.get("folder", "")
+        spa_fallback = request.form.get("spa_fallback") == "on"
+        try:
+            port = int(request.form.get("port", ""))
+        except ValueError:
+            port = -1
+
+        if not name or len(name) > 80:
+            flash("Site name is required and must be 80 characters or fewer.", "error")
+        elif port < current_app.config["SITE_PORT_MIN"] or port > current_app.config["SITE_PORT_MAX"]:
+            flash(
+                f"Port must be between {current_app.config['SITE_PORT_MIN']} "
+                f"and {current_app.config['SITE_PORT_MAX']}.",
+                "error",
+            )
+        elif port != site["port"] and (
+            database.execute(
+                "SELECT 1 FROM sites WHERE port = ? AND id != ?",
+                (port, site_id),
+            ).fetchone()
+            or not port_is_available(port)
+        ):
+            flash(f"Port {port} is already in use.", "error")
+        else:
+            try:
+                selected = resolve_folder(Path(repository["local_path"]), folder)
+                index_files = {
+                    path.name.lower(): path.name
+                    for path in selected.iterdir()
+                    if path.is_file()
+                }
+                index_file = index_files.get("index.html") or index_files.get("index.htm")
+                if not index_file:
+                    raise GitError("The selected folder does not contain an index page.")
+                slug = unique_slug(database, slug, exclude_site_id=site_id)
+                hostname = (
+                    f"{slug}.{current_app.config['SITE_BASE_DOMAIN']}"
+                    if current_app.config["SITE_BASE_DOMAIN"]
+                    else None
+                )
+                config = build_site_config(
+                    name,
+                    selected,
+                    index_file,
+                    port,
+                    spa_fallback,
+                    hostname,
+                    current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+                )
+                database.execute(
+                    """
+                    UPDATE sites
+                    SET name = ?, slug = ?, folder = ?, document_root = ?,
+                        index_file = ?, port = ?, spa_fallback = ?,
+                        nginx_config = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        name,
+                        slug,
+                        folder,
+                        str(selected),
+                        index_file,
+                        port,
+                        int(spa_fallback),
+                        config,
+                        site_id,
+                    ),
+                )
+                database.commit()
+            except (GitError, sqlite3.IntegrityError) as exc:
+                database.rollback()
+                flash(f"Could not save site settings: {exc}", "error")
+            else:
+                runtime = current_app.extensions["runtime_manager"]
+                if site["status"] == "running":
+                    try:
+                        runtime.restart_site(site_id)
+                    except RuntimeErrorDetail as exc:
+                        flash(f"Settings saved, but restart failed: {exc}", "warning")
+                    else:
+                        flash("Site settings saved and the site restarted.", "success")
+                else:
+                    try:
+                        runtime.sync_nginx_configs()
+                    except RuntimeErrorDetail as exc:
+                        flash(f"Settings saved, but Nginx sync failed: {exc}", "warning")
+                    else:
+                        flash("Site settings saved.", "success")
+                return redirect(url_for("deployments.site_detail", site_id=site_id))
+        site = owned_site(site_id, manage=True)
+
+    return render_template(
+        "site_settings.html",
+        title=f"Settings for {site['name']}",
+        site=site,
+        candidates=candidates,
+        port_min=current_app.config["SITE_PORT_MIN"],
+        port_max=current_app.config["SITE_PORT_MAX"],
+        site_base_domain=current_app.config["SITE_BASE_DOMAIN"],
     )
 
 

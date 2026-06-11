@@ -12,6 +12,8 @@ BACKUP_ROOT=$STATE_DIR/backups
 LOCK_FILE=/run/lock/webmanager-update.lock
 SERVICE_FILE=/etc/systemd/system/webmanager.service
 ENV_FILE=/etc/webmanager/updater.env
+NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager
+SITE_NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager-sites
 
 if [[ $EUID -ne 0 ]]; then
     echo "Run the WebManager updater as root or through systemd." >&2
@@ -172,6 +174,8 @@ for required in \
     webmanager \
     tests \
     deploy/debian/install.sh \
+    deploy/debian/uninstall.sh \
+    deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
     deploy/debian/webmanager-update.timer \
@@ -203,13 +207,24 @@ cp -a "$CONFIG_DIR" "$BACKUP_DIR/config"
 if [[ -f $SERVICE_FILE ]]; then
     cp -a "$SERVICE_FILE" "$BACKUP_DIR/webmanager.service"
 fi
+for nginx_file in "$NGINX_AVAILABLE" "$SITE_NGINX_AVAILABLE"; do
+    if [[ -f $nginx_file ]]; then
+        cp -a "$nginx_file" "$BACKUP_DIR/$(basename "$nginx_file").nginx"
+    fi
+done
 for updater_file in \
     /usr/local/sbin/webmanager-update \
+    /usr/local/sbin/webmanager-uninstall \
+    /etc/logrotate.d/webmanager \
     /etc/systemd/system/webmanager-update.service \
     /etc/systemd/system/webmanager-update.timer \
     /etc/systemd/system/webmanager-update.path; do
     if [[ -f $updater_file ]]; then
-        cp -a "$updater_file" "$BACKUP_DIR/$(basename "$updater_file")"
+        backup_name=$(basename "$updater_file")
+        if [[ $updater_file == /etc/logrotate.d/webmanager ]]; then
+            backup_name=webmanager-logrotate
+        fi
+        cp -a "$updater_file" "$BACKUP_DIR/$backup_name"
     fi
 done
 
@@ -234,11 +249,23 @@ rollback() {
     if [[ -f "$BACKUP_DIR/webmanager.service" ]]; then
         cp -a "$BACKUP_DIR/webmanager.service" "$SERVICE_FILE"
     fi
-    for name in webmanager-update webmanager-update.service webmanager-update.timer webmanager-update.path; do
+    if [[ -f "$BACKUP_DIR/webmanager.nginx" ]]; then
+        cp -a "$BACKUP_DIR/webmanager.nginx" "$NGINX_AVAILABLE" || true
+    fi
+    if [[ -f "$BACKUP_DIR/webmanager-sites.nginx" ]]; then
+        cp -a "$BACKUP_DIR/webmanager-sites.nginx" "$SITE_NGINX_AVAILABLE" || true
+    fi
+    for name in webmanager-update webmanager-uninstall webmanager-logrotate webmanager-update.service webmanager-update.timer webmanager-update.path; do
         if [[ -f "$BACKUP_DIR/$name" ]]; then
             case "$name" in
                 webmanager-update)
                     cp -a "$BACKUP_DIR/$name" /usr/local/sbin/webmanager-update
+                    ;;
+                webmanager-uninstall)
+                    cp -a "$BACKUP_DIR/$name" /usr/local/sbin/webmanager-uninstall
+                    ;;
+                webmanager-logrotate)
+                    cp -a "$BACKUP_DIR/$name" /etc/logrotate.d/webmanager
                     ;;
                 *)
                     cp -a "$BACKUP_DIR/$name" "/etc/systemd/system/$name"
@@ -247,6 +274,9 @@ rollback() {
         fi
     done
     systemctl daemon-reload
+    if command -v nginx >/dev/null 2>&1 && nginx -t; then
+        systemctl reload nginx 2>/dev/null || true
+    fi
     systemctl restart webmanager
     rm -f "$REQUEST_FILE"
     write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message"

@@ -99,7 +99,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 60s;
     }
@@ -148,7 +148,8 @@ if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST !=
     echo
     echo "The dashboard certificate does not automatically cover deployed site subdomains."
     echo "HTTPS site links require wildcard TLS coverage for *.$PUBLIC_HOST."
-    read -r -p "Are *.$PUBLIC_HOST site addresses already covered by HTTPS? [y/N]: " SITE_TLS_ANSWER
+    echo "Answer yes when Cloudflare Tunnel routes *.$PUBLIC_HOST to local port 8080."
+    read -r -p "Are *.$PUBLIC_HOST site addresses covered by HTTPS or Cloudflare Tunnel? [y/N]: " SITE_TLS_ANSWER
     case $SITE_TLS_ANSWER in
         [Yy] | [Yy][Ee][Ss])
             SITE_PUBLIC_SCHEME=https
@@ -240,18 +241,30 @@ set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"
 SITE_GATEWAY_PORT=$(sed -n 's/^WEBMANAGER_SITE_GATEWAY_PORT=//p' "$ENV_FILE" | tail -n 1)
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
 cat >"$SITE_NGINX_FILE" <<EOF
+map \$http_cf_connecting_ip \$webmanager_site_client_ip {
+    default \$http_cf_connecting_ip;
+    "" \$remote_addr;
+}
+
+map \$http_x_forwarded_proto \$webmanager_site_proto {
+    default \$http_x_forwarded_proto;
+    "" \$scheme;
+}
+
 server {
     listen 80;
     listen [::]:80;
+    listen 8080;
+    listen [::]:8080;
     server_name *.$PUBLIC_HOST;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Real-IP \$webmanager_site_client_ip;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
     }
 
     add_header X-Content-Type-Options "nosniff" always;

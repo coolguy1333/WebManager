@@ -17,6 +17,18 @@
   <span class="head-meta">{{ pools|length }} pools</span>
 </section>
 
+<nav class="page-tabs" aria-label="Administration sections">
+  <a href="{{ url_for('admin.dashboard') }}">Users &amp; groups</a>
+  <a class="active" href="{{ url_for('admin.access_dashboard') }}">Pools &amp; ACLs</a>
+</nav>
+
+<section class="summary-grid">
+  <div class="summary-card"><span>Pools</span><strong>{{ pools|length }}</strong></div>
+  <div class="summary-card"><span>Sites</span><strong>{{ sites|length }}</strong></div>
+  <div class="summary-card"><span>Users</span><strong>{{ users|length }}</strong></div>
+  <div class="summary-card"><span>Groups</span><strong>{{ groups|length }}</strong></div>
+</section>
+
 <section class="panel access-guide">
   <strong>How access is calculated</strong>
   <p>Site ownership, super-admin, and global resource permissions still apply. Pool and direct-site roles are combined, and the strongest role wins.</p>
@@ -29,6 +41,7 @@
       <h2>Resource pools</h2>
       <p>A site can belong to one pool. Moving it into another pool updates its inherited access.</p>
     </div>
+    <input class="filter-input" type="search" placeholder="Filter pools or sites" data-filter-input="pools" aria-label="Filter pools">
   </div>
   <div class="admin-group-grid">
     <form class="panel admin-group-card" method="post" action="{{ url_for('admin.create_pool') }}" data-loading>
@@ -40,7 +53,7 @@
     </form>
 
     {% for pool in pools %}
-    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_pool', pool_id=pool.id) }}" data-loading>
+    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_pool', pool_id=pool.id) }}" data-loading data-filter-item="pools" data-filter-text="{{ pool.name }} {{ pool.description or '' }}">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       <div class="admin-card-head">
         <div>
@@ -97,10 +110,11 @@
       <h2>Direct site access</h2>
       <p>Use direct grants when someone needs access to one site without access to its entire pool.</p>
     </div>
+    <input class="filter-input" type="search" placeholder="Filter sites" data-filter-input="sites" aria-label="Filter sites">
   </div>
   <div class="admin-group-grid">
     {% for site in sites %}
-    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading>
+    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading data-filter-item="sites" data-filter-text="{{ site.name }} {{ site.slug }} {{ site.pool_name or '' }}">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       <div class="admin-card-head">
         <div>
@@ -109,7 +123,9 @@
           <span class="table-sub">{{ site.slug }}{% if site.pool_name %} / {{ site.pool_name }}{% endif %}</span>
         </div>
       </div>
-      <div class="acl-grid">
+      <details class="acl-editor" open>
+        <summary>Direct user and group roles</summary>
+        <div class="acl-grid">
         {% for user in users %}
         <label>
           <span>{{ user.display_name or user.email or user.username }} <small>User</small></span>
@@ -122,7 +138,8 @@
           {{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}
         </label>
         {% endfor %}
-      </div>
+        </div>
+      </details>
       <div class="admin-card-foot">
         <small>Owner: {{ site.owner_name or site.owner_email }}</small>
         <button class="button primary small" type="submit" data-loading-text="Saving...">Save direct access</button>

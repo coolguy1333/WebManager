@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head compact">
+  <div>
+    <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">&larr; {{ site.name }}</a>
+    <p class="eyebrow">Deployment configuration</p>
+    <h1>Site settings</h1>
+    <p>Change the public name, source folder, port, and fallback behavior after deployment.</p>
+  </div>
+</section>
+
+<form class="panel settings-form" method="post" data-loading>
+  <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+  <div class="settings-grid">
+    <label>
+      Site name
+      <input name="name" maxlength="80" value="{{ site.name }}" required>
+    </label>
+    <label>
+      URL slug
+      <input name="slug" maxlength="48" value="{{ site.slug }}" required>
+      <small>{% if site_base_domain %}{{ site_public_scheme }}://<strong>{{ site.slug }}</strong>.{{ site_base_domain }}{% else %}Used in the site identity and Nginx filename.{% endif %}</small>
+    </label>
+    <label>
+      Repository folder
+      <select name="folder" required>
+        {% for candidate in candidates %}
+        <option value="{{ candidate.folder }}" {% if candidate.folder == site.folder %}selected{% endif %}>
+          {{ "Repository root" if candidate.folder == "." else candidate.folder }} / {{ candidate.index_file }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Internal port
+      <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" value="{{ site.port }}" required>
+    </label>
+  </div>
+  <label class="check-row">
+    <input type="checkbox" name="spa_fallback" {% if site.spa_fallback %}checked{% endif %}>
+    <span><strong>Single-page app fallback</strong><small>Serve the index page for routes that do not match a file.</small></span>
+  </label>
+  <div class="flash warning">
+    Changing these settings rebuilds the managed Nginx configuration. Any manual Nginx edits for this site will be replaced.
+  </div>
+  <div class="editor-actions">
+    <a class="button ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
+    <button class="button primary" type="submit" data-loading-text="Saving...">Save and apply</button>
+  </div>
+</form>
+{% endblock %}

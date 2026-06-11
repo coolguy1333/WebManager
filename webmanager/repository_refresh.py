@@ -284,13 +284,14 @@ class RepositoryRefreshManager:
         if not repository["pending_path"] or not repository["pending_commit"]:
             return RefreshResult("missing", "No pending update is available.")
 
+        affected_sites = self._sites(database, repository_id)
         pending = Path(repository["pending_path"])
         target = Path(repository["local_path"])
         expected_pending = target.parent / f".{target.name}.pending"
         try:
             if pending.resolve() != expected_pending.resolve():
                 raise GitError("The staged repository path is invalid.")
-            self._validate_sites(self._sites(database, repository_id), pending)
+            self._validate_sites(affected_sites, pending)
             commit = repository_commit(pending)
             if commit != repository["pending_commit"]:
                 raise GitError("The staged repository revision changed unexpectedly.")
@@ -323,13 +324,36 @@ class RepositoryRefreshManager:
             (commit, repository_id),
         )
         database.commit()
-        return RefreshResult("applied", "Validated update applied to all affected sites.")
+        restart_failures = []
+        runtime = self.app.extensions.get("runtime_manager")
+        if runtime:
+            for site in affected_sites:
+                if site["status"] != "running":
+                    continue
+                try:
+                    runtime.restart_site(site["id"])
+                except Exception as exc:
+                    restart_failures.append(f"{site['name']}: {exc}")
+                    self.app.logger.exception(
+                        "Could not restart site %s after repository update.",
+                        site["id"],
+                    )
+        if restart_failures:
+            return RefreshResult(
+                "applied",
+                "Update applied, but some sites could not restart: "
+                + "; ".join(restart_failures),
+            )
+        return RefreshResult(
+            "applied",
+            "Validated update applied and running sites were reloaded.",
+        )
 
     @staticmethod
     def _sites(database, repository_id):
         return database.execute(
             """
-            SELECT name, folder, index_file
+            SELECT id, name, folder, index_file, status
             FROM sites
             WHERE repository_id = ?
             """,

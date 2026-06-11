@@ -38,6 +38,10 @@ document.querySelectorAll(".flash-close").forEach((button) => {
   });
 });
 
+document.querySelector("[data-history-back]")?.addEventListener("click", () => {
+  window.history.back();
+});
+
 document.querySelectorAll("[data-copy]").forEach((button) => {
   button.addEventListener("click", async () => {
     const original = button.textContent;
@@ -59,6 +63,38 @@ document.querySelectorAll('input[name="folder"]').forEach((radio) => {
     if (selectedFolder && radio.checked) {
       selectedFolder.textContent = radio.value;
     }
+  });
+});
+
+const deployOptions = document.querySelectorAll("[data-deploy-option]");
+const selectedCount = document.querySelector("[data-selected-count]");
+const updateDeploySelection = () => {
+  let count = 0;
+  deployOptions.forEach((option) => {
+    const checkbox = option.querySelector('input[name="selected"]');
+    const selected = Boolean(checkbox?.checked);
+    option.classList.toggle("selected", selected);
+    if (selected) {
+      count += 1;
+    }
+  });
+  if (selectedCount) {
+    selectedCount.textContent = count;
+  }
+};
+deployOptions.forEach((option) => {
+  option.querySelector('input[name="selected"]')?.addEventListener("change", updateDeploySelection);
+});
+updateDeploySelection();
+
+document.querySelectorAll("[data-filter-input]").forEach((input) => {
+  input.addEventListener("input", () => {
+    const group = input.dataset.filterInput;
+    const query = input.value.trim().toLowerCase();
+    document.querySelectorAll(`[data-filter-item="${group}"]`).forEach((item) => {
+      const text = (item.dataset.filterText || item.textContent).toLowerCase();
+      item.hidden = Boolean(query) && !text.includes(query);
+    });
   });
 });
 

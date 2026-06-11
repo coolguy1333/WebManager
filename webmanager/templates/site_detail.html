@@ -11,6 +11,7 @@
   </div>
   <div class="button-row">
     {% if can_manage %}
+      <a class="button ghost" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Settings</a>
     {% if site.status == "running" %}
       <a class="button primary" href="{{ public_url }}">Open site &rarr;</a>
       <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
@@ -103,6 +104,52 @@
     </dl>
   </section>
 </div>
+
+<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Last {{ analytics.days }} days</p>
+      <h2>Site analytics</h2>
+      <p>Collected from the managed Nginx access log. No tracking script is added to the site.</p>
+    </div>
+  </div>
+  <div class="summary-grid analytics-summary">
+    <div class="summary-card"><span>Requests</span><strong>{{ analytics.requests }}</strong></div>
+    <div class="summary-card"><span>Unique visitors</span><strong>{{ analytics.visitors }}</strong></div>
+    <div class="summary-card"><span>Transferred</span><strong>{{ (analytics.bytes / 1048576)|round(1) }} MB</strong></div>
+    <div class="summary-card"><span>Tracked paths</span><strong>{{ analytics.top_paths|length }}</strong></div>
+  </div>
+  <div class="analytics-grid">
+    <section class="panel analytics-panel">
+      <h3>Daily traffic</h3>
+      {% if analytics.daily %}
+      <div class="traffic-bars">
+        {% for day, count in analytics.daily %}
+        <div class="traffic-row">
+          <span>{{ day[5:] }}</span>
+          <progress max="{{ analytics.daily_max }}" value="{{ count }}">{{ count }}</progress>
+          <strong>{{ count }}</strong>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">No requests have been recorded for this hostname yet.</p>
+      {% endif %}
+    </section>
+    <section class="panel analytics-panel">
+      <h3>Top paths</h3>
+      {% if analytics.top_paths %}
+      <div class="analytics-list">
+        {% for path, count in analytics.top_paths %}
+        <div><code>{{ path }}</code><strong>{{ count }}</strong></div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">Traffic details will appear after the site receives requests.</p>
+      {% endif %}
+    </section>
+  </div>
+</section>
 
 <section class="panel config-preview">
   <div class="section-heading">

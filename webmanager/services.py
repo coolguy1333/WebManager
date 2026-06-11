@@ -287,14 +287,13 @@ class RuntimeManager:
                 "SELECT * FROM sites WHERE status = 'running' OR id = ?",
                 (activating_site_id or -1,),
             ).fetchall()
-            active_ids = {site["id"] for site in active}
+            expected_configs = {
+                f"{site['id']}-{site['slug']}.conf"
+                for site in active
+            }
 
             for old_config in config_dir.glob("*.conf"):
-                try:
-                    old_id = int(old_config.stem.split("-", 1)[0])
-                except ValueError:
-                    continue
-                if old_id not in active_ids:
+                if old_config.name not in expected_configs:
                     old_config.unlink()
 
             for site in active:

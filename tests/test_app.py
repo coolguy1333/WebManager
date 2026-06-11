@@ -12,6 +12,7 @@ from unittest.mock import patch
 from flask import redirect
 
 from webmanager import create_app
+from webmanager.analytics import site_analytics
 from webmanager.auth import oauth
 from webmanager.db import get_db
 from webmanager.git_service import (
@@ -838,13 +839,136 @@ class WebManagerTestCase(unittest.TestCase):
             b'href="https://demo-site.webmanager.example" target="_blank"',
             response.data,
         )
-
         response = self.client.get(f"/sites/{site['id']}")
         self.assertIn(b'href="https://demo-site.webmanager.example"', response.data)
         self.assertNotIn(
             b'href="https://demo-site.webmanager.example" target="_blank"',
             response.data,
         )
+
+    def test_multiple_site_folders_can_be_deployed_together(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "multi-site-repo"
+        for folder in ("docs", "status"):
+            site_root = repository_root / folder
+            site_root.mkdir(parents=True)
+            (site_root / "index.html").write_text(folder, encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root / "docs")
+        self.login_user(user_id)
+
+        with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
+            response = self.client.post(
+                f"/repositories/{repository_id}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "multi_deploy": "1",
+                    "selected": ["0", "1"],
+                    "folder_0": "docs",
+                    "site_name_0": "Documentation",
+                    "spa_fallback_0": "on",
+                    "folder_1": "status",
+                    "site_name_1": "Status",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"Deployed 2 sites", response.data)
+        with self.app.app_context():
+            sites = get_db().execute(
+                "SELECT name, folder, port FROM sites ORDER BY name"
+            ).fetchall()
+        self.assertEqual(
+            [(site["name"], site["folder"]) for site in sites],
+            [("Documentation", "docs"), ("Status", "status")],
+        )
+        self.assertNotEqual(sites[0]["port"], sites[1]["port"])
+
+    def test_site_settings_can_change_folder_slug_port_and_fallback(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "settings-repo"
+        original = repository_root / "public"
+        replacement = repository_root / "dist"
+        original.mkdir(parents=True)
+        replacement.mkdir(parents=True)
+        (original / "index.html").write_text("old", encoding="utf-8")
+        (replacement / "index.htm").write_text("new", encoding="utf-8")
+        repository_id = self.add_repository(user_id, original)
+        site_id = self.add_site(user_id, repository_id, original)
+        self.login_user(user_id)
+
+        runtime = self.app.extensions["runtime_manager"]
+        with patch.object(runtime, "sync_nginx_configs"):
+            response = self.client.post(
+                f"/sites/{site_id}/settings",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "New Name",
+                    "slug": "new-name",
+                    "folder": "dist",
+                    "port": "43101",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"Site settings saved", response.data)
+        with self.app.app_context():
+            site = get_db().execute(
+                "SELECT * FROM sites WHERE id = ?", (site_id,)
+            ).fetchone()
+        self.assertEqual(site["name"], "New Name")
+        self.assertEqual(site["slug"], "new-name")
+        self.assertEqual(site["folder"], "dist")
+        self.assertEqual(site["index_file"], "index.htm")
+        self.assertEqual(site["port"], 43101)
+        self.assertEqual(site["spa_fallback"], 0)
+        self.assertIn("server_name new-name.webmanager.example", site["nginx_config"])
+
+    def test_site_analytics_reads_structured_nginx_log(self):
+        log_path = Path(self.app.config["NGINX_ROOT"]) / "access.log"
+        log_path.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {
+                            "time": "2026-06-11T12:00:00+00:00",
+                            "host": "demo.webmanager.example",
+                            "status": 200,
+                            "bytes": 512,
+                            "client": "203.0.113.5, 127.0.0.1",
+                            "uri": "/docs?x=1",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "time": "2026-06-11T12:01:00+00:00",
+                            "host": "other.webmanager.example",
+                            "status": 200,
+                            "bytes": 100,
+                            "client": "203.0.113.6",
+                            "uri": "/",
+                        }
+                    ),
+                )
+            ),
+            encoding="utf-8",
+        )
+        analytics = site_analytics(
+            log_path,
+            "demo.webmanager.example",
+            days=365,
+        )
+        self.assertEqual(analytics["requests"], 1)
+        self.assertEqual(analytics["visitors"], 1)
+        self.assertEqual(analytics["bytes"], 512)
+        self.assertEqual(analytics["top_paths"], [("/docs", 1)])
+
+    def test_not_found_page_has_navigation_and_status_code(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.get("/definitely-not-a-page")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn(b"Page not found", response.data)
+        self.assertIn(b"Return to dashboard", response.data)
 
     def test_site_subdomain_slugs_are_unique_across_users(self):
         alice_id = self.add_user("alice")
@@ -1190,6 +1314,54 @@ class WebManagerTestCase(unittest.TestCase):
             "new",
         )
 
+    def test_applied_repository_update_restarts_running_sites(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "restart-update-repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("old", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        site_id = self.add_site(
+            user_id,
+            repository_id,
+            site_root,
+            status="running",
+            runtime_backend="nginx",
+        )
+        pending = repository_root.parent / f".{repository_root.name}.pending"
+        (pending / "public").mkdir(parents=True)
+        (pending / "public" / "index.html").write_text("new", encoding="utf-8")
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                UPDATE repositories
+                SET local_path = ?, pending_path = ?, pending_commit = ?
+                WHERE id = ?
+                """,
+                (
+                    str(repository_root),
+                    str(pending),
+                    "b" * 40,
+                    repository_id,
+                ),
+            )
+            database.commit()
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        runtime = self.app.extensions["runtime_manager"]
+        with (
+            patch(
+                "webmanager.repository_refresh.repository_commit",
+                return_value="b" * 40,
+            ),
+            patch.object(runtime, "restart_site", return_value="nginx") as restart,
+        ):
+            result = manager.apply_pending(repository_id)
+
+        self.assertEqual(result.status, "applied")
+        restart.assert_called_once_with(site_id)
+
     def test_due_refresh_skips_repository_already_being_updated(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "busy-refresh-repo"
@@ -1444,6 +1616,9 @@ class ServiceUnitTests(unittest.TestCase):
         installer = (root / "deploy" / "debian" / "install.sh").read_text(
             encoding="utf-8"
         )
+        uninstaller = (
+            root / "deploy" / "debian" / "uninstall.sh"
+        ).read_text(encoding="utf-8")
         setup = (root / "setup.sh").read_text(encoding="utf-8")
 
         self.assertIn("https://github", updater)
@@ -1460,6 +1635,14 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("requests/check", path_unit)
         self.assertIn("ProtectSystem=full", service)
         self.assertIn("ReadWritePaths=/opt/webmanager", service)
+        self.assertIn(
+            "ReadWritePaths=/etc/nginx/sites-available",
+            service,
+        )
+        self.assertIn(
+            "ReadWritePaths=/usr/local/sbin",
+            service,
+        )
         self.assertIn("--self-update", installer)
         self.assertIn(
             "https://github.com/coolguy1333/WebManager.git", installer
@@ -1468,6 +1651,8 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
         self.assertIn("server_name *.$SITE_BASE_DOMAIN", installer)
+        self.assertIn("listen 8080", installer)
+        self.assertIn("webmanager-uninstall", installer)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"',
             installer,
@@ -1490,6 +1675,10 @@ class ServiceUnitTests(unittest.TestCase):
             'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
             google_setup,
         )
+        self.assertIn("Cloudflare Tunnel", google_setup)
+        self.assertIn("systemctl stop webmanager-update.service", uninstaller)
+        self.assertIn("Configuration remains in $CONFIG_DIR", uninstaller)
+        self.assertIn('rm -rf "$CONFIG_DIR"', uninstaller)
 
     def test_legacy_user_schema_migrates_without_losing_users(self):
         with tempfile.TemporaryDirectory() as directory:

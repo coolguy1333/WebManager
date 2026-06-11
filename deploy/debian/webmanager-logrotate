@@ -1,0 +1,10 @@
+/var/lib/webmanager/nginx/access.log /var/lib/webmanager/nginx/error.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su webmanager webmanager
+}

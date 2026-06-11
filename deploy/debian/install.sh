@@ -13,6 +13,8 @@ UPDATER_SCRIPT=/usr/local/sbin/webmanager-update
 UPDATER_SERVICE=/etc/systemd/system/webmanager-update.service
 UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
 UPDATER_PATH=/etc/systemd/system/webmanager-update.path
+UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
+LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
 DEFAULT_UPDATE_REPOSITORY=https://github.com/coolguy1333/WebManager.git
@@ -75,6 +77,8 @@ for required in \
     README.md \
     configure-google.sh \
     webmanager \
+    deploy/debian/uninstall.sh \
+    deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
     deploy/debian/webmanager-update.timer \
@@ -138,6 +142,8 @@ fi
 if [[ -n $SOURCE_COMMIT ]]; then
     printf '%s\n' "$SOURCE_COMMIT" >"$APP_DIR/.installed-commit"
     chmod 0644 "$APP_DIR/.installed-commit"
+else
+    rm -f "$APP_DIR/.installed-commit"
 fi
 find "$APP_DIR/webmanager" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$APP_DIR/webmanager" -type f -name '*.pyc' -delete
@@ -282,6 +288,20 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/update.sh" "$UPDATER_SCRIPT"
 install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-update.service" "$UPDATER_SERVICE"
 install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-update.timer" "$UPDATER_TIMER"
 install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-update.path" "$UPDATER_PATH"
+if ! install -o root -g root -m 0755 "$SCRIPT_DIR/uninstall.sh" "$UNINSTALL_COMMAND"; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred $UNINSTALL_COMMAND until the next update."
+    else
+        exit 1
+    fi
+fi
+if ! install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-logrotate" "$LOGROTATE_FILE"; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred $LOGROTATE_FILE until the next update."
+    else
+        exit 1
+    fi
+fi
 if [[ ! -f "$NGINX_AVAILABLE" ]]; then
     install -o root -g root -m 0644 "$SCRIPT_DIR/nginx-dashboard.conf" "$NGINX_AVAILABLE"
 else
@@ -289,30 +309,56 @@ else
 fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 if [[ -n $SITE_BASE_DOMAIN ]]; then
-    cat >"$SITE_NGINX_AVAILABLE" <<EOF
+    SITE_NGINX_TEMP=$(mktemp)
+    cat >"$SITE_NGINX_TEMP" <<EOF
+map \$http_cf_connecting_ip \$webmanager_site_client_ip {
+    default \$http_cf_connecting_ip;
+    "" \$remote_addr;
+}
+
+map \$http_x_forwarded_proto \$webmanager_site_proto {
+    default \$http_x_forwarded_proto;
+    "" \$scheme;
+}
+
 server {
     listen 80;
     listen [::]:80;
+    listen 8080;
+    listen [::]:8080;
     server_name *.$SITE_BASE_DOMAIN;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Real-IP \$webmanager_site_client_ip;
+        proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
+        proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
     }
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 }
 EOF
-    chown root:root "$SITE_NGINX_AVAILABLE"
-    chmod 0644 "$SITE_NGINX_AVAILABLE"
-    ln -sfn "$SITE_NGINX_AVAILABLE" "$SITE_NGINX_ENABLED"
+    if install -o root -g root -m 0644 "$SITE_NGINX_TEMP" "$SITE_NGINX_AVAILABLE" \
+        && ln -sfn "$SITE_NGINX_AVAILABLE" "$SITE_NGINX_ENABLED"; then
+        :
+    elif [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred wildcard Nginx changes until the next update."
+    else
+        rm -f "$SITE_NGINX_TEMP"
+        exit 1
+    fi
+    rm -f "$SITE_NGINX_TEMP"
 else
-    rm -f "$SITE_NGINX_ENABLED" "$SITE_NGINX_AVAILABLE"
+    if ! rm -f "$SITE_NGINX_ENABLED" "$SITE_NGINX_AVAILABLE"; then
+        if [[ $SELF_UPDATE -eq 1 ]]; then
+            echo "The existing updater sandbox deferred wildcard Nginx cleanup."
+        else
+            exit 1
+        fi
+    fi
 fi
 nginx -t
 
