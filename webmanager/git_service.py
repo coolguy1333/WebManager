@@ -118,6 +118,13 @@ def clone_repository(
             _remove_path(staging)
             raise GitError(f"Repository validation failed: {exc}") from exc
 
+    activate_repository(staging, target, backup=backup)
+
+
+def activate_repository(staging: Path, target: Path, backup: Path | None = None):
+    if not staging.is_dir():
+        raise GitError("The staged repository update is missing.")
+    backup = backup or target.parent / f".{target.name}.backup-{uuid.uuid4().hex}"
     try:
         if target.exists() or target.is_symlink():
             target.rename(backup)
@@ -140,6 +147,30 @@ def clone_repository(
             _remove_path(backup)
         except OSError:
             pass
+
+
+def repository_commit(path: Path) -> str:
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(path), "rev-parse", "HEAD"),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        raise GitError(f"Could not read the repository revision: {exc}") from exc
+    commit = result.stdout.strip().lower()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise GitError(
+            (result.stderr or result.stdout).strip()[-1200:]
+            or "Could not read the repository revision."
+        )
+    return commit
+
+
+def remove_repository_path(path: Path):
+    _remove_path(path)
 
 
 def _remove_path(path: Path):

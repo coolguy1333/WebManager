@@ -7,6 +7,8 @@ CONFIG_DIR=/etc/webmanager
 SERVICE_FILE=/etc/systemd/system/webmanager.service
 NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager
 NGINX_ENABLED=/etc/nginx/sites-enabled/webmanager
+SITE_NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager-sites
+SITE_NGINX_ENABLED=/etc/nginx/sites-enabled/webmanager-sites
 UPDATER_SCRIPT=/usr/local/sbin/webmanager-update
 UPDATER_SERVICE=/etc/systemd/system/webmanager-update.service
 UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
@@ -32,7 +34,7 @@ systemctl disable --now webmanager-update.path 2>/dev/null || true
 rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT"
 systemctl daemon-reload
 
-rm -f "$NGINX_ENABLED" "$NGINX_AVAILABLE"
+rm -f "$NGINX_ENABLED" "$NGINX_AVAILABLE" "$SITE_NGINX_ENABLED" "$SITE_NGINX_AVAILABLE"
 if command -v nginx >/dev/null 2>&1 && nginx -t; then
     systemctl reload nginx 2>/dev/null || true
 fi

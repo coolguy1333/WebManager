@@ -36,4 +36,8 @@ This directory contains:
 | `webmanager.env` | Default production environment |
 | `nginx-dashboard.conf` | Dashboard reverse-proxy configuration |
 
+Setup also generates `/etc/nginx/sites-available/webmanager-sites` for wildcard
+deployment subdomains. Configure wildcard DNS and wildcard HTTPS coverage for
+the dashboard domain before publishing sites.
+
 Read the root `README.md` before exposing the service to the Internet. It includes firewall, HTTPS, private repository, backup, upgrade, and troubleshooting instructions.

@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS repositories (
     auto_refresh_minutes INTEGER,
     next_refresh_at TEXT,
     last_refreshed_at TEXT,
+    update_mode TEXT NOT NULL DEFAULT 'approval',
+    current_commit TEXT,
+    pending_path TEXT,
+    pending_commit TEXT,
+    pending_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -113,6 +118,7 @@ def init_db():
     database.executescript(SCHEMA)
     _migrate_users(database)
     _migrate_repositories(database)
+    _migrate_sites(database)
     _seed_permissions(database)
     _ensure_initial_admin(database)
     database.commit()
@@ -186,6 +192,28 @@ def _seed_permissions(database):
     )
 
 
+def _migrate_sites(database):
+    used_slugs = set()
+    sites = database.execute("SELECT id, slug FROM sites ORDER BY id").fetchall()
+    for site in sites:
+        base = site["slug"] or "site"
+        slug = base
+        suffix = 2
+        while slug in used_slugs:
+            suffix_text = f"-{suffix}"
+            slug = f"{base[:48 - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        if slug != site["slug"]:
+            database.execute(
+                "UPDATE sites SET slug = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (slug, site["id"]),
+            )
+        used_slugs.add(slug)
+    database.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS sites_slug_uq ON sites(slug)"
+    )
+
+
 def _ensure_initial_admin(database):
     has_admin = database.execute(
         "SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1"
@@ -211,6 +239,11 @@ def _migrate_repositories(database):
         "auto_refresh_minutes": "INTEGER",
         "next_refresh_at": "TEXT",
         "last_refreshed_at": "TEXT",
+        "update_mode": "TEXT NOT NULL DEFAULT 'approval'",
+        "current_commit": "TEXT",
+        "pending_path": "TEXT",
+        "pending_commit": "TEXT",
+        "pending_at": "TEXT",
     }
     for column, definition in additions.items():
         if column not in columns:

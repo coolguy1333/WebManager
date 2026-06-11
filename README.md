@@ -2,9 +2,17 @@
 
 WebManager is a self-hosted control panel for deploying static websites from Git repositories.
 
+![WebManager logo](webmanager/static/logo.svg)
+
 ## Simple setup
 
-Before starting, point a domain such as `webmanager.example.com` at the Debian server.
+Before starting, point both the dashboard domain and its wildcard at the Debian
+server:
+
+```text
+webmanager.example.com
+*.webmanager.example.com
+```
 
 Then open a terminal in this project folder and run:
 
@@ -32,6 +40,10 @@ When prompted by the Google setup:
 3. Create an OAuth client with type **Web application**.
 4. Paste the exact **Authorized redirect URI** shown in the terminal.
 5. Paste the resulting client ID and secret back into the terminal.
+
+The wildcard DNS record gives deployments addresses such as
+`docs.webmanager.example.com`. HTTPS for those addresses requires a wildcard
+certificate or an upstream proxy/CDN that covers `*.webmanager.example.com`.
 
 When setup finishes, open:
 
@@ -117,12 +129,14 @@ Everything below is optional reference material for custom networking, private r
 - SSH Git repository support
 - Automatic `index.html` and `index.htm` discovery
 - Selectable document root within a repository
-- Automatic collision-free site ports
+- Automatic collision-free internal site ports
+- Per-site public subdomains
 - Generated Nginx server configurations
 - Browser-based Nginx configuration editor
 - Static single-page application fallback
-- Start, stop, restart, refresh, and delete controls
-- Per-repository automatic Git refresh intervals
+- Immediate start, stop, restart, update, and delete controls
+- Validated site updates with owner approval or automatic application
+- Per-repository Git update-check intervals
 - GitHub update checks with super-admin-approved installation
 - Debian systemd service
 - Waitress application server
@@ -171,13 +185,17 @@ The default installation uses:
 | --- | --- | --- |
 | `5000/tcp` | `127.0.0.1` | Internal Waitress dashboard server |
 | `8080/tcp` | All interfaces | Public Nginx dashboard endpoint |
-| `8100-8999/tcp` | All interfaces | Deployed static websites |
+| `8090/tcp` | `127.0.0.1` | Internal hostname-routing gateway |
+| `8100-8999/tcp` | `127.0.0.1` | Per-site internal endpoints |
 
 Port `5000` should not be exposed publicly. Debian's system Nginx forwards dashboard traffic from port `8080` to `127.0.0.1:5000`.
 
-Each deployed site receives one unique port from `8100` through `8999`.
+Each deployed site receives one internal port from `8100` through `8999`.
+System Nginx accepts wildcard HTTP traffic on port `80` and forwards it to the
+loopback-only gateway on port `8090`. HTTPS can terminate at an upstream
+proxy/CDN, or at system Nginx after a wildcard certificate is installed.
 
-When `configure-google.sh` sets up HTTPS, the dashboard moves to standard ports `80` and `443`. The deployed-site range remains unchanged.
+The internal site ports should not be opened in UFW or a cloud firewall.
 
 Before installation, check for port conflicts:
 
@@ -313,7 +331,10 @@ sign-in until an administrator reactivates them.
 
 ### 3. Restrict who may sign in
 
-By default, any Google account with a verified email can create a WebManager account.
+If both allowlists are left blank, any Google account with a verified email can
+create an active WebManager account. Setup requires explicit confirmation
+before enabling this unrestricted mode, and the admin page displays a warning
+while it remains enabled.
 
 To restrict access, run:
 
@@ -394,7 +415,7 @@ Choose the folder that should become the site's document root. Dependency and me
 Enter:
 
 - A site name
-- An optional port
+- An optional internal port
 - Whether single-page application fallback should be enabled
 
 If no port is entered, WebManager selects the first available port in the configured range.
@@ -406,28 +427,43 @@ With SPA fallback enabled, routes such as `/account/settings` load the selected 
 After deployment:
 
 ```text
-http://SERVER_IP:ASSIGNED_PORT
+https://SITE-SLUG.webmanager.example.com
 ```
 
-The assigned port is shown on the dashboard and site detail page.
+The public subdomain and internal assigned port are shown on the site detail
+page.
 
-### Automatic repository updates
+### Site source updates
 
-Each saved repository has an **Automatic updates** control on the dashboard.
+Each saved repository has a **Site updates** control on the dashboard.
 
 Enter an interval in minutes and select **Save**. WebManager accepts intervals
 from `5` minutes through `43200` minutes (30 days). Leave the field blank and
-save to disable automatic updates.
+save to disable scheduled checks while keeping the manual **Check update**
+button available.
+
+Choose one update mode:
+
+- **Owner approval** stages a validated revision without changing live files.
+  The repository owner reviews the affected sites and selects **Approve** or
+  **Discard**.
+- **Apply automatically** activates a validated revision immediately after a
+  manual or scheduled check.
 
 The schedule is stored in SQLite and resumes after WebManager or Debian
 restarts. The dashboard shows the next scheduled run in UTC and the date of the
 last successful pull.
 
-Scheduled updates use a fresh shallow clone and an atomic directory swap. A
-failed clone leaves the currently hosted files unchanged. WebManager also
-rejects an update if it would remove a folder or index file used by an existing
-deployment. The error appears beside the repository, and the next scheduled
-attempt still runs at the configured interval.
+Every check uses a fresh shallow clone in a separate pending directory. A
+failed clone or an update waiting for approval leaves the currently hosted
+files unchanged. WebManager rejects an update if it would remove a folder or
+index file used by an existing deployment. Approved and automatic updates use
+an atomic directory swap, so every site sharing that repository moves to the
+same validated revision together.
+
+Stopping a site removes its hostname route and immediately restarts only the
+internal managed Nginx gateway. This prevents a graceful-reload worker from
+continuing to serve the stopped site through an existing keep-alive connection.
 
 ## Repository requirements
 
@@ -562,10 +598,11 @@ The required public ports are:
 ```text
 80/tcp
 443/tcp
-8100-8999/tcp
 ```
 
-Port `8080` is used only by the initial HTTP dashboard before automatic HTTPS configuration. Do not expose port `5000`.
+Port `8080` is used only by the initial HTTP dashboard before automatic HTTPS
+configuration. Do not expose ports `5000`, `8090`, or `8100-8999`; they are
+loopback-only application and site endpoints.
 
 ### UFW
 
@@ -632,6 +669,7 @@ Create an `A` record:
 
 ```text
 webmanager.example.com -> SERVER_IPV4_ADDRESS
+*.webmanager.example.com -> SERVER_IPV4_ADDRESS
 ```
 
 Create an `AAAA` record too if the server uses public IPv6.
@@ -640,7 +678,10 @@ Wait for DNS to resolve:
 
 ```bash
 getent hosts webmanager.example.com
+getent hosts test.webmanager.example.com
 ```
+
+The wildcard record is required for deployed site subdomains.
 
 ### 2. Update the dashboard Nginx server
 
@@ -760,6 +801,9 @@ WEBMANAGER_HOST=127.0.0.1
 WEBMANAGER_PORT=5000
 WEBMANAGER_SITE_PORT_MIN=8100
 WEBMANAGER_SITE_PORT_MAX=8999
+WEBMANAGER_SITE_GATEWAY_PORT=8090
+WEBMANAGER_SITE_BASE_DOMAIN=
+WEBMANAGER_SITE_PUBLIC_SCHEME=http
 WEBMANAGER_NGINX_BINARY=/usr/sbin/nginx
 WEBMANAGER_TRUST_PROXY=1
 WEBMANAGER_SESSION_COOKIE_SECURE=0
@@ -785,6 +829,9 @@ GIT_TERMINAL_PROMPT=0
 | `WEBMANAGER_PORT` | `5000` | Internal Waitress dashboard port |
 | `WEBMANAGER_SITE_PORT_MIN` | `8100` | First assignable site port |
 | `WEBMANAGER_SITE_PORT_MAX` | `8999` | Last assignable site port |
+| `WEBMANAGER_SITE_GATEWAY_PORT` | `8090` | Loopback gateway used by wildcard system Nginx |
+| `WEBMANAGER_SITE_BASE_DOMAIN` | empty | Base domain appended to each globally unique site slug |
+| `WEBMANAGER_SITE_PUBLIC_SCHEME` | `http` | Public site URL scheme, normally `https` |
 | `WEBMANAGER_NGINX_BINARY` | `/usr/sbin/nginx` | Nginx executable used for deployed sites |
 | `WEBMANAGER_TRUST_PROXY` | `1` | Trust one local reverse-proxy hop |
 | `WEBMANAGER_SESSION_COOKIE_SECURE` | `0` | Send session cookies only over HTTPS when set to `1` |
@@ -838,9 +885,10 @@ WEBMANAGER_SITE_PORT_MIN
 WEBMANAGER_SITE_PORT_MAX
 ```
 
-Then update UFW, the cloud firewall, and any network security groups to allow the same range.
-
-Existing deployments keep their assigned database ports. Choose a new range that still includes existing ports or recreate those deployments.
+These ports remain loopback-only and should not be opened in UFW, the cloud
+firewall, or network security groups. Existing deployments keep their assigned
+database ports. Choose a new range that still includes existing ports or
+recreate those deployments.
 
 ## Service management
 
@@ -932,9 +980,11 @@ sudo systemctl reload nginx
 
 /etc/nginx/sites-available/
   webmanager
+  webmanager-sites
 
 /etc/nginx/sites-enabled/
   webmanager
+  webmanager-sites
 ```
 
 Ownership:
@@ -1190,8 +1240,8 @@ branch every 15 minutes. Checks never install code. When a newer commit is
 available, a super administrator must open **Admin**, review the exact commit,
 and select **Approve and install**.
 
-This updates WebManager itself and is separate from per-repository website
-refresh schedules in the dashboard.
+This updates WebManager itself and is separate from owner-approved or automatic
+site source updates in the dashboard.
 
 Before installing a new commit, the updater:
 
@@ -1392,6 +1442,9 @@ export WEBMANAGER_HOST=127.0.0.1
 export WEBMANAGER_PORT=5000
 export WEBMANAGER_SITE_PORT_MIN=8100
 export WEBMANAGER_SITE_PORT_MAX=8999
+export WEBMANAGER_SITE_GATEWAY_PORT=8090
+export WEBMANAGER_SITE_BASE_DOMAIN=webmanager.localhost
+export WEBMANAGER_SITE_PUBLIC_SCHEME=http
 export WEBMANAGER_NGINX_BINARY=nginx
 export WEBMANAGER_GOOGLE_CLIENT_ID="CLIENT_ID.apps.googleusercontent.com"
 export WEBMANAGER_GOOGLE_CLIENT_SECRET="CLIENT_SECRET"
@@ -1410,11 +1463,14 @@ Before exposing WebManager publicly:
 2. Set `WEBMANAGER_SESSION_COOKIE_SECURE=1`.
 3. Configure Google domain or email allowlists unless every Google account should be allowed.
 4. Restrict dashboard access by firewall or VPN when possible.
-5. Do not expose internal port `5000`.
+5. Do not expose internal ports `5000`, `8090`, or `8100-8999`.
 6. Use read-only SSH deploy keys for private repositories.
 7. Keep Debian, Nginx, Python packages, and WebManager updated.
 8. Back up `/var/lib/webmanager`.
 9. Store backups away from the server.
 10. Review Google OAuth consent-screen and test-user settings before production use.
 
-The Nginx editor enforces each site's assigned port, document root, and symlink protection. It also rejects proxy, include, write, module, and other unsafe directives. Users can still publish files from repositories they control, so account access should remain limited to trusted people.
+The Nginx editor enforces each site's hostname, internal ports, document root,
+and symlink protection. It also rejects proxy, include, write, module, and
+other unsafe directives. Users can still publish files from repositories they
+control, so account access should remain limited to trusted people.

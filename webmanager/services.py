@@ -9,7 +9,12 @@ from pathlib import Path
 from flask import current_app
 
 from .db import get_db
-from .nginx import NginxConfigError, build_main_config, validate_site_config
+from .nginx import (
+    NginxConfigError,
+    build_main_config,
+    route_site_config,
+    validate_site_config,
+)
 
 
 class RuntimeErrorDetail(RuntimeError):
@@ -60,6 +65,33 @@ class RuntimeManager:
                     self.start_site(site["id"])
                 except RuntimeErrorDetail:
                     continue
+
+    def migrate_site_configs(self):
+        domain = self.app.config["SITE_BASE_DOMAIN"]
+        if not domain:
+            return
+        gateway_port = self.app.config["SITE_GATEWAY_PORT"]
+        with self.app.app_context():
+            database = get_db()
+            sites = database.execute("SELECT * FROM sites").fetchall()
+            for site in sites:
+                hostname = f"{site['slug']}.{domain}"
+                routed = route_site_config(
+                    site["nginx_config"],
+                    site["port"],
+                    hostname,
+                    gateway_port,
+                )
+                if routed != site["nginx_config"]:
+                    database.execute(
+                        """
+                        UPDATE sites
+                        SET nginx_config = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (routed, site["id"]),
+                    )
+            database.commit()
 
     def start_site(self, site_id: int):
         database = get_db()
@@ -154,11 +186,12 @@ class RuntimeManager:
             )
             try:
                 self._write_all_nginx_configs(database)
-                self._reload_nginx()
+                self._restart_nginx()
             except RuntimeErrorDetail:
                 database.rollback()
                 try:
                     self._write_all_nginx_configs(database)
+                    self._reload_nginx()
                 except RuntimeErrorDetail:
                     pass
                 raise
@@ -266,7 +299,20 @@ class RuntimeManager:
 
             for site in active:
                 try:
-                    validate_site_config(site["nginx_config"], site["document_root"], site["port"])
+                    hostname = None
+                    gateway_port = None
+                    if self.app.config["SITE_BASE_DOMAIN"]:
+                        hostname = (
+                            f"{site['slug']}.{self.app.config['SITE_BASE_DOMAIN']}"
+                        )
+                        gateway_port = self.app.config["SITE_GATEWAY_PORT"]
+                    validate_site_config(
+                        site["nginx_config"],
+                        site["document_root"],
+                        site["port"],
+                        hostname,
+                        gateway_port,
+                    )
                 except NginxConfigError as exc:
                     raise RuntimeErrorDetail(
                         f"{site['name']} has an unsafe Nginx config: {exc}"
@@ -275,7 +321,13 @@ class RuntimeManager:
                 path.write_text(site["nginx_config"], encoding="utf-8")
 
             (root / "nginx.conf").write_text(
-                build_main_config(root, config_dir),
+                build_main_config(
+                    root,
+                    config_dir,
+                    self.app.config["SITE_GATEWAY_PORT"]
+                    if self.app.config["SITE_BASE_DOMAIN"]
+                    else None,
+                ),
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -318,6 +370,22 @@ class RuntimeManager:
         else:
             pid_file.unlink(missing_ok=True)
             self._run_nginx(())
+
+    def _restart_nginx(self):
+        root = Path(self.app.config["NGINX_ROOT"])
+        pid_file = root / "nginx.pid"
+        self._run_nginx(("-t",))
+        if self._nginx_is_running(pid_file):
+            self._run_nginx(("-s", "stop"))
+            deadline = time.monotonic() + 10
+            while self._nginx_is_running(pid_file) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if self._nginx_is_running(pid_file):
+                raise RuntimeErrorDetail(
+                    "Managed Nginx did not stop within 10 seconds."
+                )
+        pid_file.unlink(missing_ok=True)
+        self._run_nginx(())
 
     def _nginx_is_running(self, pid_file: Path) -> bool:
         try:

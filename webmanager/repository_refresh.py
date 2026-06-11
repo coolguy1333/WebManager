@@ -6,7 +6,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .db import get_db
-from .git_service import GitError, clone_repository, resolve_folder
+from .git_service import (
+    GitError,
+    activate_repository,
+    clone_repository,
+    remove_repository_path,
+    repository_commit,
+    resolve_folder,
+)
 
 
 MIN_REFRESH_MINUTES = 5
@@ -65,40 +72,54 @@ class RepositoryRefreshManager:
                 ).fetchone()
                 if repository is None:
                     return RefreshResult("missing", "Repository no longer exists.")
+                if (
+                    repository["update_mode"] == "approval"
+                    and repository["pending_commit"]
+                ):
+                    database.execute(
+                        """
+                        UPDATE repositories
+                        SET next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            self._next_run(repository["auto_refresh_minutes"]),
+                            repository_id,
+                        ),
+                    )
+                    database.commit()
+                    return RefreshResult(
+                        "available",
+                        "The existing validated update is still waiting for owner approval.",
+                    )
 
-                sites = database.execute(
-                    """
-                    SELECT name, folder, index_file
-                    FROM sites
-                    WHERE repository_id = ?
-                    """,
-                    (repository_id,),
-                ).fetchall()
-
-                def validate_deployments(staging):
-                    for site in sites:
-                        try:
-                            selected = resolve_folder(Path(staging), site["folder"])
-                        except GitError as exc:
-                            raise GitError(
-                                f"Update would remove the deployed folder for {site['name']}."
-                            ) from exc
-                        if not (selected / site["index_file"]).is_file():
-                            raise GitError(
-                                f"Update would remove {site['index_file']} from {site['name']}."
-                            )
+                sites = self._sites(database, repository_id)
+                target = Path(repository["local_path"])
+                pending = target.parent / f".{target.name}.pending"
+                staged = False
 
                 try:
                     clone_repository(
                         repository["url"],
-                        Path(repository["local_path"]),
+                        pending,
                         repository["branch"],
-                        validate_staging=validate_deployments,
+                        validate_staging=lambda staging: self._validate_sites(
+                            sites,
+                            staging,
+                        ),
+                    )
+                    staged = True
+                    pending_commit = repository_commit(pending)
+                    current_commit = (
+                        repository["current_commit"]
+                        or repository_commit(target)
                     )
                 except GitError as exc:
+                    if staged:
+                        remove_repository_path(pending)
                     self._record_failure(database, repository_id, str(exc))
                     self.app.logger.warning(
-                        "Repository %s refresh failed: %s",
+                        "Repository %s update check failed: %s",
                         repository_id,
                         exc,
                     )
@@ -107,33 +128,87 @@ class RepositoryRefreshManager:
                     message = f"Unexpected refresh failure: {exc}"
                     self._record_failure(database, repository_id, message)
                     self.app.logger.exception(
-                        "Repository %s refresh failed unexpectedly.",
+                        "Repository %s update check failed unexpectedly.",
                         repository_id,
                     )
                     return RefreshResult("error", message)
 
-                interval = database.execute(
-                    "SELECT auto_refresh_minutes FROM repositories WHERE id = ?",
-                    (repository_id,),
-                ).fetchone()
-                next_run = (
-                    next_refresh_time(interval["auto_refresh_minutes"])
-                    if interval and interval["auto_refresh_minutes"]
-                    else None
-                )
+                next_run = self._next_run(repository["auto_refresh_minutes"])
+                if pending_commit == current_commit:
+                    remove_repository_path(pending)
+                    database.execute(
+                        """
+                        UPDATE repositories
+                        SET status = 'ready', error = NULL,
+                            current_commit = ?, pending_path = NULL,
+                            pending_commit = NULL, pending_at = NULL,
+                            next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (current_commit, next_run, repository_id),
+                    )
+                    database.commit()
+                    return RefreshResult("current", "Repository is already current.")
+
                 database.execute(
                     """
                     UPDATE repositories
-                    SET status = 'ready', error = NULL,
-                        last_refreshed_at = CURRENT_TIMESTAMP,
+                    SET status = 'update_available', error = NULL,
+                        current_commit = ?, pending_path = ?,
+                        pending_commit = ?, pending_at = CURRENT_TIMESTAMP,
                         next_refresh_at = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (next_run, repository_id),
+                    (
+                        current_commit,
+                        str(pending.resolve()),
+                        pending_commit,
+                        next_run,
+                        repository_id,
+                    ),
                 )
                 database.commit()
-                return RefreshResult("success", "Repository refreshed from Git.")
+                if repository["update_mode"] == "auto":
+                    return self._apply_pending_locked(database, repository_id)
+                return RefreshResult(
+                    "available",
+                    "A validated update is waiting for owner approval.",
+                )
+
+    def apply_pending(self, repository_id: int, wait: bool = True) -> RefreshResult:
+        with self.repository_lock(repository_id, wait=wait) as acquired:
+            if not acquired:
+                return RefreshResult("busy", "A repository update is already running.")
+            with self.app.app_context():
+                return self._apply_pending_locked(get_db(), repository_id)
+
+    def discard_pending(self, repository_id: int) -> RefreshResult:
+        with self.repository_lock(repository_id) as acquired:
+            if not acquired:
+                return RefreshResult("busy", "A repository update is already running.")
+            with self.app.app_context():
+                database = get_db()
+                repository = database.execute(
+                    "SELECT * FROM repositories WHERE id = ?",
+                    (repository_id,),
+                ).fetchone()
+                if repository is None:
+                    return RefreshResult("missing", "Repository no longer exists.")
+                if repository["pending_path"]:
+                    remove_repository_path(Path(repository["pending_path"]))
+                database.execute(
+                    """
+                    UPDATE repositories
+                    SET status = 'ready', pending_path = NULL,
+                        pending_commit = NULL, pending_at = NULL, error = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (repository_id,),
+                )
+                database.commit()
+                return RefreshResult("discarded", "Pending update discarded.")
 
     @contextmanager
     def repository_lock(self, repository_id: int, wait: bool = True):
@@ -170,7 +245,7 @@ class RepositoryRefreshManager:
             try:
                 self.run_due_once()
             except Exception:
-                self.app.logger.exception("Automatic repository refresh cycle failed.")
+                self.app.logger.exception("Automatic repository update check failed.")
 
     def _lock_for(self, repository_id):
         with self._locks_guard:
@@ -198,3 +273,83 @@ class RepositoryRefreshManager:
             (error, next_run, repository_id),
         )
         database.commit()
+
+    def _apply_pending_locked(self, database, repository_id):
+        repository = database.execute(
+            "SELECT * FROM repositories WHERE id = ?",
+            (repository_id,),
+        ).fetchone()
+        if repository is None:
+            return RefreshResult("missing", "Repository no longer exists.")
+        if not repository["pending_path"] or not repository["pending_commit"]:
+            return RefreshResult("missing", "No pending update is available.")
+
+        pending = Path(repository["pending_path"])
+        target = Path(repository["local_path"])
+        expected_pending = target.parent / f".{target.name}.pending"
+        try:
+            if pending.resolve() != expected_pending.resolve():
+                raise GitError("The staged repository path is invalid.")
+            self._validate_sites(self._sites(database, repository_id), pending)
+            commit = repository_commit(pending)
+            if commit != repository["pending_commit"]:
+                raise GitError("The staged repository revision changed unexpectedly.")
+            activate_repository(pending, target)
+        except GitError as exc:
+            self._record_failure(database, repository_id, str(exc))
+            if not pending.exists():
+                database.execute(
+                    """
+                    UPDATE repositories
+                    SET status = 'error', pending_path = NULL,
+                        pending_commit = NULL, pending_at = NULL
+                    WHERE id = ?
+                    """,
+                    (repository_id,),
+                )
+                database.commit()
+            return RefreshResult("error", str(exc))
+
+        database.execute(
+            """
+            UPDATE repositories
+            SET status = 'ready', error = NULL,
+                current_commit = ?, pending_path = NULL,
+                pending_commit = NULL, pending_at = NULL,
+                last_refreshed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (commit, repository_id),
+        )
+        database.commit()
+        return RefreshResult("applied", "Validated update applied to all affected sites.")
+
+    @staticmethod
+    def _sites(database, repository_id):
+        return database.execute(
+            """
+            SELECT name, folder, index_file
+            FROM sites
+            WHERE repository_id = ?
+            """,
+            (repository_id,),
+        ).fetchall()
+
+    @staticmethod
+    def _validate_sites(sites, staging):
+        for site in sites:
+            try:
+                selected = resolve_folder(Path(staging), site["folder"])
+            except GitError as exc:
+                raise GitError(
+                    f"Update would remove the deployed folder for {site['name']}."
+                ) from exc
+            if not (selected / site["index_file"]).is_file():
+                raise GitError(
+                    f"Update would remove {site['index_file']} from {site['name']}."
+                )
+
+    @staticmethod
+    def _next_run(minutes):
+        return next_refresh_time(minutes) if minutes else None

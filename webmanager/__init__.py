@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from datetime import timedelta
 from pathlib import Path
@@ -9,6 +10,12 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from . import admin, auth, db, deployments
 from .repository_refresh import RepositoryRefreshManager
 from .services import RuntimeManager
+
+
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
 
 
 def _env_flag(name: str, default: str = "") -> bool:
@@ -54,6 +61,9 @@ def create_app(test_config=None):
         DEBUG=_env_flag("WEBMANAGER_DEBUG"),
         SITE_PORT_MIN=int(os.environ.get("WEBMANAGER_SITE_PORT_MIN", "8100")),
         SITE_PORT_MAX=int(os.environ.get("WEBMANAGER_SITE_PORT_MAX", "8999")),
+        SITE_GATEWAY_PORT=int(os.environ.get("WEBMANAGER_SITE_GATEWAY_PORT", "8090")),
+        SITE_BASE_DOMAIN=os.environ.get("WEBMANAGER_SITE_BASE_DOMAIN", "").strip().lower(),
+        SITE_PUBLIC_SCHEME=os.environ.get("WEBMANAGER_SITE_PUBLIC_SCHEME", "http").strip().lower(),
         NGINX_BINARY=os.environ.get("WEBMANAGER_NGINX_BINARY", "nginx"),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -83,6 +93,20 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
 
+    site_domain = str(app.config["SITE_BASE_DOMAIN"]).strip().lower().rstrip(".")
+    if site_domain and not DOMAIN_RE.fullmatch(site_domain):
+        raise RuntimeError("WEBMANAGER_SITE_BASE_DOMAIN must be a valid DNS name.")
+    app.config["SITE_BASE_DOMAIN"] = site_domain
+    if app.config["SITE_PUBLIC_SCHEME"] not in {"http", "https"}:
+        raise RuntimeError("WEBMANAGER_SITE_PUBLIC_SCHEME must be http or https.")
+    if app.config["SITE_GATEWAY_PORT"] in range(
+        app.config["SITE_PORT_MIN"],
+        app.config["SITE_PORT_MAX"] + 1,
+    ):
+        raise RuntimeError(
+            "WEBMANAGER_SITE_GATEWAY_PORT must be outside the site port range."
+        )
+
     if not app.config["SECRET_KEY"]:
         app.config["SECRET_KEY"] = _load_or_create_secret(instance_path)
 
@@ -103,6 +127,7 @@ def create_app(test_config=None):
 
     runtime = RuntimeManager(app)
     app.extensions["runtime_manager"] = runtime
+    runtime.migrate_site_configs()
     refresh_manager = RepositoryRefreshManager(app)
     app.extensions["repository_refresh_manager"] = refresh_manager
     if not app.config.get("TESTING"):

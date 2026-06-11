@@ -20,6 +20,7 @@ from .git_service import (
     display_repo_url,
     find_index_folders,
     repo_name_from_url,
+    repository_commit,
     resolve_folder,
     validate_repo_url,
 )
@@ -46,6 +47,14 @@ def request_hostname() -> str:
     return f"[{hostname}]" if ":" in hostname else hostname
 
 
+def site_public_url(site) -> str:
+    domain = current_app.config["SITE_BASE_DOMAIN"]
+    if domain:
+        scheme = current_app.config["SITE_PUBLIC_SCHEME"]
+        return f"{scheme}://{site['slug']}.{domain}"
+    return f"http://{request_hostname()}:{site['port']}"
+
+
 def repository_path_is_managed(path: str | Path) -> bool:
     root = Path(current_app.config["REPOSITORY_ROOT"]).resolve()
     candidate = Path(path).resolve()
@@ -70,7 +79,11 @@ def owned_repository(repository_id: int, manage=False):
 def owned_site(site_id: int, manage=False):
     site = get_db().execute(
         """
-        SELECT sites.*, repositories.name AS repository_name, repositories.url AS repository_url
+        SELECT sites.*, repositories.name AS repository_name,
+               repositories.url AS repository_url,
+               repositories.pending_commit AS repository_pending_commit,
+               repositories.pending_at AS repository_pending_at,
+               repositories.update_mode AS repository_update_mode
         FROM sites
         JOIN repositories ON repositories.id = sites.repository_id
         WHERE sites.id = ?
@@ -109,6 +122,7 @@ def dashboard():
     repositories = database.execute(
         f"""
         SELECT repositories.*, COUNT(sites.id) AS site_count,
+               GROUP_CONCAT(sites.name, ', ') AS affected_site_names,
                users.display_name AS owner_name, users.email AS owner_email
         FROM repositories LEFT JOIN sites ON sites.repository_id = repositories.id
         JOIN users ON users.id = repositories.user_id
@@ -133,6 +147,8 @@ def dashboard():
         port_max=current_app.config["SITE_PORT_MAX"],
         summary=summary,
         host=request_hostname(),
+        site_public_url=site_public_url,
+        site_base_domain=current_app.config["SITE_BASE_DOMAIN"],
         refresh_min=MIN_REFRESH_MINUTES,
         refresh_max=MAX_REFRESH_MINUTES,
         show_all=show_all,
@@ -174,16 +190,18 @@ def inspect_repository():
 
     try:
         clone_repository(url, target, branch)
+        current_commit = repository_commit(target)
         candidates = find_index_folders(target)
         database.execute(
             """
             UPDATE repositories
             SET status = 'ready', error = NULL,
+                current_commit = ?,
                 last_refreshed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (repository_id,),
+            (current_commit, repository_id),
         )
         database.commit()
     except GitError as exc:
@@ -214,6 +232,7 @@ def select_folder(repository_id):
         suggested_name=suggested_name,
         port_min=current_app.config["SITE_PORT_MIN"],
         port_max=current_app.config["SITE_PORT_MAX"],
+        site_base_domain=current_app.config["SITE_BASE_DOMAIN"],
     )
 
 
@@ -223,21 +242,24 @@ def refresh_repository(repository_id):
     validate_csrf()
     owned_repository(repository_id, manage=True)
     result = current_app.extensions["repository_refresh_manager"].refresh(repository_id)
-    if result.status == "success":
+    if result.status in {"applied", "current"}:
         flash(result.message, "success")
-    elif result.status == "busy":
+    elif result.status in {"available", "busy"}:
         flash(result.message, "warning")
     else:
-        flash(f"Refresh failed: {result.message}", "error")
-    return redirect(url_for("deployments.select_folder", repository_id=repository_id))
+        flash(f"Update check failed: {result.message}", "error")
+    return redirect(url_for("deployments.dashboard"))
 
 
 @bp.post("/repositories/<int:repository_id>/schedule")
 @login_required
 def schedule_repository_refresh(repository_id):
     validate_csrf()
-    owned_repository(repository_id, manage=True)
+    repository = owned_repository(repository_id, manage=True)
     raw_minutes = request.form.get("auto_refresh_minutes", "").strip()
+    update_mode = request.form.get("update_mode", "approval")
+    if update_mode not in {"approval", "auto"}:
+        abort(400, "Unknown update mode.")
 
     if not raw_minutes:
         minutes = None
@@ -261,17 +283,61 @@ def schedule_repository_refresh(repository_id):
     database.execute(
         """
         UPDATE repositories
-        SET auto_refresh_minutes = ?, next_refresh_at = ?,
+        SET auto_refresh_minutes = ?, next_refresh_at = ?, update_mode = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
-        (minutes, next_run, repository_id),
+        (minutes, next_run, update_mode, repository_id),
     )
     database.commit()
     if minutes:
-        flash(f"Automatic refresh set to every {minutes} minutes.", "success")
+        action = "apply automatically" if update_mode == "auto" else "wait for owner approval"
+        flash(
+            f"Update checks set to every {minutes} minutes and will {action}.",
+            "success",
+        )
     else:
-        flash("Automatic repository refresh disabled.", "success")
+        flash("Scheduled update checks disabled. Manual checks remain available.", "success")
+    if update_mode == "auto":
+        result = current_app.extensions[
+            "repository_refresh_manager"
+        ].apply_pending(repository_id)
+        if result.status == "applied":
+            flash(result.message, "success")
+        elif repository["pending_commit"] and result.status != "missing":
+            flash(f"Could not apply pending update: {result.message}", "error")
+    return redirect(url_for("deployments.dashboard"))
+
+
+@bp.post("/repositories/<int:repository_id>/updates/approve")
+@login_required
+def approve_repository_update(repository_id):
+    validate_csrf()
+    owned_repository(repository_id, manage=True)
+    result = current_app.extensions["repository_refresh_manager"].apply_pending(
+        repository_id
+    )
+    if result.status == "applied":
+        flash(result.message, "success")
+    elif result.status == "busy":
+        flash(result.message, "warning")
+    else:
+        flash(f"Could not apply update: {result.message}", "error")
+    return redirect(url_for("deployments.dashboard"))
+
+
+@bp.post("/repositories/<int:repository_id>/updates/discard")
+@login_required
+def discard_repository_update(repository_id):
+    validate_csrf()
+    owned_repository(repository_id, manage=True)
+    result = current_app.extensions[
+        "repository_refresh_manager"
+    ].discard_pending(repository_id)
+    flash(
+        result.message,
+        "warning" if result.status == "busy" else "success",
+    )
     return redirect(url_for("deployments.dashboard"))
 
 
@@ -313,13 +379,26 @@ def deploy_repository(repository_id):
     slug = base_slug
     suffix = 2
     while database.execute(
-        "SELECT 1 FROM sites WHERE user_id = ? AND slug = ?",
-        (owner_id, slug),
+        "SELECT 1 FROM sites WHERE slug = ?",
+        (slug,),
     ).fetchone():
         slug = f"{base_slug[:43]}-{suffix}"
         suffix += 1
 
-    config = build_site_config(name, selected, index_file, port, spa_fallback)
+    hostname = (
+        f"{slug}.{current_app.config['SITE_BASE_DOMAIN']}"
+        if current_app.config["SITE_BASE_DOMAIN"]
+        else None
+    )
+    config = build_site_config(
+        name,
+        selected,
+        index_file,
+        port,
+        spa_fallback,
+        hostname,
+        current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+    )
     try:
         cursor = database.execute(
             """
@@ -353,7 +432,7 @@ def deploy_repository(repository_id):
         flash(f"Site created, but hosting failed: {exc}", "warning")
     else:
         label = "Nginx" if backend == "nginx" else "the built-in static server"
-        flash(f"Site deployed on port {port} using {label}.", "success")
+        flash(f"Site deployed at {site_public_url({'slug': slug, 'port': port})} using {label}.", "success")
     return redirect(url_for("deployments.site_detail", site_id=site_id))
 
 
@@ -366,6 +445,7 @@ def site_detail(site_id):
         title=site["name"],
         site=site,
         host=request_hostname(),
+        public_url=site_public_url(site),
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
         can_manage=can_manage_resource(site["user_id"]),
     )
@@ -424,7 +504,18 @@ def edit_config(site_id):
             flash("Configuration must be smaller than 128 KB.", "error")
         else:
             try:
-                validate_site_config(config, site["document_root"], site["port"])
+                hostname = (
+                    f"{site['slug']}.{current_app.config['SITE_BASE_DOMAIN']}"
+                    if current_app.config["SITE_BASE_DOMAIN"]
+                    else None
+                )
+                validate_site_config(
+                    config,
+                    site["document_root"],
+                    site["port"],
+                    hostname,
+                    current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+                )
             except NginxConfigError as exc:
                 flash(str(exc), "error")
                 site = owned_site(site_id, manage=True)
@@ -515,6 +606,10 @@ def delete_repository(repository_id):
             (repository_id,),
         )
         database.commit()
+        if repository["pending_path"]:
+            pending = Path(repository["pending_path"])
+            if repository_path_is_managed(pending):
+                shutil.rmtree(pending, ignore_errors=True)
         if repository_path_is_managed(repository["local_path"]):
             shutil.rmtree(repository["local_path"], ignore_errors=True)
             flash(f"Repository {repository['name']} and its sites were deleted.", "success")

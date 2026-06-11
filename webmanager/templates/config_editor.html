@@ -5,14 +5,14 @@
     <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">&larr; {{ site.name }}</a>
     <p class="eyebrow">Advanced settings</p>
     <h1>Edit Nginx config</h1>
-    <p>The assigned port, document root, and symlink protection must remain in the configuration.</p>
+    <p>The managed hostname, internal ports, document root, and symlink protection must remain in the configuration.</p>
   </div>
   <span class="port-chip large">:{{ site.port }}</span>
 </section>
 
 <section class="config-guardrails panel">
   <strong>Managed safety rules</strong>
-  <span>Keep port <code>{{ site.port }}</code>, the assigned document root, and <code>disable_symlinks on</code>. Proxy, include, write, module, and TLS directives are blocked.</span>
+  <span>Keep the managed hostname and ports, assigned document root, and <code>disable_symlinks on</code>. Proxy, include, write, module, and TLS directives are blocked.</span>
 </section>
 
 <form class="editor-panel panel" method="post" data-loading data-editor-form>

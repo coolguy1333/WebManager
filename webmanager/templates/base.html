@@ -4,14 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#090c12">
   <title>{{ title }} | WebManager</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
   <div class="shell">
     <header class="topbar">
       <a class="brand" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
-        <span class="brand-mark">W</span>
+        <img class="brand-mark" src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
         <span class="brand-copy">
           <strong>WebManager</strong>
           <small>Static deployment control</small>

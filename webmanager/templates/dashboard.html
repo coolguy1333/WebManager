@@ -64,7 +64,11 @@
       <p class="eyebrow">Live inventory</p>
       <h2>Deployments</h2>
     </div>
-    <span class="range-label">Port range {{ port_min }}-{{ port_max }}</span>
+    {% if site_base_domain %}
+      <span class="range-label">Sites: *.{{ site_base_domain }}</span>
+    {% else %}
+      <span class="range-label">Port range {{ port_min }}-{{ port_max }}</span>
+    {% endif %}
   </div>
   {% if sites %}
     <div class="site-grid">
@@ -73,7 +77,7 @@
           <div class="site-card-top">
             <span class="status-dot {{ site.status }}"></span>
             <span class="status-label">{{ site.status }}</span>
-            <span class="port-chip">:{{ site.port }}</span>
+            <span class="port-chip">{{ site.slug }}{% if site_base_domain %}.{{ site_base_domain }}{% else %}:{{ site.port }}{% endif %}</span>
           </div>
           <a class="site-card-title" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
             <h3>{{ site.name }}</h3>
@@ -84,7 +88,7 @@
             <span class="backend-label">{{ site.runtime_backend or "Not started" }}</span>
             <div class="card-actions">
               {% if site.status == "running" %}
-                <a href="http://{{ host }}:{{ site.port }}" target="_blank" rel="noopener">Open</a>
+                <a href="{{ site_public_url(site) }}" target="_blank" rel="noopener">Open</a>
               {% endif %}
               <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
                 {{ "Manage" if manage_all or site.user_id == g.user.id else "View" }} &rarr;
@@ -119,7 +123,7 @@
           <th>Repository</th>
           <th>Status</th>
           <th>Sites</th>
-          <th>Automatic updates</th>
+          <th>Site updates</th>
           <th>Updated</th>
           <th></th>
         </tr>
@@ -133,10 +137,14 @@
             {% if show_all %}<span class="table-meta">Owner: {{ repository.owner_name or repository.owner_email }}</span>{% endif %}
             {% if repository.branch %}<span class="table-meta">Branch: {{ repository.branch }}</span>{% endif %}
             {% if repository.error %}<span class="table-error">{{ repository.error }}</span>{% endif %}
+            {% if repository.pending_commit %}
+              <span class="table-meta">Pending: <code>{{ repository.pending_commit[:12] }}</code></span>
+              <span class="table-meta">Affects: {{ repository.affected_site_names or "future deployments" }}</span>
+            {% endif %}
           </td>
           <td data-label="Status"><span class="pill {{ repository.status }}">{{ repository.status }}</span></td>
           <td data-label="Sites">{{ repository.site_count }}</td>
-          <td data-label="Auto update">
+          <td data-label="Site updates">
             {% if manage_all or repository.user_id == g.user.id %}
             <form class="auto-refresh-form" method="post" action="{{ url_for('deployments.schedule_repository_refresh', repository_id=repository.id) }}" data-loading>
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -157,6 +165,13 @@
                   <span>min</span>
                 </span>
               </label>
+              <label>
+                <span class="sr-only">Update approval mode</span>
+                <select name="update_mode" aria-label="Update approval mode">
+                  <option value="approval" {% if repository.update_mode == "approval" %}selected{% endif %}>Owner approval</option>
+                  <option value="auto" {% if repository.update_mode == "auto" %}selected{% endif %}>Apply automatically</option>
+                </select>
+              </label>
               <button class="button ghost small" type="submit" data-loading-text="Saving...">Save</button>
             </form>
             {% if repository.auto_refresh_minutes %}
@@ -165,7 +180,7 @@
               <span class="table-meta">Leave blank to keep disabled.</span>
             {% endif %}
             {% else %}
-              <span class="table-meta">{{ repository.auto_refresh_minutes or "Off" }}{% if repository.auto_refresh_minutes %} minutes{% endif %}</span>
+              <span class="table-meta">{{ repository.auto_refresh_minutes or "Manual" }}{% if repository.auto_refresh_minutes %} minutes{% endif %}, {{ repository.update_mode|replace('_', ' ') }}</span>
             {% endif %}
           </td>
           <td data-label="Updated">
@@ -181,10 +196,20 @@
             {% endif %}
             <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-              <button class="button ghost small" type="submit" data-loading-text="{{ 'Retrying...' if repository.status == 'error' else 'Refreshing...' }}">
-                {{ "Retry" if repository.status == "error" else "Refresh" }}
+              <button class="button ghost small" type="submit" data-loading-text="{{ 'Retrying...' if repository.status == 'error' else 'Checking...' }}">
+                {{ "Retry check" if repository.status == "error" else "Check update" }}
               </button>
             </form>
+            {% if repository.pending_commit %}
+            <form method="post" action="{{ url_for('deployments.approve_repository_update', repository_id=repository.id) }}" data-loading data-confirm="Apply this validated revision to every site using this repository?">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+              <button class="button primary small" type="submit" data-loading-text="Applying...">Approve</button>
+            </form>
+            <form method="post" action="{{ url_for('deployments.discard_repository_update', repository_id=repository.id) }}" data-confirm="Discard this staged update?">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+              <button class="button danger-text small" type="submit">Discard</button>
+            </form>
+            {% endif %}
             <form method="post" action="{{ url_for('deployments.delete_repository', repository_id=repository.id) }}" data-confirm="Delete this repository and every site created from it?">
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
               <button class="button danger-text small" type="submit">Delete</button>

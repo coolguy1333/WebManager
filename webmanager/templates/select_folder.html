@@ -53,9 +53,15 @@
       <input name="site_name" value="{{ suggested_name }}" maxlength="80" required>
     </label>
     <label>
-      Port <span class="muted">(optional)</span>
+      Internal port <span class="muted">(optional)</span>
       <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" placeholder="Automatic">
-      <small>Available range: {{ port_min }}-{{ port_max }}</small>
+      <small>
+        {% if site_base_domain %}
+          Public address: site-name.{{ site_base_domain }}
+        {% else %}
+          Available range: {{ port_min }}-{{ port_max }}
+        {% endif %}
+      </small>
     </label>
     <label class="check-row">
       <input type="checkbox" name="spa_fallback" checked>
@@ -69,7 +75,13 @@
       <code data-selected-folder>{{ candidates[0].folder }}</code>
     </div>
     <button class="button primary wide" type="submit" data-loading-text="Deploying site...">Deploy site</button>
-    <p class="hint centered">A unique port and Nginx config will be created.</p>
+    <p class="hint centered">
+      {% if site_base_domain %}
+        A unique subdomain, internal port, and Nginx config will be created.
+      {% else %}
+        A unique port and Nginx config will be created.
+      {% endif %}
+    </p>
   </aside>
 </form>
 {% else %}

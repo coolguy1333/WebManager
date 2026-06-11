@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 ENV_FILE=/etc/webmanager/webmanager.env
 NGINX_FILE=/etc/nginx/sites-available/webmanager
+SITE_NGINX_FILE=/etc/nginx/sites-available/webmanager-sites
+SITE_NGINX_LINK=/etc/nginx/sites-enabled/webmanager-sites
 
 if [[ $EUID -ne 0 ]]; then
     if ! command -v sudo >/dev/null 2>&1; then
@@ -172,11 +174,29 @@ while true; do
     echo "Client secret is required. Try again." >&2
 done
 
-echo
-read -r -p "Allowed Google Workspace domains (comma-separated, blank for any): " ALLOWED_DOMAINS
-read -r -p "Allowed individual emails (comma-separated, blank for any): " ALLOWED_EMAILS
-ALLOWED_DOMAINS=${ALLOWED_DOMAINS//[[:space:]]/}
-ALLOWED_EMAILS=${ALLOWED_EMAILS//[[:space:]]/}
+while true; do
+    echo
+    echo "Restrict sign-in to trusted Google accounts."
+    read -r -p "Allowed Google Workspace domains (comma-separated, blank for none): " ALLOWED_DOMAINS
+    read -r -p "Allowed individual emails (comma-separated, blank for none): " ALLOWED_EMAILS
+    ALLOWED_DOMAINS=${ALLOWED_DOMAINS//[[:space:]]/}
+    ALLOWED_EMAILS=${ALLOWED_EMAILS//[[:space:]]/}
+    if [[ -n $ALLOWED_DOMAINS || -n $ALLOWED_EMAILS ]]; then
+        break
+    fi
+
+    echo
+    echo "Warning: leaving both blank lets any verified Google account create an active user."
+    read -r -p "Allow unrestricted Google sign-in? [y/N]: " OPEN_ACCESS
+    case $OPEN_ACCESS in
+        [Yy] | [Yy][Ee][Ss])
+            break
+            ;;
+        *)
+            echo "Enter at least one trusted domain or email address."
+            ;;
+    esac
+done
 
 for value in "$CLIENT_ID" "$CLIENT_SECRET" "$CALLBACK_URL" "$ALLOWED_DOMAINS" "$ALLOWED_EMAILS"; do
     if [[ $value == *$'\n'* || $value == *$'\r'* ]]; then
@@ -201,6 +221,35 @@ set_env WEBMANAGER_GOOGLE_CLIENT_SECRET "$CLIENT_SECRET"
 set_env WEBMANAGER_GOOGLE_REDIRECT_URI "$CALLBACK_URL"
 set_env WEBMANAGER_GOOGLE_ALLOWED_DOMAINS "$ALLOWED_DOMAINS"
 set_env WEBMANAGER_GOOGLE_ALLOWED_EMAILS "$ALLOWED_EMAILS"
+set_env WEBMANAGER_SITE_BASE_DOMAIN "$PUBLIC_HOST"
+set_env WEBMANAGER_SITE_PUBLIC_SCHEME "${PUBLIC_URL%%:*}"
+
+SITE_GATEWAY_PORT=$(sed -n 's/^WEBMANAGER_SITE_GATEWAY_PORT=//p' "$ENV_FILE" | tail -n 1)
+SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
+cat >"$SITE_NGINX_FILE" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name *.$PUBLIC_HOST;
+
+    location / {
+        proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+}
+EOF
+chown root:root "$SITE_NGINX_FILE"
+chmod 0644 "$SITE_NGINX_FILE"
+ln -sfn "$SITE_NGINX_FILE" "$SITE_NGINX_LINK"
+nginx -t
+systemctl reload nginx
 
 if [[ $PUBLIC_URL == https://* ]]; then
     set_env WEBMANAGER_SESSION_COOKIE_SECURE 1
@@ -217,4 +266,7 @@ fi
 echo
 echo "Google sign-in is configured."
 echo "Open: $PUBLIC_URL/auth/login"
+echo "Site addresses: ${PUBLIC_URL%%:*}://<site-name>.$PUBLIC_HOST"
+echo "DNS required: *.$PUBLIC_HOST must point to this server."
+echo "HTTPS also requires a wildcard certificate or upstream proxy for *.$PUBLIC_HOST."
 echo

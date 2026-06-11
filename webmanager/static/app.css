@@ -118,13 +118,10 @@ code {
 }
 
 .brand-mark {
-  display: grid;
+  display: block;
   width: 34px;
   height: 34px;
-  place-items: center;
   border-radius: 9px;
-  color: var(--primary-ink);
-  background: var(--primary);
   box-shadow: 0 0 30px rgba(115, 226, 167, 0.2);
 }
 

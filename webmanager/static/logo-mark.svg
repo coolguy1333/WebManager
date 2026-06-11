@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">WebManager</title>
+  <defs>
+    <linearGradient id="panel" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#182231"/>
+      <stop offset="1" stop-color="#0d121b"/>
+    </linearGradient>
+    <linearGradient id="route" x1="14" y1="18" x2="50" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#76a7ff"/>
+      <stop offset=".45" stop-color="#73e2a7"/>
+      <stop offset="1" stop-color="#45c989"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="url(#panel)" stroke="#2b3748" stroke-width="2"/>
+  <path d="M14 18 22.5 45 32 30 41.5 45 50 18" fill="none" stroke="url(#route)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="14" cy="18" r="4" fill="#76a7ff"/>
+  <circle cx="32" cy="30" r="4" fill="#73e2a7"/>
+  <circle cx="50" cy="18" r="4" fill="#45c989"/>
+</svg>

@@ -9,6 +9,17 @@
   <span class="head-meta">{{ users|length }} accounts</span>
 </section>
 
+{% if google_access_unrestricted %}
+<div class="flash warning" role="alert">
+  <div>
+    <strong>Google sign-in is unrestricted.</strong>
+    Any verified Google account can create an active WebManager user. Run
+    <code>bash configure-google.sh</code> on the server to allow only trusted
+    domains or email addresses.
+  </div>
+</div>
+{% endif %}
+
 {% if can_manage_users %}
 <section class="section-block admin-section">
   <div class="section-heading">

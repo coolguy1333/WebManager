@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 88" role="img" aria-labelledby="title description">
+  <title id="title">WebManager</title>
+  <desc id="description">A connected W deployment mark beside the WebManager wordmark.</desc>
+  <defs>
+    <linearGradient id="panel" x1="10" y1="7" x2="78" y2="81" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#182231"/>
+      <stop offset="1" stop-color="#0d121b"/>
+    </linearGradient>
+    <linearGradient id="route" x1="18" y1="24" x2="70" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#76a7ff"/>
+      <stop offset=".45" stop-color="#73e2a7"/>
+      <stop offset="1" stop-color="#45c989"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="80" height="80" rx="21" fill="url(#panel)" stroke="#2b3748" stroke-width="2"/>
+  <path d="M19 24 31 63 44 42 57 63 69 24" fill="none" stroke="url(#route)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="19" cy="24" r="5.5" fill="#76a7ff"/>
+  <circle cx="44" cy="42" r="5.5" fill="#73e2a7"/>
+  <circle cx="69" cy="24" r="5.5" fill="#45c989"/>
+  <text x="104" y="47" fill="#f4f7fb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="34" font-weight="750" letter-spacing="-1.2">WebManager</text>
+  <text x="106" y="68" fill="#929cad" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="500" letter-spacing="1.6">STATIC DEPLOYMENT CONTROL</text>
+</svg>

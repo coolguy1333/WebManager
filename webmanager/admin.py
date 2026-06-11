@@ -1,7 +1,17 @@
 import re
 import sqlite3
 
-from flask import Blueprint, abort, flash, g, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    g,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from .access_control import (
     GROUPS_MANAGE,
@@ -88,6 +98,10 @@ def dashboard():
         can_manage_groups=has_permission(GROUPS_MANAGE),
         super_admin=is_admin(),
         update_status=read_update_status() if is_admin() else None,
+        google_access_unrestricted=not (
+            current_app.config["GOOGLE_ALLOWED_DOMAINS"]
+            or current_app.config["GOOGLE_ALLOWED_EMAILS"]
+        ),
     )
 
 

@@ -26,6 +26,7 @@ from webmanager.nginx import (
     build_main_config,
     build_site_config,
     config_uses_port,
+    route_site_config,
     validate_site_config,
 )
 from webmanager.repository_refresh import MAX_REFRESH_MINUTES
@@ -46,6 +47,9 @@ class WebManagerTestCase(unittest.TestCase):
                 "LOG_ROOT": str(root / "logs"),
                 "SITE_PORT_MIN": 43100,
                 "SITE_PORT_MAX": 43120,
+                "SITE_GATEWAY_PORT": 43099,
+                "SITE_BASE_DOMAIN": "webmanager.example",
+                "SITE_PUBLIC_SCHEME": "https",
                 "NGINX_BINARY": "definitely-not-installed-nginx",
                 "GOOGLE_CLIENT_ID": "test-client.apps.googleusercontent.com",
                 "GOOGLE_CLIENT_SECRET": "test-client-secret",
@@ -147,7 +151,15 @@ class WebManagerTestCase(unittest.TestCase):
         status="stopped",
         runtime_backend=None,
     ):
-        config = build_site_config("Demo", document_root, "index.html", port, True)
+        config = build_site_config(
+            "Demo",
+            document_root,
+            "index.html",
+            port,
+            True,
+            "demo.webmanager.example",
+            43099,
+        )
         with self.app.app_context():
             database = get_db()
             repository = database.execute(
@@ -189,6 +201,8 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Continue with Google", response.data)
         self.assertNotIn(b"Password", response.data)
+        self.assertIn(b"favicon.svg", response.data)
+        self.assertIn(b"logo-mark.svg", response.data)
 
     def test_google_login_starts_oidc_with_configured_callback(self):
         with patch.object(
@@ -318,11 +332,41 @@ class WebManagerTestCase(unittest.TestCase):
         with self.app.app_context():
             self.assertIsNotNone(get_db().execute("SELECT 1 FROM users WHERE id = ?", (bob_id,)).fetchone())
 
+    def test_only_repository_owner_or_manager_can_approve_site_update(self):
+        alice_id = self.add_user("alice")
+        bob_id = self.add_user("bob")
+        repository_root = Path(self.temp_directory.name) / "approval-owner-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(alice_id, repository_root)
+        self.login_user(bob_id)
+
+        with patch.object(
+            self.app.extensions["repository_refresh_manager"],
+            "apply_pending",
+        ) as apply_pending:
+            response = self.client.post(
+                f"/repositories/{repository_id}/updates/approve",
+                data={"_csrf_token": self.csrf()},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        apply_pending.assert_not_called()
+
     def test_non_admin_cannot_open_admin_console(self):
         user_id = self.add_user("alice")
         self.login_user(user_id)
         response = self.client.get("/admin/")
         self.assertEqual(response.status_code, 403)
+
+    def test_admin_console_warns_when_google_access_is_unrestricted(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+
+        response = self.client.get("/admin/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Google sign-in is unrestricted", response.data)
 
     def test_admin_can_create_group_and_assign_it_to_user(self):
         admin_id = self.add_user("admin", is_admin=True)
@@ -612,7 +656,60 @@ class WebManagerTestCase(unittest.TestCase):
             self.assertEqual(site["user_id"], user_id)
             self.assertEqual(site["document_root"], str(site_root.resolve()))
             self.assertTrue(config_uses_port(site["nginx_config"], site["port"]))
+            self.assertTrue(config_uses_port(site["nginx_config"], 43099))
+            self.assertIn(
+                "server_name demo-site.webmanager.example",
+                site["nginx_config"],
+            )
             self.assertIn("try_files $uri $uri/ /index.html", site["nginx_config"])
+
+        response = self.client.get("/")
+        self.assertIn(b"https://demo-site.webmanager.example", response.data)
+
+    def test_site_subdomain_slugs_are_unique_across_users(self):
+        alice_id = self.add_user("alice")
+        bob_id = self.add_user("bob")
+        repository_root = Path(self.temp_directory.name) / "shared-name-repos"
+        alice_root = repository_root / "alice"
+        bob_root = repository_root / "bob"
+        alice_root.mkdir(parents=True)
+        bob_root.mkdir(parents=True)
+        (alice_root / "index.html").write_text("alice", encoding="utf-8")
+        (bob_root / "index.html").write_text("bob", encoding="utf-8")
+        alice_repository = self.add_repository(alice_id, alice_root)
+        bob_repository = self.add_repository(bob_id, bob_root)
+
+        with patch(
+            "webmanager.services.RuntimeManager.start_site",
+            return_value="builtin",
+        ):
+            self.login_user(alice_id)
+            self.client.post(
+                f"/repositories/{alice_repository}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "site_name": "Demo",
+                    "folder": "alice",
+                },
+            )
+            self.login_user(bob_id)
+            self.client.post(
+                f"/repositories/{bob_repository}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "site_name": "Demo",
+                    "folder": "bob",
+                },
+            )
+
+        with self.app.app_context():
+            slugs = [
+                row["slug"]
+                for row in get_db().execute(
+                    "SELECT slug FROM sites ORDER BY id"
+                ).fetchall()
+            ]
+        self.assertEqual(slugs, ["demo", "demo-2"])
 
     def test_builtin_runtime_serves_the_selected_index(self):
         user_id = self.add_user("alice")
@@ -703,7 +800,7 @@ class WebManagerTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
-        self.assertIn(b"refresh disabled", response.data)
+        self.assertIn(b"Scheduled update checks disabled", response.data)
         with self.app.app_context():
             repository = get_db().execute(
                 "SELECT * FROM repositories WHERE id = ?",
@@ -793,39 +890,125 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(count, 1)
         refresh.assert_called_once_with(repository_id, wait=False)
 
-    def test_successful_scheduled_refresh_records_next_run(self):
+    def test_validated_update_waits_for_owner_approval(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "successful-schedule-repo"
         repository_root.mkdir()
-        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        (repository_root / "index.html").write_text("old", encoding="utf-8")
         repository_id = self.add_repository(user_id, repository_root)
         with self.app.app_context():
             database = get_db()
             database.execute(
                 """
                 UPDATE repositories
-                SET auto_refresh_minutes = 20,
+                SET local_path = ?, auto_refresh_minutes = 20,
                     next_refresh_at = '2000-01-01 00:00:00',
-                    error = 'old failure'
+                    error = 'old failure', current_commit = ?
                 WHERE id = ?
                 """,
-                (repository_id,),
+                (str(repository_root), "a" * 40, repository_id),
             )
             database.commit()
 
+        def staged_clone(_url, target, _branch, validate_staging):
+            target.mkdir(parents=True)
+            (target / "index.html").write_text("new", encoding="utf-8")
+            validate_staging(target)
+
         manager = self.app.extensions["repository_refresh_manager"]
-        with patch("webmanager.repository_refresh.clone_repository"):
+        with (
+            patch(
+                "webmanager.repository_refresh.clone_repository",
+                side_effect=staged_clone,
+            ),
+            patch(
+                "webmanager.repository_refresh.repository_commit",
+                return_value="b" * 40,
+            ),
+        ):
             result = manager.refresh(repository_id)
 
-        self.assertEqual(result.status, "success")
+        self.assertEqual(result.status, "available")
+        self.assertEqual(
+            (repository_root / "index.html").read_text(encoding="utf-8"),
+            "old",
+        )
         with self.app.app_context():
             repository = get_db().execute(
                 "SELECT * FROM repositories WHERE id = ?",
                 (repository_id,),
             ).fetchone()
-            self.assertIsNotNone(repository["last_refreshed_at"])
+            self.assertEqual(repository["pending_commit"], "b" * 40)
+            self.assertIsNone(repository["last_refreshed_at"])
             self.assertIsNotNone(repository["next_refresh_at"])
             self.assertIsNone(repository["error"])
+
+        with patch("webmanager.repository_refresh.clone_repository") as clone:
+            result = manager.refresh(repository_id)
+        self.assertEqual(result.status, "available")
+        clone.assert_not_called()
+
+        with patch(
+            "webmanager.repository_refresh.repository_commit",
+            return_value="b" * 40,
+        ):
+            result = manager.apply_pending(repository_id)
+
+        self.assertEqual(result.status, "applied")
+        self.assertEqual(
+            (repository_root / "index.html").read_text(encoding="utf-8"),
+            "new",
+        )
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+            self.assertEqual(repository["current_commit"], "b" * 40)
+            self.assertIsNone(repository["pending_commit"])
+            self.assertIsNotNone(repository["last_refreshed_at"])
+
+    def test_automatic_update_mode_applies_validated_update(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "automatic-update-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("old", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                UPDATE repositories
+                SET local_path = ?, update_mode = 'auto', current_commit = ?
+                WHERE id = ?
+                """,
+                (str(repository_root), "a" * 40, repository_id),
+            )
+            database.commit()
+
+        def staged_clone(_url, target, _branch, validate_staging):
+            target.mkdir(parents=True)
+            (target / "index.html").write_text("new", encoding="utf-8")
+            validate_staging(target)
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        with (
+            patch(
+                "webmanager.repository_refresh.clone_repository",
+                side_effect=staged_clone,
+            ),
+            patch(
+                "webmanager.repository_refresh.repository_commit",
+                return_value="b" * 40,
+            ),
+        ):
+            result = manager.refresh(repository_id)
+
+        self.assertEqual(result.status, "applied")
+        self.assertEqual(
+            (repository_root / "index.html").read_text(encoding="utf-8"),
+            "new",
+        )
 
     def test_due_refresh_skips_repository_already_being_updated(self):
         user_id = self.add_user("alice")
@@ -868,7 +1051,7 @@ class WebManagerTestCase(unittest.TestCase):
             data={"_csrf_token": self.csrf(), "nginx_config": "server { listen 9999; }"},
             follow_redirects=True,
         )
-        self.assertIn(b"assigned port", response.data)
+        self.assertIn(b"assigned document root", response.data)
 
         with self.app.app_context():
             saved = get_db().execute("SELECT nginx_config FROM sites WHERE id = ?", (site_id,)).fetchone()
@@ -972,7 +1155,7 @@ class WebManagerTestCase(unittest.TestCase):
 
         with self.app.app_context(), patch.object(
             runtime,
-            "_reload_nginx",
+            "_restart_nginx",
             side_effect=RuntimeErrorDetail("reload failed"),
         ):
             with self.assertRaises(RuntimeErrorDetail):
@@ -982,8 +1165,79 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(site["status"], "running")
         self.assertEqual(site["runtime_backend"], "nginx")
 
+    def test_nginx_stop_removes_route_and_restarts_gateway(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "nginx-stop-success"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(
+            user_id,
+            repository_id,
+            repository_root,
+            status="running",
+            runtime_backend="nginx",
+        )
+        fake_nginx = Path(self.temp_directory.name) / "fake-nginx-success"
+        fake_nginx.write_text("", encoding="utf-8")
+        self.app.config["NGINX_BINARY"] = str(fake_nginx)
+        runtime = self.app.extensions["runtime_manager"]
+
+        with self.app.app_context():
+            runtime.sync_nginx_configs()
+            config_files = list(
+                (Path(self.app.config["NGINX_ROOT"]) / "conf.d").glob("*.conf")
+            )
+            self.assertEqual(len(config_files), 1)
+            with patch.object(runtime, "_restart_nginx") as restart:
+                runtime.stop_site(site_id)
+            site = get_db().execute(
+                "SELECT * FROM sites WHERE id = ?",
+                (site_id,),
+            ).fetchone()
+
+        restart.assert_called_once_with()
+        self.assertEqual(site["status"], "stopped")
+        self.assertFalse(config_files[0].exists())
+
 
 class ServiceUnitTests(unittest.TestCase):
+    def test_site_config_routing_migration_is_stable_and_loopback_only(self):
+        root = Path.cwd()
+        original = build_site_config(
+            "Demo",
+            root,
+            "index.html",
+            8123,
+            True,
+        )
+        routed = route_site_config(
+            original,
+            8123,
+            "demo.webmanager.example",
+            8090,
+        )
+
+        self.assertEqual(
+            routed,
+            route_site_config(
+                routed,
+                8123,
+                "demo.webmanager.example",
+                8090,
+            ),
+        )
+        self.assertIn("listen 127.0.0.1:8123;", routed)
+        self.assertIn("listen 127.0.0.1:8090;", routed)
+        self.assertNotIn("listen [::]:8123;", routed)
+        validate_site_config(
+            routed,
+            root,
+            8123,
+            "demo.webmanager.example",
+            8090,
+        )
+
     def test_runtime_requirements_include_authlib_requests_integration(self):
         root = Path(__file__).resolve().parent.parent
         requirements = (root / "requirements.txt").read_text(
@@ -1032,6 +1286,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
+        self.assertIn("server_name *.$SITE_BASE_DOMAIN", installer)
         self.assertIn("WEBMANAGER_GOOGLE_CLIENT_SECRET", setup)
         self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
         self.assertNotIn("Configure Google sign-in now?", setup)
@@ -1044,6 +1299,7 @@ class ServiceUnitTests(unittest.TestCase):
             google_setup,
         )
         self.assertIn("Client secret is required. Try again.", google_setup)
+        self.assertIn("Allow unrestricted Google sign-in? [y/N]:", google_setup)
 
     def test_legacy_user_schema_migrates_without_losing_users(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1141,6 +1397,10 @@ class ServiceUnitTests(unittest.TestCase):
             self.assertIn("auto_refresh_minutes", columns)
             self.assertIn("next_refresh_at", columns)
             self.assertIn("last_refreshed_at", columns)
+            self.assertIn("update_mode", columns)
+            self.assertIn("current_commit", columns)
+            self.assertIn("pending_path", columns)
+            self.assertIn("pending_commit", columns)
 
     def test_external_data_directory_becomes_flask_instance_path(self):
         with tempfile.TemporaryDirectory() as directory:

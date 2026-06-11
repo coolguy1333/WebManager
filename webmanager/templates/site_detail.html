@@ -12,7 +12,7 @@
   <div class="button-row">
     {% if can_manage %}
     {% if site.status == "running" %}
-      <a class="button primary" href="http://{{ host }}:{{ site.port }}" target="_blank" rel="noopener">Open site &nearr;</a>
+      <a class="button primary" href="{{ public_url }}" target="_blank" rel="noopener">Open site &nearr;</a>
       <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
         <button class="button ghost" type="submit" data-loading-text="Restarting...">Restart</button>
@@ -43,6 +43,28 @@
   <div class="flash error">{{ site.last_error }}</div>
 {% endif %}
 
+{% if site.repository_pending_commit %}
+<section class="panel program-update-card">
+  <div class="program-update-copy">
+    <strong>A validated source update is waiting for approval.</strong>
+    <small>Revision <code>{{ site.repository_pending_commit[:12] }}</code> affects every site using {{ site.repository_name }}.</small>
+    {% if site.repository_pending_at %}<small>Staged {{ site.repository_pending_at }} UTC</small>{% endif %}
+  </div>
+  {% if can_manage %}
+  <div class="button-row">
+    <form method="post" action="{{ url_for('deployments.approve_repository_update', repository_id=site.repository_id) }}" data-loading data-confirm="Apply this update to every site using this repository?">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button primary" type="submit" data-loading-text="Applying...">Approve update</button>
+    </form>
+    <form method="post" action="{{ url_for('deployments.discard_repository_update', repository_id=site.repository_id) }}" data-confirm="Discard this staged update?">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button ghost" type="submit">Discard</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <div class="detail-grid">
   <section class="panel">
     <div class="section-heading">
@@ -55,11 +77,11 @@
       <div>
         <dt>Address</dt>
         <dd class="copy-row">
-          <a href="http://{{ host }}:{{ site.port }}" target="_blank">http://{{ host }}:{{ site.port }}</a>
-          <button class="copy-button" type="button" data-copy="http://{{ host }}:{{ site.port }}">Copy</button>
+          <a href="{{ public_url }}" target="_blank">{{ public_url }}</a>
+          <button class="copy-button" type="button" data-copy="{{ public_url }}">Copy</button>
         </dd>
       </div>
-      <div><dt>Assigned port</dt><dd><code>{{ site.port }}</code></dd></div>
+      <div><dt>Internal port</dt><dd><code>{{ site.port }}</code></dd></div>
       <div><dt>Backend</dt><dd>{{ site.runtime_backend or "Stopped" }}</dd></div>
       <div><dt>Process ID</dt><dd>{{ site.runtime_pid or "-" }}</dd></div>
       <div><dt>SPA fallback</dt><dd>{{ "Enabled" if site.spa_fallback else "Disabled" }}</dd></div>

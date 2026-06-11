@@ -7,6 +7,8 @@ CONFIG_DIR=/etc/webmanager
 SERVICE_FILE=/etc/systemd/system/webmanager.service
 NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager
 NGINX_ENABLED=/etc/nginx/sites-enabled/webmanager
+SITE_NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager-sites
+SITE_NGINX_ENABLED=/etc/nginx/sites-enabled/webmanager-sites
 UPDATER_SCRIPT=/usr/local/sbin/webmanager-update
 UPDATER_SERVICE=/etc/systemd/system/webmanager-update.service
 UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
@@ -179,8 +181,39 @@ ensure_env WEBMANAGER_GOOGLE_CLIENT_SECRET ""
 ensure_env WEBMANAGER_GOOGLE_REDIRECT_URI ""
 ensure_env WEBMANAGER_GOOGLE_ALLOWED_DOMAINS ""
 ensure_env WEBMANAGER_GOOGLE_ALLOWED_EMAILS ""
+ensure_env WEBMANAGER_SITE_GATEWAY_PORT "8090"
+ensure_env WEBMANAGER_SITE_BASE_DOMAIN ""
+ensure_env WEBMANAGER_SITE_PUBLIC_SCHEME "http"
 ensure_env WEBMANAGER_AUTO_REFRESH_ENABLED "1"
 ensure_env WEBMANAGER_AUTO_REFRESH_POLL_SECONDS "30"
+
+set_env_value() {
+    local key=$1
+    local value=$2
+    local temporary
+    temporary=$(mktemp)
+    grep -v "^${key}=" "$CONFIG_DIR/webmanager.env" >"$temporary" || true
+    printf '%s=%s\n' "$key" "$value" >>"$temporary"
+    install -o root -g webmanager -m 0640 "$temporary" "$CONFIG_DIR/webmanager.env"
+    rm -f "$temporary"
+}
+
+SITE_BASE_DOMAIN=$(sed -n 's/^WEBMANAGER_SITE_BASE_DOMAIN=//p' "$CONFIG_DIR/webmanager.env" | tail -n 1)
+GOOGLE_REDIRECT_URI=$(sed -n 's/^WEBMANAGER_GOOGLE_REDIRECT_URI=//p' "$CONFIG_DIR/webmanager.env" | tail -n 1)
+if [[ -z $SITE_BASE_DOMAIN && -n $GOOGLE_REDIRECT_URI ]]; then
+    SITE_BASE_DOMAIN=$(python3 - "$GOOGLE_REDIRECT_URI" <<'PY'
+import sys
+from urllib.parse import urlsplit
+print(urlsplit(sys.argv[1]).hostname or "")
+PY
+)
+    if [[ -n $SITE_BASE_DOMAIN ]]; then
+        set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"
+        if [[ $GOOGLE_REDIRECT_URI == https://* ]]; then
+            set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"
+        fi
+    fi
+fi
 chown root:webmanager "$CONFIG_DIR/webmanager.env"
 chmod 0640 "$CONFIG_DIR/webmanager.env"
 
@@ -238,10 +271,13 @@ APP_HOST=$(env_value WEBMANAGER_HOST)
 APP_PORT=$(env_value WEBMANAGER_PORT)
 SITE_PORT_MIN=$(env_value WEBMANAGER_SITE_PORT_MIN)
 SITE_PORT_MAX=$(env_value WEBMANAGER_SITE_PORT_MAX)
+SITE_GATEWAY_PORT=$(env_value WEBMANAGER_SITE_GATEWAY_PORT)
+SITE_BASE_DOMAIN=$(env_value WEBMANAGER_SITE_BASE_DOMAIN)
 APP_HOST=${APP_HOST:-127.0.0.1}
 APP_PORT=${APP_PORT:-5000}
 SITE_PORT_MIN=${SITE_PORT_MIN:-8100}
 SITE_PORT_MAX=${SITE_PORT_MAX:-8999}
+SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
 
 echo "[6/8] Installing systemd and Nginx configuration"
 install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager.service" "$SERVICE_FILE"
@@ -255,6 +291,32 @@ else
     echo "Keeping existing $NGINX_AVAILABLE"
 fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
+if [[ -n $SITE_BASE_DOMAIN ]]; then
+    cat >"$SITE_NGINX_AVAILABLE" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name *.$SITE_BASE_DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+}
+EOF
+    chown root:root "$SITE_NGINX_AVAILABLE"
+    chmod 0644 "$SITE_NGINX_AVAILABLE"
+    ln -sfn "$SITE_NGINX_AVAILABLE" "$SITE_NGINX_ENABLED"
+else
+    rm -f "$SITE_NGINX_ENABLED" "$SITE_NGINX_AVAILABLE"
+fi
 nginx -t
 
 echo "[7/8] Starting services"
@@ -274,7 +336,13 @@ fi
 echo "[8/8] Configuring UFW when it is already active"
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
     ufw allow 8080/tcp
-    ufw allow "${SITE_PORT_MIN}:${SITE_PORT_MAX}/tcp"
+    if [[ -n $SITE_BASE_DOMAIN ]]; then
+        ufw allow 80/tcp
+        ufw allow 443/tcp
+        ufw --force delete allow "${SITE_PORT_MIN}:${SITE_PORT_MAX}/tcp" 2>/dev/null || true
+    else
+        ufw allow "${SITE_PORT_MIN}:${SITE_PORT_MAX}/tcp"
+    fi
 fi
 
 case "$APP_HOST" in
@@ -322,7 +390,12 @@ echo "  2. Sign in with Google."
 echo "  3. Paste a Git repository URL."
 echo "  4. Choose the folder containing index.html and deploy."
 echo
-echo "Deployed site ports: $SITE_PORT_MIN-$SITE_PORT_MAX"
+if [[ -n $SITE_BASE_DOMAIN ]]; then
+    echo "Deployed sites: <site-name>.$SITE_BASE_DOMAIN"
+    echo "DNS required: *.$SITE_BASE_DOMAIN must point to this server"
+else
+    echo "Deployed site ports: $SITE_PORT_MIN-$SITE_PORT_MAX"
+fi
 echo "Logs: journalctl -u webmanager -f"
 echo "Settings: $CONFIG_DIR/webmanager.env"
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
