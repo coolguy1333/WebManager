@@ -208,19 +208,22 @@ the same tunnel service:
 
 ```text
 webmanager.example.com   -> http://localhost:8080
-*.webmanager.example.com -> http://localhost:8080
+*.example.com            -> http://localhost:8080
 ```
 
 Nginx routes requests on port `8080` by their original hostname.
 The exact dashboard entry does not match subdomains. Both Cloudflare public
-hostnames are required. For a dashboard at `web.mhsit.club`, the site entry is
-`*.web.mhsit.club`, not another entry for `web.mhsit.club`.
+hostnames are required. For a dashboard at `web.mhsit.club`, use
+`*.mhsit.club` for hosted sites such as `demo.mhsit.club`.
 
 Cloudflare's standard zone certificate commonly covers the zone apex and
-first-level wildcard only. A site such as `demo.web.mhsit.club` may require
-additional wildcard certificate coverage for `*.web.mhsit.club`. An alternative
-is to use `mhsit.club` as the site base domain, producing
-`demo.mhsit.club`.
+first-level wildcard only. Keeping site names directly under the zone, such as
+`demo.mhsit.club`, allows that normal wildcard coverage to apply.
+
+When the zone-level wildcard `*.mhsit.club` is used, the dashboard Nginx
+server must have the exact `server_name web.mhsit.club`. Setup derives that
+name from the Google callback URL so the exact dashboard route takes priority
+over the wildcard site route.
 
 The internal site ports should not be opened in UFW or a cloud firewall.
 

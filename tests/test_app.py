@@ -1702,6 +1702,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
         self.assertIn("server_name *.$SITE_BASE_DOMAIN", installer)
+        self.assertIn("server_name $DASHBOARD_HOST", installer)
         self.assertIn("listen 8080", installer)
         self.assertIn("webmanager-uninstall", installer)
         self.assertNotIn(
@@ -1722,6 +1723,9 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Client secret is required. Try again.", google_setup)
         self.assertIn("Allow unrestricted Google sign-in? [y/N]:", google_setup)
         self.assertIn("wildcard TLS coverage", google_setup)
+        self.assertIn("Hosted site base domain", google_setup)
+        self.assertIn("server_name $PUBLIC_HOST", google_setup)
+        self.assertIn("server_name *.$SITE_BASE_DOMAIN", google_setup)
         self.assertIn(
             'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
             google_setup,

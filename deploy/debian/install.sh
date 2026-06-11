@@ -296,11 +296,22 @@ SITE_PORT_MIN=$(env_value WEBMANAGER_SITE_PORT_MIN)
 SITE_PORT_MAX=$(env_value WEBMANAGER_SITE_PORT_MAX)
 SITE_GATEWAY_PORT=$(env_value WEBMANAGER_SITE_GATEWAY_PORT)
 SITE_BASE_DOMAIN=$(env_value WEBMANAGER_SITE_BASE_DOMAIN)
+GOOGLE_REDIRECT_URI=$(env_value WEBMANAGER_GOOGLE_REDIRECT_URI)
 APP_HOST=${APP_HOST:-127.0.0.1}
 APP_PORT=${APP_PORT:-5000}
 SITE_PORT_MIN=${SITE_PORT_MIN:-8100}
 SITE_PORT_MAX=${SITE_PORT_MAX:-8999}
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
+DASHBOARD_HOST=
+if [[ -n $GOOGLE_REDIRECT_URI ]]; then
+    DASHBOARD_HOST=$(python3 - "$GOOGLE_REDIRECT_URI" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+print((urlsplit(sys.argv[1]).hostname or "").lower())
+PY
+)
+fi
 
 echo "[6/8] Installing systemd and Nginx configuration"
 install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager.service" "$SERVICE_FILE"
@@ -326,6 +337,14 @@ if [[ ! -f "$NGINX_AVAILABLE" ]]; then
     install -o root -g root -m 0644 "$SCRIPT_DIR/nginx-dashboard.conf" "$NGINX_AVAILABLE"
 else
     echo "Keeping existing $NGINX_AVAILABLE"
+fi
+if [[ -n $DASHBOARD_HOST ]]; then
+    DASHBOARD_NGINX_TEMP=$(mktemp)
+    sed -E \
+        "s/^([[:space:]]*)server_name[[:space:]]+[^;]+;/\\1server_name $DASHBOARD_HOST;/" \
+        "$NGINX_AVAILABLE" >"$DASHBOARD_NGINX_TEMP"
+    install -o root -g root -m 0644 "$DASHBOARD_NGINX_TEMP" "$NGINX_AVAILABLE"
+    rm -f "$DASHBOARD_NGINX_TEMP"
 fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 if [[ -n $SITE_BASE_DOMAIN ]]; then

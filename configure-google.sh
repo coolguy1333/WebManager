@@ -64,6 +64,38 @@ print(urlsplit(sys.argv[1]).port or "")
 PY
 )
 SITE_PUBLIC_SCHEME=http
+SITE_BASE_DOMAIN=$(python3 - "$PUBLIC_HOST" <<'PY'
+import sys
+
+host = sys.argv[1].strip(".").lower()
+parts = host.split(".")
+print(".".join(parts[1:]) if len(parts) >= 3 else host)
+PY
+)
+
+if [[ $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
+    echo
+    echo "Hosted sites need their own wildcard base domain."
+    echo "The dashboard remains at $PUBLIC_HOST."
+    read -r -p "Hosted site base domain [$SITE_BASE_DOMAIN]: " SITE_BASE_ANSWER
+    SITE_BASE_DOMAIN=${SITE_BASE_ANSWER:-$SITE_BASE_DOMAIN}
+    if ! SITE_BASE_DOMAIN=$(python3 - "$SITE_BASE_DOMAIN" <<'PY'
+import re
+import sys
+
+value = sys.argv[1].strip().lower().rstrip(".")
+pattern = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+if not pattern.fullmatch(value):
+    raise SystemExit("Enter a valid DNS base domain.")
+print(value)
+PY
+    ); then
+        exit 1
+    fi
+fi
 
 if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
     echo
@@ -147,14 +179,14 @@ fi
 if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
     echo
     echo "The dashboard certificate does not automatically cover deployed site subdomains."
-    echo "HTTPS site links require wildcard TLS coverage for *.$PUBLIC_HOST."
+    echo "HTTPS site links require wildcard TLS coverage for *.$SITE_BASE_DOMAIN."
     echo
     echo "For Cloudflare Tunnel, add a SECOND public hostname:"
     echo
-    echo "  *.$PUBLIC_HOST -> http://localhost:8080"
+    echo "  *.$SITE_BASE_DOMAIN -> http://localhost:8080"
     echo
     echo "The existing $PUBLIC_HOST tunnel entry does not match site subdomains."
-    echo "Cloudflare must also issue or provide TLS coverage for *.$PUBLIC_HOST."
+    echo "Cloudflare must also issue or provide TLS coverage for *.$SITE_BASE_DOMAIN."
     read -r -p "Is that wildcard tunnel hostname working with HTTPS? [y/N]: " SITE_TLS_ANSWER
     case $SITE_TLS_ANSWER in
         [Yy] | [Yy][Ee][Ss])
@@ -241,8 +273,15 @@ set_env WEBMANAGER_GOOGLE_CLIENT_SECRET "$CLIENT_SECRET"
 set_env WEBMANAGER_GOOGLE_REDIRECT_URI "$CALLBACK_URL"
 set_env WEBMANAGER_GOOGLE_ALLOWED_DOMAINS "$ALLOWED_DOMAINS"
 set_env WEBMANAGER_GOOGLE_ALLOWED_EMAILS "$ALLOWED_EMAILS"
-set_env WEBMANAGER_SITE_BASE_DOMAIN "$PUBLIC_HOST"
+set_env WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"
 set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"
+
+NGINX_TEMP=$(mktemp)
+sed -E \
+    "s/^([[:space:]]*)server_name[[:space:]]+[^;]+;/\\1server_name $PUBLIC_HOST;/" \
+    "$NGINX_FILE" >"$NGINX_TEMP"
+install -o root -g root -m 0644 "$NGINX_TEMP" "$NGINX_FILE"
+rm -f "$NGINX_TEMP"
 
 SITE_GATEWAY_PORT=$(sed -n 's/^WEBMANAGER_SITE_GATEWAY_PORT=//p' "$ENV_FILE" | tail -n 1)
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
@@ -262,7 +301,7 @@ server {
     listen [::]:80;
     listen 8080;
     listen [::]:8080;
-    server_name *.$PUBLIC_HOST;
+    server_name *.$SITE_BASE_DOMAIN;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
@@ -298,10 +337,10 @@ fi
 echo
 echo "Google sign-in is configured."
 echo "Open: $PUBLIC_URL/auth/login"
-echo "Site addresses: $SITE_PUBLIC_SCHEME://<site-name>.$PUBLIC_HOST"
+echo "Site addresses: $SITE_PUBLIC_SCHEME://<site-name>.$SITE_BASE_DOMAIN"
 echo "Cloudflare Tunnel public hostname required:"
-echo "  *.$PUBLIC_HOST -> http://localhost:8080"
+echo "  *.$SITE_BASE_DOMAIN -> http://localhost:8080"
 if [[ $SITE_PUBLIC_SCHEME == http ]]; then
-    echo "Site links use HTTP until wildcard HTTPS is configured for *.$PUBLIC_HOST."
+    echo "Site links use HTTP until wildcard HTTPS is configured for *.$SITE_BASE_DOMAIN."
 fi
 echo
