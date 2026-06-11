@@ -15,10 +15,15 @@ bash setup.sh
 The script:
 
 1. Installs Python, Git, Nginx, and WebManager.
-2. Asks whether to configure Google sign-in.
+2. Starts the required Google sign-in configuration.
 3. Can configure HTTPS automatically with Let's Encrypt.
 4. Shows the exact callback URL to enter in Google Cloud.
 5. Asks for the Google client ID and client secret.
+
+No Google client ID, client secret, callback URL, domain, or email allowlist is
+preset in the project. Setup collects these values interactively and stores
+them in the protected `/etc/webmanager/webmanager.env` file. Existing complete
+Google settings are preserved when setup is run again.
 
 When prompted by the Google setup:
 
@@ -43,7 +48,7 @@ Then:
 
 WebManager starts automatically now and after every reboot.
 
-If Google setup was skipped, run it later:
+For a non-interactive installation, finish Google setup afterward:
 
 ```bash
 bash configure-google.sh
@@ -58,12 +63,10 @@ Otherwise, install Git and clone the project:
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone "REPLACE_WITH_REPOSITORY_URL" webmanager
+git clone "https://github.com/coolguy1333/WebManager.git" webmanager
 cd webmanager
 bash setup.sh
 ```
-
-Replace the sample repository URL with the URL for this project.
 
 ### Remove WebManager
 
@@ -195,14 +198,14 @@ bash setup.sh
 The script performs the entire installation and prints the dashboard URL. Run the same command again to upgrade.
 
 When the project was cloned from GitHub, setup automatically uses its HTTPS
-`origin` and current branch for program updates. For a downloaded archive,
-setup asks for the GitHub repository URL and branch.
+`origin` and current branch for program updates. A downloaded archive uses the
+official WebManager repository and `main` branch automatically.
 
 For unattended setup or to configure the source explicitly:
 
 ```bash
 bash setup.sh \
-  --update-repository https://github.com/OWNER/WebManager.git \
+  --update-repository https://github.com/coolguy1333/WebManager.git \
   --update-branch main
 ```
 
@@ -1232,7 +1235,7 @@ Example:
 
 ```text
 WEBMANAGER_UPDATE_ENABLED=1
-WEBMANAGER_UPDATE_REPOSITORY=https://github.com/OWNER/WebManager.git
+WEBMANAGER_UPDATE_REPOSITORY=https://github.com/coolguy1333/WebManager.git
 WEBMANAGER_UPDATE_BRANCH=main
 ```
 

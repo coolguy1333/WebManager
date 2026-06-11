@@ -13,9 +13,15 @@ UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
 UPDATER_PATH=/etc/systemd/system/webmanager-update.path
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
+DEFAULT_UPDATE_REPOSITORY=https://github.com/coolguy1333/WebManager.git
 SELF_UPDATE=0
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
+UPDATE_CONFIGURATION_EXPLICIT=0
+if [[ ${WEBMANAGER_UPDATE_REPOSITORY+x} == x ]] \
+    || [[ ${WEBMANAGER_UPDATE_BRANCH+x} == x ]]; then
+    UPDATE_CONFIGURATION_EXPLICIT=1
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +35,7 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             UPDATE_REPOSITORY=$1
+            UPDATE_CONFIGURATION_EXPLICIT=1
             ;;
         --update-branch)
             shift
@@ -37,6 +44,7 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             UPDATE_BRANCH=$1
+            UPDATE_CONFIGURATION_EXPLICIT=1
             ;;
         *)
             echo "Unknown installer option: $1" >&2
@@ -176,43 +184,50 @@ ensure_env WEBMANAGER_AUTO_REFRESH_POLL_SECONDS "30"
 chown root:webmanager "$CONFIG_DIR/webmanager.env"
 chmod 0640 "$CONFIG_DIR/webmanager.env"
 
-if [[ -z $UPDATE_REPOSITORY ]]; then
-    UPDATE_REPOSITORY=$(git -C "$SOURCE_DIR" remote get-url origin 2>/dev/null || true)
-fi
-if [[ $UPDATE_REPOSITORY =~ ^git@github\.com:([^/]+)/(.+)$ ]]; then
-    UPDATE_REPOSITORY="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-elif [[ $UPDATE_REPOSITORY =~ ^ssh://git@github\.com/([^/]+)/(.+)$ ]]; then
-    UPDATE_REPOSITORY="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-fi
-if [[ -z $UPDATE_BRANCH ]]; then
-    UPDATE_BRANCH=$(git -C "$SOURCE_DIR" branch --show-current 2>/dev/null || true)
-fi
-UPDATE_BRANCH=${UPDATE_BRANCH:-main}
+if [[ -f $UPDATER_ENV && $UPDATE_CONFIGURATION_EXPLICIT -eq 0 ]]; then
+    UPDATE_REPOSITORY=$(sed -n 's/^WEBMANAGER_UPDATE_REPOSITORY=//p' "$UPDATER_ENV" | tail -n 1)
+    UPDATE_BRANCH=$(sed -n 's/^WEBMANAGER_UPDATE_BRANCH=//p' "$UPDATER_ENV" | tail -n 1)
+    echo "Keeping existing $UPDATER_ENV"
+else
+    if [[ -z $UPDATE_REPOSITORY ]]; then
+        UPDATE_REPOSITORY=$(git -C "$SOURCE_DIR" remote get-url origin 2>/dev/null || true)
+    fi
+    UPDATE_REPOSITORY=${UPDATE_REPOSITORY:-$DEFAULT_UPDATE_REPOSITORY}
+    if [[ $UPDATE_REPOSITORY =~ ^git@github\.com:([^/]+)/(.+)$ ]]; then
+        UPDATE_REPOSITORY="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    elif [[ $UPDATE_REPOSITORY =~ ^ssh://git@github\.com/([^/]+)/(.+)$ ]]; then
+        UPDATE_REPOSITORY="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    fi
+    if [[ -z $UPDATE_BRANCH ]]; then
+        UPDATE_BRANCH=$(git -C "$SOURCE_DIR" branch --show-current 2>/dev/null || true)
+    fi
+    UPDATE_BRANCH=${UPDATE_BRANCH:-main}
 
-if [[ -n $UPDATE_REPOSITORY ]]; then
-    if [[ ! $UPDATE_REPOSITORY =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
-        echo "Automatic updates require an HTTPS github.com repository URL." >&2
-        exit 1
-    fi
-    if [[ ! $UPDATE_BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] || [[ $UPDATE_BRANCH == -* ]] || [[ $UPDATE_BRANCH == *..* ]]; then
-        echo "Automatic update branch is invalid." >&2
-        exit 1
-    fi
-    cat >"$UPDATER_ENV" <<EOF
+    if [[ -n $UPDATE_REPOSITORY ]]; then
+        if [[ ! $UPDATE_REPOSITORY =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
+            echo "Automatic updates require an HTTPS github.com repository URL." >&2
+            exit 1
+        fi
+        if [[ ! $UPDATE_BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] || [[ $UPDATE_BRANCH == -* ]] || [[ $UPDATE_BRANCH == *..* ]]; then
+            echo "Automatic update branch is invalid." >&2
+            exit 1
+        fi
+        cat >"$UPDATER_ENV" <<EOF
 WEBMANAGER_UPDATE_ENABLED=1
 WEBMANAGER_UPDATE_REPOSITORY=$UPDATE_REPOSITORY
 WEBMANAGER_UPDATE_BRANCH=$UPDATE_BRANCH
 EOF
-    chown root:root "$UPDATER_ENV"
-    chmod 0600 "$UPDATER_ENV"
-elif [[ ! -f $UPDATER_ENV ]]; then
-    cat >"$UPDATER_ENV" <<EOF
+        chown root:root "$UPDATER_ENV"
+        chmod 0600 "$UPDATER_ENV"
+    elif [[ ! -f $UPDATER_ENV ]]; then
+        cat >"$UPDATER_ENV" <<EOF
 WEBMANAGER_UPDATE_ENABLED=0
 WEBMANAGER_UPDATE_REPOSITORY=
 WEBMANAGER_UPDATE_BRANCH=main
 EOF
-    chown root:root "$UPDATER_ENV"
-    chmod 0600 "$UPDATER_ENV"
+        chown root:root "$UPDATER_ENV"
+        chmod 0600 "$UPDATER_ENV"
+    fi
 fi
 
 env_value() {

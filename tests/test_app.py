@@ -1001,6 +1001,7 @@ class ServiceUnitTests(unittest.TestCase):
         installer = (root / "deploy" / "debian" / "install.sh").read_text(
             encoding="utf-8"
         )
+        setup = (root / "setup.sh").read_text(encoding="utf-8")
 
         self.assertIn("https://github", updater)
         self.assertIn("merge-base --is-ancestor", updater)
@@ -1016,8 +1017,15 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("ProtectSystem=full", service)
         self.assertIn("ReadWritePaths=/opt/webmanager", service)
         self.assertIn("--self-update", installer)
+        self.assertIn(
+            "https://github.com/coolguy1333/WebManager.git", installer
+        )
+        self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
+        self.assertIn("WEBMANAGER_GOOGLE_CLIENT_SECRET", setup)
+        self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
+        self.assertNotIn("Configure Google sign-in now?", setup)
 
     def test_legacy_user_schema_migrates_without_losing_users(self):
         with tempfile.TemporaryDirectory() as directory:

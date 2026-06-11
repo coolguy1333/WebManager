@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+DEFAULT_UPDATE_REPOSITORY=https://github.com/coolguy1333/WebManager.git
+DEFAULT_UPDATE_BRANCH=main
 
 if [[ ! -r /etc/os-release ]]; then
     echo "This installer requires Debian Linux." >&2
@@ -44,37 +46,35 @@ done
 
 if [[ $HAS_UPDATE_REPOSITORY -eq 0 ]] \
     && [[ ! -f /etc/webmanager/updater.env ]] \
-    && ! git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1 \
-    && [[ -t 0 ]]; then
-    echo
-    echo "Automatic update checks need this project's HTTPS GitHub URL."
-    echo "Example: https://github.com/OWNER/WebManager.git"
-    read -r -p "GitHub repository URL (blank to disable update checks): " UPDATE_REPOSITORY
-    if [[ -n $UPDATE_REPOSITORY ]]; then
-        read -r -p "Update branch [main]: " UPDATE_BRANCH
-        UPDATE_BRANCH=${UPDATE_BRANCH:-main}
-        set -- "$@" \
-            --update-repository "$UPDATE_REPOSITORY" \
-            --update-branch "$UPDATE_BRANCH"
-    fi
+    && ! git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+    set -- "$@" \
+        --update-repository "$DEFAULT_UPDATE_REPOSITORY" \
+        --update-branch "$DEFAULT_UPDATE_BRANCH"
 fi
 
 bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"
 
-if ! grep -Eq '^WEBMANAGER_GOOGLE_CLIENT_ID=.+$' /etc/webmanager/webmanager.env 2>/dev/null; then
-    echo
-    echo "Google sign-in still needs a Google OAuth client and a public HTTPS URL."
-    if [[ -t 0 ]]; then
-        read -r -p "Configure Google sign-in now? [Y/n]: " answer
-        case ${answer:-Y} in
-            [Yy]*)
-                bash "$SCRIPT_DIR/configure-google.sh"
-                ;;
-            *)
-                echo "Later, run: bash configure-google.sh"
-                ;;
-        esac
-    else
-        echo "Run from the project folder: bash configure-google.sh"
+GOOGLE_CONFIG_COMPLETE=1
+for key in \
+    WEBMANAGER_GOOGLE_CLIENT_ID \
+    WEBMANAGER_GOOGLE_CLIENT_SECRET \
+    WEBMANAGER_GOOGLE_REDIRECT_URI; do
+    if ! grep -Eq "^${key}=.+$" /etc/webmanager/webmanager.env 2>/dev/null; then
+        GOOGLE_CONFIG_COMPLETE=0
+        break
     fi
+done
+
+if [[ $GOOGLE_CONFIG_COMPLETE -eq 0 ]]; then
+    echo
+    echo "Google sign-in setup is required."
+    echo "No Google credentials are preset; enter them securely during this step."
+    if [[ -t 0 ]]; then
+        bash "$SCRIPT_DIR/configure-google.sh"
+    else
+        echo "Interactive input is unavailable." >&2
+        echo "Run from the project folder: bash configure-google.sh" >&2
+    fi
+else
+    echo "Keeping the existing Google sign-in configuration."
 fi

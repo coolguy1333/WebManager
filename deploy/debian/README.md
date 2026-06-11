@@ -12,7 +12,8 @@ Quick installation from the project root:
 bash setup.sh
 ```
 
-Setup can then configure HTTPS and Google sign-in. If that step was skipped:
+Interactive setup immediately collects the Google sign-in and optional HTTPS
+settings. For a non-interactive installation, run:
 
 ```bash
 bash configure-google.sh
