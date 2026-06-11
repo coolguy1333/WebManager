@@ -44,6 +44,16 @@
   <div class="flash error">{{ site.last_error }}</div>
 {% endif %}
 
+{% if routing and can_manage %}
+<section class="panel program-update-card">
+  <div class="program-update-copy">
+    <strong>Cloudflare Tunnel must include the wildcard hostname.</strong>
+    <small>An entry for the dashboard hostname alone does not route this site. Add public hostname <code>{{ routing.wildcard }}</code> with service <code>{{ routing.origin }}</code>, and ensure HTTPS covers the wildcard.</small>
+    <small>Local routing test: <code>{{ routing.local_test }}</code></small>
+  </div>
+</section>
+{% endif %}
+
 {% if site.repository_pending_commit and can_manage_repository %}
 <section class="panel program-update-card">
   <div class="program-update-copy">

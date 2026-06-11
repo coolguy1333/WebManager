@@ -1561,6 +1561,352 @@ pre {
   width: min(260px, 100%);
 }
 
+.admin-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 22px;
+}
+
+.admin-hero h1 {
+  margin-bottom: 8px;
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+}
+
+.admin-hero p:last-child {
+  margin-bottom: 0;
+}
+
+.admin-nav {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 30px;
+  padding: 5px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-nav a {
+  padding: 9px 14px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.admin-nav a:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-nav a.active {
+  color: var(--text);
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.admin-subnav {
+  display: flex;
+  gap: 18px;
+  margin: -10px 0 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-subnav a {
+  padding: 10px 2px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.admin-subnav a.active {
+  border-bottom-color: var(--primary);
+  color: var(--text);
+}
+
+.admin-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-workspace-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 112px;
+  padding: 20px;
+  color: var(--text);
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+
+.admin-workspace-card:hover {
+  transform: translateY(-2px);
+  border-color: #465166;
+  color: var(--text);
+}
+
+.admin-workspace-card > div,
+.admin-record-title {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.admin-workspace-card strong {
+  font-size: 1.05rem;
+}
+
+.admin-workspace-card small,
+.admin-record-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-workspace-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 9px;
+  color: var(--primary);
+  background: rgba(88, 166, 255, 0.08);
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.admin-help-card {
+  margin-top: 16px;
+  padding: 20px;
+}
+
+.admin-help-card p {
+  margin: 6px 0 0;
+  font-size: 0.86rem;
+}
+
+.admin-workspace-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 22px;
+  margin-bottom: 18px;
+}
+
+.admin-workspace-head h2 {
+  margin-bottom: 4px;
+  font-size: 1.65rem;
+}
+
+.admin-workspace-head p {
+  margin-bottom: 0;
+  font-size: 0.86rem;
+}
+
+.admin-record-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-record,
+.admin-create-panel {
+  overflow: hidden;
+}
+
+.admin-record > summary,
+.admin-create-panel > summary {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 16px 18px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.admin-record > summary::-webkit-details-marker,
+.admin-create-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-record > summary::after,
+.admin-create-panel > summary::after {
+  content: "+";
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 1.15rem;
+}
+
+.admin-record[open] > summary::after,
+.admin-create-panel[open] > summary::after {
+  content: "−";
+}
+
+.admin-record[open] > summary,
+.admin-create-panel[open] > summary {
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-record-title {
+  flex: 1;
+}
+
+.admin-record-tags {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.admin-record-tags .pill {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-create-panel {
+  margin-bottom: 14px;
+  border-style: dashed;
+}
+
+.admin-create-panel > summary {
+  color: var(--primary);
+  font-weight: 750;
+}
+
+.admin-record-editor {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+
+.admin-form-grid,
+.admin-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-form-grid textarea {
+  min-height: 78px;
+  padding: 11px 13px;
+  resize: vertical;
+}
+
+.admin-toggle-grid .check-row {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.admin-choice-grid,
+.admin-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 16px;
+}
+
+.admin-choice-grid {
+  max-height: 250px;
+  overflow: auto;
+}
+
+.admin-choice-grid .compact-check {
+  padding: 7px 8px;
+  border-radius: 7px;
+}
+
+.admin-choice-grid .compact-check:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.admin-record-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-acl-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.admin-acl-grid label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid rgba(48, 54, 61, 0.7);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.admin-acl-grid label > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.admin-acl-grid label > span strong,
+.admin-acl-grid label > span small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-acl-grid select {
+  height: 36px;
+  padding: 0 9px;
+}
+
+.admin-update-panel {
+  display: grid;
+  gap: 24px;
+  padding: 24px;
+}
+
+.admin-update-commits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.admin-update-commits > div {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.admin-update-commits dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.admin-update-commits dd {
+  margin: 0;
+}
+
 .multi-deploy-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1775,7 +2121,46 @@ pre {
 
   .admin-user-grid,
   .admin-group-grid,
-  .admin-switches {
+  .admin-switches,
+  .admin-overview-grid,
+  .admin-form-grid,
+  .admin-toggle-grid,
+  .admin-choice-grid,
+  .admin-permission-grid,
+  .admin-acl-grid,
+  .admin-update-commits {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-hero,
+  .admin-workspace-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-workspace-head .filter-input {
+    width: 100%;
+  }
+
+  .admin-record > summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding-right: 48px;
+  }
+
+  .admin-record-tags {
+    width: calc(100% - 51px);
+    order: 3;
+    justify-content: flex-start;
+    margin-left: 51px;
+  }
+
+  .admin-record > summary::after {
+    position: absolute;
+    right: 30px;
+  }
+
+  .admin-acl-grid label {
     grid-template-columns: 1fr;
   }
 

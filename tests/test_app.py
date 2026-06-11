@@ -372,6 +372,46 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Google sign-in is unrestricted", response.data)
 
+    def test_admin_console_keeps_workspaces_separate(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        user_id = self.add_user("operator")
+        repository_root = Path(self.temp_directory.name) / "admin-sections-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            group_id = database.execute(
+                "INSERT INTO groups (name) VALUES ('Operators')"
+            ).lastrowid
+            pool_id = database.execute(
+                "INSERT INTO pools (name) VALUES ('Production')"
+            ).lastrowid
+            database.commit()
+        self.login_user(admin_id)
+
+        overview = self.client.get("/admin/")
+        self.assertIn(b"Access model", overview.data)
+        self.assertNotIn(f"/admin/users/{user_id}".encode(), overview.data)
+        self.assertNotIn(f"/admin/groups/{group_id}".encode(), overview.data)
+
+        people = self.client.get("/admin/?section=users")
+        self.assertIn(f"/admin/users/{user_id}".encode(), people.data)
+        self.assertNotIn(b'action="/admin/groups"', people.data)
+
+        groups = self.client.get("/admin/?section=groups")
+        self.assertIn(f"/admin/groups/{group_id}".encode(), groups.data)
+        self.assertNotIn(f"/admin/users/{user_id}".encode(), groups.data)
+
+        pools = self.client.get("/admin/access?section=pools")
+        self.assertIn(f"/admin/pools/{pool_id}".encode(), pools.data)
+        self.assertNotIn(f"/admin/sites/{site_id}/access".encode(), pools.data)
+
+        site_access = self.client.get("/admin/access?section=sites")
+        self.assertIn(f"/admin/sites/{site_id}/access".encode(), site_access.data)
+        self.assertNotIn(f"/admin/pools/{pool_id}".encode(), site_access.data)
+
     def test_admin_can_create_group_and_assign_it_to_user(self):
         admin_id = self.add_user("admin", is_admin=True)
         user_id = self.add_user("operator")
@@ -841,6 +881,12 @@ class WebManagerTestCase(unittest.TestCase):
         )
         response = self.client.get(f"/sites/{site['id']}")
         self.assertIn(b'href="https://demo-site.webmanager.example"', response.data)
+        self.assertIn(b"*.webmanager.example", response.data)
+        self.assertIn(b"http://localhost:8080", response.data)
+        self.assertIn(
+            b"curl -I -H &#39;Host: demo-site.webmanager.example&#39;",
+            response.data,
+        )
         self.assertNotIn(
             b'href="https://demo-site.webmanager.example" target="_blank"',
             response.data,
@@ -1623,7 +1669,12 @@ class ServiceUnitTests(unittest.TestCase):
 
         self.assertIn("https://github", updater)
         self.assertIn("merge-base --is-ancestor", updater)
-        self.assertIn("python\" -m unittest discover", updater)
+        self.assertIn('"$TEST_PYTHON" -m unittest discover', updater)
+        self.assertIn("Reusing installed Python dependencies", updater)
+        self.assertIn("UPDATE_STAGE=installing_dependencies", updater)
+        self.assertIn("--retries 5", updater)
+        self.assertIn("REUSE_VENV=0", installer)
+        self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn("rollback()", updater)
         self.assertIn("flock -n", updater)
         self.assertIn("APPROVED_COMMIT", updater)

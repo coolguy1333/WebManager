@@ -148,8 +148,14 @@ if [[ $PUBLIC_URL == https://* && $PUBLIC_HOST != "localhost" && $PUBLIC_HOST !=
     echo
     echo "The dashboard certificate does not automatically cover deployed site subdomains."
     echo "HTTPS site links require wildcard TLS coverage for *.$PUBLIC_HOST."
-    echo "Answer yes when Cloudflare Tunnel routes *.$PUBLIC_HOST to local port 8080."
-    read -r -p "Are *.$PUBLIC_HOST site addresses covered by HTTPS or Cloudflare Tunnel? [y/N]: " SITE_TLS_ANSWER
+    echo
+    echo "For Cloudflare Tunnel, add a SECOND public hostname:"
+    echo
+    echo "  *.$PUBLIC_HOST -> http://localhost:8080"
+    echo
+    echo "The existing $PUBLIC_HOST tunnel entry does not match site subdomains."
+    echo "Cloudflare must also issue or provide TLS coverage for *.$PUBLIC_HOST."
+    read -r -p "Is that wildcard tunnel hostname working with HTTPS? [y/N]: " SITE_TLS_ANSWER
     case $SITE_TLS_ANSWER in
         [Yy] | [Yy][Ee][Ss])
             SITE_PUBLIC_SCHEME=https
@@ -293,7 +299,8 @@ echo
 echo "Google sign-in is configured."
 echo "Open: $PUBLIC_URL/auth/login"
 echo "Site addresses: $SITE_PUBLIC_SCHEME://<site-name>.$PUBLIC_HOST"
-echo "DNS required: *.$PUBLIC_HOST must point to this server."
+echo "Cloudflare Tunnel public hostname required:"
+echo "  *.$PUBLIC_HOST -> http://localhost:8080"
 if [[ $SITE_PUBLIC_SCHEME == http ]]; then
     echo "Site links use HTTP until wildcard HTTPS is configured for *.$PUBLIC_HOST."
 fi

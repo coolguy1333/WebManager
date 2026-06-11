@@ -73,6 +73,21 @@ def site_public_url(site) -> str:
     return f"http://{request_hostname()}:{site['port']}"
 
 
+def site_routing_details(site) -> dict[str, str] | None:
+    domain = current_app.config["SITE_BASE_DOMAIN"]
+    if not domain:
+        return None
+    hostname = f"{site['slug']}.{domain}"
+    return {
+        "hostname": hostname,
+        "wildcard": f"*.{domain}",
+        "origin": "http://localhost:8080",
+        "local_test": (
+            f"curl -I -H 'Host: {hostname}' http://127.0.0.1:8080/"
+        ),
+    }
+
+
 def repository_path_is_managed(path: str | Path) -> bool:
     root = Path(current_app.config["REPOSITORY_ROOT"]).resolve()
     candidate = Path(path).resolve()
@@ -529,6 +544,7 @@ def site_detail(site_id):
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
         can_manage=can_manage_site(site, database),
         can_manage_repository=can_manage_resource(site["user_id"]),
+        routing=site_routing_details(site),
         analytics=site_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
             hostname,

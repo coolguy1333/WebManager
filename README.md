@@ -212,6 +212,15 @@ webmanager.example.com   -> http://localhost:8080
 ```
 
 Nginx routes requests on port `8080` by their original hostname.
+The exact dashboard entry does not match subdomains. Both Cloudflare public
+hostnames are required. For a dashboard at `web.mhsit.club`, the site entry is
+`*.web.mhsit.club`, not another entry for `web.mhsit.club`.
+
+Cloudflare's standard zone certificate commonly covers the zone apex and
+first-level wildcard only. A site such as `demo.web.mhsit.club` may require
+additional wildcard certificate coverage for `*.web.mhsit.club`. An alternative
+is to use `mhsit.club` as the site base domain, producing
+`demo.mhsit.club`.
 
 The internal site ports should not be opened in UFW or a cloud firewall.
 
@@ -321,8 +330,12 @@ The first Google account that signs in becomes the initial **super
 administrator**. On an upgraded installation, the oldest existing account is
 promoted automatically if no administrator exists.
 
-Administrators have an **Admin** link in the navigation. The administration
-page can:
+Administrators have an **Admin** link in the navigation. The console separates
+tasks into **Overview**, **People**, **Groups**, **Access**, and **Updates** so
+only the controls for the selected task are displayed. Account, group, pool,
+and site editors stay collapsed until opened.
+
+The admin console can:
 
 - Enable or disable user accounts
 - Promote additional super administrators
@@ -350,7 +363,8 @@ roles:
 | `Viewer` | See the site in the dashboard, inspect its details, and open it |
 | `Operator` | Viewer access plus start, stop, restart, edit Nginx configuration, and delete |
 
-Use **Admin > Pools and site access** to assign sites and roles. A direct site
+Use **Admin > Access > Pools** to assign normal site access. Use **Direct site
+access** only for exceptions. A direct site
 grant is useful for an exception without exposing the whole pool. When several
 grants apply, the strongest role wins. Site ACLs do not grant repository
 control, so source updates and deployment settings remain with the repository
@@ -1278,6 +1292,16 @@ and select **Approve and install**.
 Setup runs the first check immediately. A super administrator can also select
 **Check now** in the Admin page; this asks the hardened systemd updater service
 to run without granting the web process root access.
+
+When application requirements are unchanged, update validation reuses the
+installed virtual environment instead of downloading the same packages again.
+Failures are reported separately for environment creation, dependency
+installation, and application tests.
+
+Running `bash setup.sh` over an existing installation also reuses a healthy
+virtual environment when requirements are unchanged. The database, repository
+clones, site logs, and Google configuration remain under `/var/lib/webmanager`
+and `/etc/webmanager` and are not replaced.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.

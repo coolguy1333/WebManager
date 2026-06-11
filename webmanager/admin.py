@@ -82,6 +82,20 @@ def _replace_acl(database, table, scope_column, scope_id, users, groups):
 @admin_access_required(USERS_MANAGE, GROUPS_MANAGE, ACCESS_MANAGE)
 def dashboard():
     database = get_db()
+    can_manage_users = has_permission(USERS_MANAGE)
+    can_manage_groups = has_permission(GROUPS_MANAGE)
+    can_manage_access = has_permission(ACCESS_MANAGE)
+    super_admin = is_admin()
+    available_sections = {"overview"}
+    if can_manage_users:
+        available_sections.add("users")
+    if can_manage_groups:
+        available_sections.add("groups")
+    if super_admin:
+        available_sections.add("updates")
+    active_section = request.args.get("section", "overview")
+    if active_section not in available_sections:
+        active_section = "overview"
     users = database.execute(
         """
         SELECT users.*,
@@ -118,19 +132,32 @@ def dashboard():
     permissions = database.execute(
         "SELECT * FROM permissions ORDER BY name"
     ).fetchall()
+    counts = {
+        "users": len(users),
+        "active_users": sum(bool(user["is_active"]) for user in users),
+        "groups": len(groups),
+        "pools": database.execute("SELECT COUNT(*) AS count FROM pools").fetchone()[
+            "count"
+        ],
+        "sites": database.execute("SELECT COUNT(*) AS count FROM sites").fetchone()[
+            "count"
+        ],
+    }
     return render_template(
         "admin/dashboard.html",
-        title="Administration",
+        title="Admin console",
+        active_section=active_section,
+        counts=counts,
         users=users,
         groups=groups,
         memberships=memberships,
         group_permissions=group_permissions,
         permissions=permissions,
-        can_manage_users=has_permission(USERS_MANAGE),
-        can_manage_groups=has_permission(GROUPS_MANAGE),
-        can_manage_access=has_permission(ACCESS_MANAGE),
-        super_admin=is_admin(),
-        update_status=read_update_status() if is_admin() else None,
+        can_manage_users=can_manage_users,
+        can_manage_groups=can_manage_groups,
+        can_manage_access=can_manage_access,
+        super_admin=super_admin,
+        update_status=read_update_status() if super_admin else None,
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -143,6 +170,9 @@ def dashboard():
 @admin_access_required(ACCESS_MANAGE)
 def access_dashboard():
     database = get_db()
+    active_section = request.args.get("section", "pools")
+    if active_section not in {"pools", "sites"}:
+        active_section = "pools"
     users = database.execute(
         """
         SELECT id, username, email, display_name, is_active
@@ -186,13 +216,18 @@ def access_dashboard():
     }
     return render_template(
         "admin/access.html",
-        title="Pools and access",
+        title="Access control",
+        active_section=active_section,
         users=users,
         groups=groups,
         pools=pools,
         sites=sites,
         pool_acl=pool_acl,
         site_acl=site_acl,
+        can_manage_users=has_permission(USERS_MANAGE),
+        can_manage_groups=has_permission(GROUPS_MANAGE),
+        can_manage_access=True,
+        super_admin=is_admin(),
     )
 
 
@@ -205,7 +240,7 @@ def create_pool():
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
         flash("Pool names must be 2-60 letters, numbers, spaces, dots, dashes, or underscores.", "error")
-        return redirect(url_for("admin.access_dashboard"))
+        return redirect(url_for("admin.access_dashboard", section="pools"))
     try:
         database = get_db()
         database.execute(
@@ -218,7 +253,7 @@ def create_pool():
         flash("A pool with that name already exists.", "error")
     else:
         flash(f"Pool {name} created.", "success")
-    return redirect(url_for("admin.access_dashboard"))
+    return redirect(url_for("admin.access_dashboard", section="pools"))
 
 
 @bp.post("/pools/<int:pool_id>")
@@ -234,7 +269,7 @@ def update_pool(pool_id):
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
         flash("Enter a valid pool name.", "error")
-        return redirect(url_for("admin.access_dashboard"))
+        return redirect(url_for("admin.access_dashboard", section="pools"))
     users = database.execute("SELECT id FROM users").fetchall()
     groups = database.execute("SELECT id FROM groups").fetchall()
     valid_site_ids = {
@@ -272,7 +307,7 @@ def update_pool(pool_id):
         flash("That pool name or assignment conflicts with an existing pool.", "error")
     else:
         flash(f"Pool {name} updated.", "success")
-    return redirect(url_for("admin.access_dashboard"))
+    return redirect(url_for("admin.access_dashboard", section="pools"))
 
 
 @bp.post("/pools/<int:pool_id>/delete")
@@ -287,7 +322,7 @@ def delete_pool(pool_id):
     database.execute("DELETE FROM pools WHERE id = ?", (pool_id,))
     database.commit()
     flash(f"Pool {pool['name']} deleted. Its sites were not deleted.", "success")
-    return redirect(url_for("admin.access_dashboard"))
+    return redirect(url_for("admin.access_dashboard", section="pools"))
 
 
 @bp.post("/sites/<int:site_id>/access")
@@ -304,7 +339,7 @@ def update_site_access(site_id):
     _replace_acl(database, "site_acl", "site_id", site_id, users, groups)
     database.commit()
     flash(f"Direct access for {site['name']} updated.", "success")
-    return redirect(url_for("admin.access_dashboard"))
+    return redirect(url_for("admin.access_dashboard", section="sites"))
 
 
 @bp.post("/updates/install")
@@ -322,7 +357,7 @@ def install_program_update():
         or status["state"] != "available"
     ):
         flash("That update is no longer available. Wait for the next check.", "error")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.dashboard", section="updates"))
 
     try:
         request_program_update(commit)
@@ -333,7 +368,7 @@ def install_program_update():
             "Update approved. WebManager will test, back up all data, and install it.",
             "success",
         )
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="updates"))
 
 
 @bp.post("/updates/check")
@@ -352,7 +387,7 @@ def check_program_update():
             "Update check requested. Refresh this page in a few seconds.",
             "success",
         )
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="updates"))
 
 
 @bp.post("/users/<int:user_id>")
@@ -374,7 +409,7 @@ def update_user(user_id):
     admin = request.form.get("is_admin") == "on" if is_admin() else bool(user["is_admin"])
     if user_id == g.user["id"] and not active:
         flash("You cannot disable your own account.", "error")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.dashboard", section="users"))
 
     if user["is_admin"] and (not admin or not active):
         active_admins = database.execute(
@@ -382,7 +417,7 @@ def update_user(user_id):
         ).fetchone()["count"]
         if active_admins <= 1:
             flash("The final active administrator cannot be disabled or demoted.", "error")
-            return redirect(url_for("admin.dashboard"))
+            return redirect(url_for("admin.dashboard", section="users"))
 
     group_ids = {
         int(value)
@@ -421,7 +456,7 @@ def update_user(user_id):
     )
     database.commit()
     flash(f"Updated {user['display_name'] or user['username']}.", "success")
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="users"))
 
 
 @bp.post("/groups")
@@ -434,7 +469,7 @@ def create_group():
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
         flash("Group names must be 2-60 letters, numbers, spaces, dots, dashes, or underscores.", "error")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.dashboard", section="groups"))
     permissions = _selected_permissions(database)
     try:
         cursor = database.execute(
@@ -451,7 +486,7 @@ def create_group():
         flash("A group with that name already exists.", "error")
     else:
         flash(f"Group {name} created.", "success")
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="groups"))
 
 
 @bp.post("/groups/<int:group_id>")
@@ -476,7 +511,7 @@ def update_group(group_id):
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
         flash("Enter a valid group name.", "error")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.dashboard", section="groups"))
     permissions = _selected_permissions(database)
     try:
         database.execute(
@@ -498,7 +533,7 @@ def update_group(group_id):
         flash("A group with that name already exists.", "error")
     else:
         flash(f"Group {name} updated.", "success")
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="groups"))
 
 
 @bp.post("/groups/<int:group_id>/delete")
@@ -522,4 +557,4 @@ def delete_group(group_id):
     database.execute("DELETE FROM groups WHERE id = ?", (group_id,))
     database.commit()
     flash(f"Group {group['name']} deleted.", "success")
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.dashboard", section="groups"))

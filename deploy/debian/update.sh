@@ -65,13 +65,29 @@ PY
 INSTALLED_COMMIT=
 NEW_COMMIT=
 APPROVED_COMMIT=
+UPDATE_STAGE=checking
 record_failure() {
     local exit_code=$?
+    local message
     trap - ERR
     if [[ -n $APPROVED_COMMIT ]]; then
         rm -f "$REQUEST_FILE"
+        case "$UPDATE_STAGE" in
+            preparing_test)
+                message="The approved update could not create its isolated test environment."
+                ;;
+            installing_dependencies)
+                message="The approved update could not install its test dependencies. Check network and Python package logs."
+                ;;
+            running_tests)
+                message="The approved update failed its application test suite. Review the updater journal."
+                ;;
+            *)
+                message="The approved update failed validation before installation. Review the updater journal."
+                ;;
+        esac
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "The approved update failed validation or testing and was not installed."
+            "$message"
     else
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
             "The GitHub update check failed. Review the updater service logs."
@@ -190,16 +206,31 @@ done
 
 write_status "testing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
     "Testing the super-admin-approved update."
-python3 -m venv "$WORK_DIR/check-venv"
-"$WORK_DIR/check-venv/bin/python" -m pip install \
-    --disable-pip-version-check \
-    -q \
-    -r "$SOURCE_DIR/requirements.txt"
-"$WORK_DIR/check-venv/bin/python" -m unittest discover \
+TEST_PYTHON=
+if [[ -x "$APP_DIR/.venv/bin/python" ]] \
+    && [[ -r "$APP_DIR/requirements.txt" ]] \
+    && cmp -s "$APP_DIR/requirements.txt" "$SOURCE_DIR/requirements.txt"; then
+    TEST_PYTHON="$APP_DIR/.venv/bin/python"
+    echo "Reusing installed Python dependencies because requirements are unchanged."
+else
+    UPDATE_STAGE=preparing_test
+    python3 -m venv "$WORK_DIR/check-venv"
+    TEST_PYTHON="$WORK_DIR/check-venv/bin/python"
+    UPDATE_STAGE=installing_dependencies
+    "$TEST_PYTHON" -m pip install \
+        --disable-pip-version-check \
+        --retries 5 \
+        --timeout 30 \
+        -q \
+        -r "$SOURCE_DIR/requirements.txt"
+fi
+UPDATE_STAGE=running_tests
+"$TEST_PYTHON" -m unittest discover \
     -s "$SOURCE_DIR/tests" \
     -t "$SOURCE_DIR" \
     -v
 
+UPDATE_STAGE=backing_up
 BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-${INSTALLED_COMMIT:-unknown}"
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 cp -a "$APP_DIR" "$BACKUP_DIR/app"

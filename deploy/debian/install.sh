@@ -126,6 +126,14 @@ if ! id webmanager >/dev/null 2>&1; then
 fi
 
 echo "[3/8] Installing application files"
+REUSE_VENV=0
+if [[ -x "$APP_DIR/.venv/bin/python" ]] \
+    && [[ -r "$APP_DIR/requirements.txt" ]] \
+    && cmp -s "$APP_DIR/requirements.txt" "$SOURCE_DIR/requirements.txt" \
+    && "$APP_DIR/.venv/bin/python" -c \
+        "import authlib, flask, requests, waitress" 2>/dev/null; then
+    REUSE_VENV=1
+fi
 install -d -o root -g root -m 0755 "$APP_DIR"
 rm -rf "$APP_DIR/webmanager"
 cp -a "$SOURCE_DIR/webmanager" "$APP_DIR/webmanager"
@@ -151,10 +159,22 @@ find "$APP_DIR/webmanager" -type d -exec chmod 0755 {} +
 find "$APP_DIR/webmanager" -type f -exec chmod 0644 {} +
 chown -R root:root "$APP_DIR"
 
-echo "[4/8] Creating the Python virtual environment"
-python3 -m venv "$APP_DIR/.venv"
-"$APP_DIR/.venv/bin/python" -m pip install --disable-pip-version-check --upgrade pip
-"$APP_DIR/.venv/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+echo "[4/8] Preparing the Python virtual environment"
+if [[ $REUSE_VENV -eq 1 ]]; then
+    echo "Reusing the installed Python environment because requirements are unchanged."
+else
+    python3 -m venv "$APP_DIR/.venv"
+    "$APP_DIR/.venv/bin/python" -m pip install \
+        --disable-pip-version-check \
+        --retries 5 \
+        --timeout 30 \
+        --upgrade pip
+    "$APP_DIR/.venv/bin/python" -m pip install \
+        --disable-pip-version-check \
+        --retries 5 \
+        --timeout 30 \
+        -r "$APP_DIR/requirements.txt"
+fi
 chown -R root:root "$APP_DIR/.venv"
 
 echo "[5/8] Preparing persistent data and configuration"

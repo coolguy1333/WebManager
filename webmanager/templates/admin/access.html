@@ -7,150 +7,121 @@
 </select>
 {% endmacro %}
 {% block content %}
-<section class="page-head compact">
+<section class="admin-hero">
   <div>
-    <a class="back-link" href="{{ url_for('admin.dashboard') }}">&larr; Administration</a>
-    <p class="eyebrow">Resource ACLs</p>
+    <p class="eyebrow">Administration</p>
     <h1>Pools and access</h1>
-    <p>Viewer can inspect and open sites. Operator can also start, stop, restart, edit, and delete sites.</p>
+    <p>Use pools for normal access and site exceptions only when necessary.</p>
   </div>
-  <span class="head-meta">{{ pools|length }} pools</span>
+  <span class="head-meta">{{ pools|length }} pools / {{ sites|length }} sites</span>
 </section>
 
-<nav class="page-tabs" aria-label="Administration sections">
-  <a href="{{ url_for('admin.dashboard') }}">Users &amp; groups</a>
-  <a class="active" href="{{ url_for('admin.access_dashboard') }}">Pools &amp; ACLs</a>
+{% set can_manage_access = true %}
+{% include "admin/_nav.html" %}
+
+<nav class="admin-subnav" aria-label="Access sections">
+  <a class="{{ 'active' if active_section == 'pools' else '' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}">Pools</a>
+  <a class="{{ 'active' if active_section == 'sites' else '' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}">Direct site access</a>
 </nav>
 
-<section class="summary-grid">
-  <div class="summary-card"><span>Pools</span><strong>{{ pools|length }}</strong></div>
-  <div class="summary-card"><span>Sites</span><strong>{{ sites|length }}</strong></div>
-  <div class="summary-card"><span>Users</span><strong>{{ users|length }}</strong></div>
-  <div class="summary-card"><span>Groups</span><strong>{{ groups|length }}</strong></div>
+{% if active_section == "pools" %}
+<section class="admin-workspace-head">
+  <div><h2>Resource pools</h2><p>Each site belongs to at most one pool. Viewer can inspect; Operator can also control the site.</p></div>
+  <input class="filter-input" type="search" placeholder="Find a pool" data-filter-input="pools" aria-label="Filter pools">
 </section>
 
-<section class="panel access-guide">
-  <strong>How access is calculated</strong>
-  <p>Site ownership, super-admin, and global resource permissions still apply. Pool and direct-site roles are combined, and the strongest role wins.</p>
-</section>
-
-<section class="section-block">
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Inventory groups</p>
-      <h2>Resource pools</h2>
-      <p>A site can belong to one pool. Moving it into another pool updates its inherited access.</p>
-    </div>
-    <input class="filter-input" type="search" placeholder="Filter pools or sites" data-filter-input="pools" aria-label="Filter pools">
-  </div>
-  <div class="admin-group-grid">
-    <form class="panel admin-group-card" method="post" action="{{ url_for('admin.create_pool') }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <p class="eyebrow">New pool</p>
+<details class="panel admin-create-panel">
+  <summary>Create pool</summary>
+  <form class="admin-record-editor" method="post" action="{{ url_for('admin.create_pool') }}" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <div class="admin-form-grid">
       <label>Pool name<input name="name" maxlength="60" placeholder="Production" required></label>
-      <label>Description<textarea name="description" maxlength="300" rows="3" placeholder="Sites managed by this team"></textarea></label>
-      <button class="button primary" type="submit" data-loading-text="Creating...">Create pool</button>
-    </form>
+      <label>Description<textarea name="description" maxlength="300" rows="2" placeholder="Sites managed by this team"></textarea></label>
+    </div>
+    <div class="admin-record-actions"><span></span><button class="button primary" type="submit" data-loading-text="Creating...">Create pool</button></div>
+  </form>
+</details>
 
-    {% for pool in pools %}
-    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_pool', pool_id=pool.id) }}" data-loading data-filter-item="pools" data-filter-text="{{ pool.name }} {{ pool.description or '' }}">
+<div class="admin-record-list">
+  {% for pool in pools %}
+  <details class="panel admin-record" data-filter-item="pools" data-filter-text="{{ pool.name }} {{ pool.description or '' }}">
+    <summary>
+      <span class="admin-workspace-icon">P</span>
+      <span class="admin-record-title"><strong>{{ pool.name }}</strong><small>{{ pool.description or "No description" }}</small></span>
+      <span class="admin-record-tags"><span class="count-badge">{{ pool.site_count }} sites</span></span>
+    </summary>
+    <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_pool', pool_id=pool.id) }}" data-loading>
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <div class="admin-card-head">
-        <div>
-          <p class="eyebrow">Pool</p>
-          <h3>{{ pool.name }}</h3>
-        </div>
-        <span class="count-badge">{{ pool.site_count }} sites</span>
+      <div class="admin-form-grid">
+        <label>Pool name<input name="name" maxlength="60" value="{{ pool.name }}" required></label>
+        <label>Description<textarea name="description" maxlength="300" rows="2">{{ pool.description or "" }}</textarea></label>
       </div>
-      <label>Pool name<input name="name" maxlength="60" value="{{ pool.name }}" required></label>
-      <label>Description<textarea name="description" maxlength="300" rows="2">{{ pool.description or "" }}</textarea></label>
       <fieldset class="permission-fieldset">
-        <legend>Sites</legend>
-        <div class="access-site-list">
+        <legend>Sites in this pool</legend>
+        <div class="admin-choice-grid">
           {% for site in sites %}
           <label class="compact-check">
             <input type="checkbox" name="sites" value="{{ site.id }}" {% if site.pool_id == pool.id %}checked{% endif %}>
-            <span>{{ site.name }}{% if site.pool_id and site.pool_id != pool.id %}<small>Currently in {{ site.pool_name }}</small>{% endif %}</span>
+            <span>{{ site.name }}{% if site.pool_id and site.pool_id != pool.id %}<small>In {{ site.pool_name }}</small>{% endif %}</span>
           </label>
-          {% else %}
-          <small>No sites have been deployed.</small>
+          {% else %}<small>No sites deployed.</small>{% endfor %}
+        </div>
+      </fieldset>
+      <fieldset class="permission-fieldset">
+        <legend>Pool access</legend>
+        <div class="admin-acl-grid">
+          {% for group in groups %}
+          <label><span><strong>{{ group.name }}</strong><small>Group</small></span>{{ role_select("group_role_" ~ group.id, pool_acl.get((pool.id, "group", group.id), "")) }}</label>
+          {% endfor %}
+          {% for user in users %}
+          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>User{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, pool_acl.get((pool.id, "user", user.id), "")) }}</label>
           {% endfor %}
         </div>
       </fieldset>
-      <details class="acl-editor">
-        <summary>Pool access</summary>
-        <div class="acl-grid">
-          {% for user in users %}
-          <label>
-            <span>{{ user.display_name or user.email or user.username }} <small>User{% if not user.is_active %}, disabled{% endif %}</small></span>
-            {{ role_select("user_role_" ~ user.id, pool_acl.get((pool.id, "user", user.id), "")) }}
-          </label>
-          {% endfor %}
-          {% for group in groups %}
-          <label>
-            <span>{{ group.name }} <small>Group</small></span>
-            {{ role_select("group_role_" ~ group.id, pool_acl.get((pool.id, "group", group.id), "")) }}
-          </label>
-          {% endfor %}
-        </div>
-      </details>
-      <div class="admin-card-foot">
-        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_pool', pool_id=pool.id) }}" data-confirm-button="Delete this pool? Sites remain deployed, but inherited access is removed.">Delete pool</button>
+      <div class="admin-record-actions">
+        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_pool', pool_id=pool.id) }}" data-confirm-button="Delete this pool? Sites remain deployed, but inherited access is removed.">Delete</button>
         <button class="button primary small" type="submit" data-loading-text="Saving...">Save pool</button>
       </div>
     </form>
-    {% endfor %}
-  </div>
-</section>
+  </details>
+  {% else %}
+  <div class="panel empty-state"><h3>No pools</h3><p>Create a pool to group sites and share access.</p></div>
+  {% endfor %}
+</div>
+{% endif %}
 
-<section class="section-block">
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Exceptions</p>
-      <h2>Direct site access</h2>
-      <p>Use direct grants when someone needs access to one site without access to its entire pool.</p>
-    </div>
-    <input class="filter-input" type="search" placeholder="Filter sites" data-filter-input="sites" aria-label="Filter sites">
-  </div>
-  <div class="admin-group-grid">
-    {% for site in sites %}
-    <form class="panel admin-group-card access-card" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading data-filter-item="sites" data-filter-text="{{ site.name }} {{ site.slug }} {{ site.pool_name or '' }}">
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <div class="admin-card-head">
-        <div>
-          <p class="eyebrow">Site</p>
-          <h3>{{ site.name }}</h3>
-          <span class="table-sub">{{ site.slug }}{% if site.pool_name %} / {{ site.pool_name }}{% endif %}</span>
-        </div>
-      </div>
-      <details class="acl-editor" open>
-        <summary>Direct user and group roles</summary>
-        <div class="acl-grid">
-        {% for user in users %}
-        <label>
-          <span>{{ user.display_name or user.email or user.username }} <small>User</small></span>
-          {{ role_select("user_role_" ~ user.id, site_acl.get((site.id, "user", user.id), "")) }}
-        </label>
-        {% endfor %}
-        {% for group in groups %}
-        <label>
-          <span>{{ group.name }} <small>Group</small></span>
-          {{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}
-        </label>
-        {% endfor %}
-        </div>
-      </details>
-      <div class="admin-card-foot">
-        <small>Owner: {{ site.owner_name or site.owner_email }}</small>
-        <button class="button primary small" type="submit" data-loading-text="Saving...">Save direct access</button>
-      </div>
-    </form>
-    {% else %}
-    <div class="panel empty-state">
-      <h3>No sites deployed</h3>
-      <p>Direct access controls appear after the first site is created.</p>
-    </div>
-    {% endfor %}
-  </div>
+{% if active_section == "sites" %}
+<section class="admin-workspace-head">
+  <div><h2>Direct site access</h2><p>Exceptions override nothing; the strongest direct or pool role wins.</p></div>
+  <input class="filter-input" type="search" placeholder="Find a site" data-filter-input="sites" aria-label="Filter sites">
 </section>
+<div class="admin-record-list">
+  {% for site in sites %}
+  <details class="panel admin-record" data-filter-item="sites" data-filter-text="{{ site.name }} {{ site.slug }} {{ site.pool_name or '' }}">
+    <summary>
+      <span class="admin-workspace-icon">S</span>
+      <span class="admin-record-title"><strong>{{ site.name }}</strong><small>{{ site.slug }} / {{ site.owner_name or site.owner_email }}</small></span>
+      <span class="admin-record-tags">{% if site.pool_name %}<span class="pill">{{ site.pool_name }}</span>{% endif %}</span>
+    </summary>
+    <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <fieldset class="permission-fieldset">
+        <legend>Exception roles</legend>
+        <div class="admin-acl-grid">
+          {% for group in groups %}
+          <label><span><strong>{{ group.name }}</strong><small>Group</small></span>{{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}</label>
+          {% endfor %}
+          {% for user in users %}
+          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>User{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, site_acl.get((site.id, "user", user.id), "")) }}</label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <div class="admin-record-actions"><small>Pool access still applies.</small><button class="button primary small" type="submit" data-loading-text="Saving...">Save exception</button></div>
+    </form>
+  </details>
+  {% else %}
+  <div class="panel empty-state"><h3>No sites deployed</h3><p>Direct access controls appear after the first site is created.</p></div>
+  {% endfor %}
+</div>
+{% endif %}
 {% endblock %}
