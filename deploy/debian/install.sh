@@ -213,30 +213,6 @@ ensure_env WEBMANAGER_SITE_PUBLIC_SCHEME "http"
 ensure_env WEBMANAGER_AUTO_REFRESH_ENABLED "1"
 ensure_env WEBMANAGER_AUTO_REFRESH_POLL_SECONDS "30"
 
-set_env_value() {
-    local key=$1
-    local value=$2
-    local temporary
-    temporary=$(mktemp)
-    grep -v "^${key}=" "$CONFIG_DIR/webmanager.env" >"$temporary" || true
-    printf '%s=%s\n' "$key" "$value" >>"$temporary"
-    install -o root -g webmanager -m 0640 "$temporary" "$CONFIG_DIR/webmanager.env"
-    rm -f "$temporary"
-}
-
-SITE_BASE_DOMAIN=$(sed -n 's/^WEBMANAGER_SITE_BASE_DOMAIN=//p' "$CONFIG_DIR/webmanager.env" | tail -n 1)
-GOOGLE_REDIRECT_URI=$(sed -n 's/^WEBMANAGER_GOOGLE_REDIRECT_URI=//p' "$CONFIG_DIR/webmanager.env" | tail -n 1)
-if [[ -z $SITE_BASE_DOMAIN && -n $GOOGLE_REDIRECT_URI ]]; then
-    SITE_BASE_DOMAIN=$(python3 - "$GOOGLE_REDIRECT_URI" <<'PY'
-import sys
-from urllib.parse import urlsplit
-print(urlsplit(sys.argv[1]).hostname or "")
-PY
-)
-    if [[ -n $SITE_BASE_DOMAIN ]]; then
-        set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"
-    fi
-fi
 chown root:webmanager "$CONFIG_DIR/webmanager.env"
 chmod 0640 "$CONFIG_DIR/webmanager.env"
 
@@ -347,7 +323,7 @@ if [[ -n $DASHBOARD_HOST ]]; then
     rm -f "$DASHBOARD_NGINX_TEMP"
 fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
-if [[ -n $SITE_BASE_DOMAIN ]]; then
+if [[ -n $SITE_BASE_DOMAIN || -n $DASHBOARD_HOST ]]; then
     SITE_NGINX_TEMP=$(mktemp)
     cat >"$SITE_NGINX_TEMP" <<EOF
 map \$http_cf_connecting_ip \$webmanager_site_client_ip {
@@ -365,7 +341,9 @@ server {
     listen [::]:80;
     listen 8080;
     listen [::]:8080;
-    server_name *.$SITE_BASE_DOMAIN;
+    # The exact dashboard server_name takes priority. Unknown hosts reach the
+    # managed gateway and receive its default 404 response.
+    server_name _;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;

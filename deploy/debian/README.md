@@ -45,4 +45,18 @@ For Cloudflare Tunnel, route both the dashboard hostname and a wildcard public
 hostname such as `*.webmanager.example.com` to `http://localhost:8080`.
 WebManager routes the shared tunnel traffic by hostname.
 
+After installation, super administrators can add more deployment domains from
+**Admin > Domains**. The page shows the Cloudflare Tunnel hostname, origin,
+wildcard DNS record, and verification command required for each domain. No
+additional root-owned Nginx edit is needed. Super administrators can also keep
+an exact-and-subdomain blocklist there to prevent selected domains from being
+used for new assignments.
+
+Sites may use either a subdomain or the domain root. Root hosting requires an
+additional Cloudflare Tunnel published hostname and proxied DNS record for the
+zone apex; the wildcard record alone does not match it.
+
+Interactive `setup.sh` asks for the initial deployment domain and stores it as
+the default. Reinstalls preserve the configured value.
+
 Read the root `README.md` before exposing the service to the Internet. It includes firewall, HTTPS, private repository, backup, upgrade, and troubleshooting instructions.

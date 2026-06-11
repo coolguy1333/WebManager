@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import current_app
 
 from .db import get_db
+from .domains import site_hostname
 from .nginx import (
     NginxConfigError,
     build_main_config,
@@ -67,15 +68,14 @@ class RuntimeManager:
                     continue
 
     def migrate_site_configs(self):
-        domain = self.app.config["SITE_BASE_DOMAIN"]
-        if not domain:
-            return
         gateway_port = self.app.config["SITE_GATEWAY_PORT"]
         with self.app.app_context():
             database = get_db()
             sites = database.execute("SELECT * FROM sites").fetchall()
             for site in sites:
-                hostname = f"{site['slug']}.{domain}"
+                hostname = site_hostname(database, site)
+                if not hostname:
+                    continue
                 routed = route_site_config(
                     site["nginx_config"],
                     site["port"],
@@ -298,13 +298,10 @@ class RuntimeManager:
 
             for site in active:
                 try:
-                    hostname = None
-                    gateway_port = None
-                    if self.app.config["SITE_BASE_DOMAIN"]:
-                        hostname = (
-                            f"{site['slug']}.{self.app.config['SITE_BASE_DOMAIN']}"
-                        )
-                        gateway_port = self.app.config["SITE_GATEWAY_PORT"]
+                    hostname = site_hostname(database, site)
+                    gateway_port = (
+                        self.app.config["SITE_GATEWAY_PORT"] if hostname else None
+                    )
                     validate_site_config(
                         site["nginx_config"],
                         site["document_root"],
@@ -324,7 +321,7 @@ class RuntimeManager:
                     root,
                     config_dir,
                     self.app.config["SITE_GATEWAY_PORT"]
-                    if self.app.config["SITE_BASE_DOMAIN"]
+                    if database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
                     else None,
                 ),
                 encoding="utf-8",

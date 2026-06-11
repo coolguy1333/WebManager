@@ -64,8 +64,8 @@
       <p class="eyebrow">Live inventory</p>
       <h2>Deployments</h2>
     </div>
-    {% if site_base_domain %}
-      <span class="range-label">Sites: *.{{ site_base_domain }}</span>
+    {% if site_domains %}
+      <span class="range-label">{{ site_domains|length }} public domain{{ "" if site_domains|length == 1 else "s" }}</span>
     {% else %}
       <span class="range-label">Port range {{ port_min }}-{{ port_max }}</span>
     {% endif %}
@@ -77,7 +77,7 @@
           <div class="site-card-top">
             <span class="status-dot {{ site.status }}"></span>
             <span class="status-label">{{ site.status }}</span>
-            <span class="port-chip">{{ site.slug }}{% if site_base_domain %}.{{ site_base_domain }}{% else %}:{{ site.port }}{% endif %}</span>
+            <span class="port-chip">{% if site.domain_name %}{% if not site.use_domain_root %}{{ site.slug }}.{% endif %}{{ site.domain_name }}{% else %}{{ site.slug }}:{{ site.port }}{% endif %}</span>
           </div>
           <a class="site-card-title" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
             <h3>{{ site.name }}</h3>
@@ -89,7 +89,7 @@
             <span class="backend-label">{{ site.runtime_backend or "Not started" }}</span>
             <div class="card-actions">
               {% if site.status == "running" %}
-                <a href="{{ site_public_url(site) }}">Open</a>
+                <a href="{{ site_public_url(site) }}" target="_blank" rel="noopener noreferrer">Open</a>
               {% endif %}
               <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
                 {{ "Manage" if site.id in manageable_site_ids else "View" }} &rarr;

@@ -56,6 +56,21 @@ CREATE TABLE IF NOT EXISTS pools (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS domains_one_default_uq
+ON domains(is_default) WHERE is_default = 1;
+
+CREATE TABLE IF NOT EXISTS blocked_domains (
+    name TEXT PRIMARY KEY COLLATE NOCASE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS repositories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -83,6 +98,8 @@ CREATE TABLE IF NOT EXISTS sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    domain_id INTEGER REFERENCES domains(id) ON DELETE RESTRICT,
+    use_domain_root INTEGER NOT NULL DEFAULT 0,
     name TEXT NOT NULL,
     slug TEXT NOT NULL,
     folder TEXT NOT NULL,
@@ -160,6 +177,7 @@ def init_db():
     database.executescript(SCHEMA)
     _migrate_users(database)
     _migrate_repositories(database)
+    _migrate_domains(database)
     _migrate_sites(database)
     _seed_permissions(database)
     _ensure_initial_admin(database)
@@ -240,6 +258,33 @@ def _seed_permissions(database):
 
 
 def _migrate_sites(database):
+    columns = {
+        row["name"]
+        for row in database.execute("PRAGMA table_info(sites)").fetchall()
+    }
+    if "domain_id" not in columns:
+        database.execute(
+            "ALTER TABLE sites ADD COLUMN domain_id INTEGER REFERENCES domains(id)"
+        )
+    if "use_domain_root" not in columns:
+        database.execute(
+            "ALTER TABLE sites ADD COLUMN use_domain_root INTEGER NOT NULL DEFAULT 0"
+        )
+    database.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS sites_domain_root_uq
+        ON sites(domain_id) WHERE use_domain_root = 1 AND domain_id IS NOT NULL
+        """
+    )
+    default = database.execute(
+        "SELECT id FROM domains ORDER BY is_default DESC, id LIMIT 1"
+    ).fetchone()
+    if default is not None:
+        database.execute(
+            "UPDATE sites SET domain_id = ? WHERE domain_id IS NULL",
+            (default["id"],),
+        )
+
     used_slugs = set()
     sites = database.execute("SELECT id, slug FROM sites ORDER BY id").fetchall()
     for site in sites:
@@ -259,6 +304,43 @@ def _migrate_sites(database):
     database.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS sites_slug_uq ON sites(slug)"
     )
+
+
+def _migrate_domains(database):
+    configured = current_app.config.get("SITE_BASE_DOMAIN", "")
+    has_domains = database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
+    if configured and has_domains is None:
+        database.execute(
+            "INSERT INTO domains (name, is_default) VALUES (?, 1)",
+            (configured,),
+        )
+    has_default = database.execute(
+        "SELECT 1 FROM domains WHERE is_default = 1 LIMIT 1"
+    ).fetchone()
+    if has_default is None:
+        blocked = {
+            row["name"]
+            for row in database.execute("SELECT name FROM blocked_domains").fetchall()
+        }
+        first = next(
+            (
+                row
+                for row in database.execute(
+                    "SELECT id, name FROM domains ORDER BY id"
+                ).fetchall()
+                if not any(
+                    row["name"] == denied
+                    or row["name"].endswith(f".{denied}")
+                    for denied in blocked
+                )
+            ),
+            None,
+        )
+        if first:
+            database.execute(
+                "UPDATE domains SET is_default = 1 WHERE id = ?",
+                (first["id"],),
+            )
 
 
 def _ensure_initial_admin(database):

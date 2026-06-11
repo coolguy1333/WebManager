@@ -20,6 +20,23 @@
 <form method="post" action="{{ url_for('deployments.deploy_repository', repository_id=repository.id) }}" data-loading>
   <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="multi_deploy" value="1">
+  {% if site_domains %}
+  <section class="panel domain-picker">
+    <label>
+      Public domain for selected sites
+      <select name="domain_id" required>
+        {% for domain in site_domains %}
+        <option value="{{ domain.id }}">{{ domain.name }}{% if domain.is_default %} (default){% endif %}</option>
+        {% endfor %}
+      </select>
+      <small>Each selected site gets its slug under this domain.</small>
+    </label>
+    <label class="check-row">
+      <input type="checkbox" name="use_domain_root">
+      <span><strong>Host at domain root</strong><small>Use the selected domain itself, such as <code>mhsit.club</code>. Exactly one site must be selected.</small></span>
+    </label>
+  </section>
+  {% endif %}
   <div class="section-heading">
     <div>
       <p class="eyebrow">Index pages found</p>
@@ -50,8 +67,8 @@
         <span><strong>SPA fallback</strong><small>Unknown routes load {{ candidate.index_file }}.</small></span>
       </label>
       <small>
-        {% if site_base_domain %}
-          Gets a unique <code>*.{{ site_base_domain }}</code> hostname and internal port.
+        {% if site_domains %}
+          Gets a unique hostname on the selected domain and an internal port.
         {% else %}
           Gets an automatic port from {{ port_min }}-{{ port_max }}.
         {% endif %}

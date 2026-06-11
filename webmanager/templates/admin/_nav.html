@@ -3,5 +3,6 @@
   {% if can_manage_users|default(false) %}<a class="{{ 'active' if active_section == 'users' else '' }}" href="{{ url_for('admin.dashboard', section='users') }}">People</a>{% endif %}
   {% if can_manage_groups|default(false) %}<a class="{{ 'active' if active_section == 'groups' else '' }}" href="{{ url_for('admin.dashboard', section='groups') }}">Groups</a>{% endif %}
   {% if can_manage_access|default(true) %}<a class="{{ 'active' if active_section in ['pools', 'sites'] else '' }}" href="{{ url_for('admin.access_dashboard') }}">Access</a>{% endif %}
+  {% if super_admin|default(false) %}<a class="{{ 'active' if active_section == 'domains' else '' }}" href="{{ url_for('admin.domains_dashboard') }}">Domains</a>{% endif %}
   {% if super_admin|default(false) %}<a class="{{ 'active' if active_section == 'updates' else '' }}" href="{{ url_for('admin.dashboard', section='updates') }}">Updates</a>{% endif %}
 </nav>

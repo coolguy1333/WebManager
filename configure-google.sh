@@ -64,7 +64,8 @@ print(urlsplit(sys.argv[1]).port or "")
 PY
 )
 SITE_PUBLIC_SCHEME=http
-SITE_BASE_DOMAIN=$(python3 - "$PUBLIC_HOST" <<'PY'
+CONFIGURED_SITE_BASE_DOMAIN=$(sed -n 's/^WEBMANAGER_SITE_BASE_DOMAIN=//p' "$ENV_FILE" | tail -n 1)
+SUGGESTED_SITE_BASE_DOMAIN=$(python3 - "$PUBLIC_HOST" <<'PY'
 import sys
 
 host = sys.argv[1].strip(".").lower()
@@ -72,13 +73,18 @@ parts = host.split(".")
 print(".".join(parts[1:]) if len(parts) >= 3 else host)
 PY
 )
+SITE_BASE_DOMAIN=$CONFIGURED_SITE_BASE_DOMAIN
 
 if [[ $PUBLIC_HOST != "localhost" && $PUBLIC_HOST != "127.0.0.1" && $PUBLIC_HOST != "::1" ]]; then
     echo
     echo "Hosted sites need their own wildcard base domain."
     echo "The dashboard remains at $PUBLIC_HOST."
-    read -r -p "Hosted site base domain [$SITE_BASE_DOMAIN]: " SITE_BASE_ANSWER
-    SITE_BASE_DOMAIN=${SITE_BASE_ANSWER:-$SITE_BASE_DOMAIN}
+    if [[ -n $SITE_BASE_DOMAIN ]]; then
+        echo "Hosted site base domain: $SITE_BASE_DOMAIN"
+    else
+        read -r -p "Hosted site base domain [$SUGGESTED_SITE_BASE_DOMAIN]: " SITE_BASE_ANSWER
+        SITE_BASE_DOMAIN=${SITE_BASE_ANSWER:-$SUGGESTED_SITE_BASE_DOMAIN}
+    fi
     if ! SITE_BASE_DOMAIN=$(python3 - "$SITE_BASE_DOMAIN" <<'PY'
 import re
 import sys
@@ -301,7 +307,9 @@ server {
     listen [::]:80;
     listen 8080;
     listen [::]:8080;
-    server_name *.$SITE_BASE_DOMAIN;
+    # The exact dashboard server_name takes priority. WebManager validates
+    # configured site hostnames at the loopback gateway.
+    server_name _;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;

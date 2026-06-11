@@ -13,7 +13,7 @@
     {% if can_manage %}
       <a class="button ghost" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Settings</a>
     {% if site.status == "running" %}
-      <a class="button primary" href="{{ public_url }}">Open site &rarr;</a>
+      <a class="button primary" href="{{ public_url }}" target="_blank" rel="noopener noreferrer">Open site &rarr;</a>
       <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
         <button class="button ghost" type="submit" data-loading-text="Restarting...">Restart</button>
@@ -88,7 +88,7 @@
       <div>
         <dt>Address</dt>
         <dd class="copy-row">
-          <a href="{{ public_url }}">{{ public_url }}</a>
+          <a href="{{ public_url }}" target="_blank" rel="noopener noreferrer">{{ public_url }}</a>
           <button class="copy-button" type="button" data-copy="{{ public_url }}">Copy</button>
         </dd>
       </div>

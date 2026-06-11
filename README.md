@@ -347,6 +347,7 @@ The admin console can:
 - Choose the permissions granted by each group
 - Create Proxmox-style resource pools for sites
 - Grant Viewer or Operator access to a pool or an individual site
+- Add multiple deployment domains and choose the default for new sites
 
 Available permissions:
 
@@ -380,6 +381,43 @@ super administrator.
 
 Disabled users are signed out on their next request and cannot complete Google
 sign-in until an administrator reactivates them.
+
+### Admin-managed deployment domains
+
+Super administrators can open **Admin > Domains** to add more base domains.
+Existing sites keep their assigned domain. New deployments use the default
+domain unless the owner selects another configured domain, and a site's domain
+can be changed later from its settings page.
+
+A site can also be assigned to the domain root, such as `https://mhsit.club`,
+instead of `https://site.mhsit.club`. Only one site can claim each domain root,
+and the WebManager dashboard hostname cannot be assigned to a site.
+
+Interactive `setup.sh` requires the first deployment domain and creates it as
+the default. Reinstalling or updating preserves that domain. Setup never
+guesses the deployment domain from the dashboard hostname.
+
+The same page includes a deployment-domain blocklist. Entries may be separated
+by commas or new lines. Blocking `example.com` also blocks every subdomain,
+including `school.example.com`. Blocked domains cannot be added, selected for
+new deployments, assigned to another site, or made the default. Existing sites
+using a newly blocked domain remain online and are marked so an administrator
+can move them without an unexpected outage.
+
+For every added domain, the Domains page displays the required Cloudflare
+configuration:
+
+1. Add Cloudflare Tunnel published application hostnames for `example.com`
+   when root hosting is needed and `*.example.com` for site subdomains.
+2. Send it to `http://localhost:8080`, or to
+   `http://WEBMANAGER-LAN-IP:8080` when `cloudflared` runs elsewhere.
+3. Confirm Cloudflare DNS has proxied Tunnel/CNAME records for the zone apex
+   and wildcard `*`.
+4. Verify with `nslookup test.example.com 1.1.1.1`.
+
+System Nginx accepts candidate hostnames on port `8080`, but the internal
+loopback gateway serves only exact site hostnames stored by WebManager.
+Unconfigured hostnames return `404`.
 
 ### 3. Restrict who may sign in
 

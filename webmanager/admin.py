@@ -22,6 +22,12 @@ from .access_control import (
     is_admin,
 )
 from .db import get_db
+from .domains import (
+    blocked_domain_names,
+    dashboard_hostname,
+    domain_is_blocked,
+    normalize_domain,
+)
 from .security import login_required, validate_csrf
 from .update_status import (
     read_update_status,
@@ -142,6 +148,9 @@ def dashboard():
         "sites": database.execute("SELECT COUNT(*) AS count FROM sites").fetchone()[
             "count"
         ],
+        "domains": database.execute("SELECT COUNT(*) AS count FROM domains").fetchone()[
+            "count"
+        ],
     }
     return render_template(
         "admin/dashboard.html",
@@ -163,6 +172,209 @@ def dashboard():
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
         ),
     )
+
+
+@bp.get("/domains")
+@login_required
+def domains_dashboard():
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    domain_rows = database.execute(
+        """
+        SELECT domains.*, COUNT(sites.id) AS site_count
+        FROM domains
+        LEFT JOIN sites ON sites.domain_id = domains.id
+        GROUP BY domains.id
+        ORDER BY domains.is_default DESC, domains.name COLLATE NOCASE
+        """
+    ).fetchall()
+    blocked = blocked_domain_names(database)
+    domains = [
+        {**dict(domain), "is_blocked": domain_is_blocked(domain["name"], blocked)}
+        for domain in domain_rows
+    ]
+    return render_template(
+        "admin/domains.html",
+        title="Domains",
+        active_section="domains",
+        domains=domains,
+        blocked_domains=sorted(blocked),
+        dashboard_host=dashboard_hostname(),
+        can_manage_users=has_permission(USERS_MANAGE),
+        can_manage_groups=has_permission(GROUPS_MANAGE),
+        can_manage_access=has_permission(ACCESS_MANAGE),
+        super_admin=True,
+    )
+
+
+@bp.post("/domains")
+@login_required
+def create_domain():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        name = normalize_domain(request.form.get("name", ""))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    database = get_db()
+    blocked = blocked_domain_names(database)
+    if domain_is_blocked(name, blocked):
+        flash(
+            f"{name} is blocked by the deployment-domain blocklist.",
+            "error",
+        )
+        return redirect(url_for("admin.domains_dashboard"))
+    make_default = request.form.get("is_default") == "on"
+    try:
+        current_default = database.execute(
+            "SELECT name FROM domains WHERE is_default = 1"
+        ).fetchone()
+        if (
+            make_default
+            or current_default is None
+            or domain_is_blocked(current_default["name"], blocked)
+        ):
+            database.execute("UPDATE domains SET is_default = 0")
+            make_default = True
+        database.execute(
+            "INSERT INTO domains (name, is_default) VALUES (?, ?)",
+            (name, int(make_default)),
+        )
+        database.commit()
+    except sqlite3.IntegrityError:
+        database.rollback()
+        flash("That domain already exists.", "error")
+    else:
+        flash(f"Domain {name} added.", "success")
+    return redirect(url_for("admin.domains_dashboard"))
+
+
+@bp.post("/domains/<int:domain_id>/default")
+@login_required
+def set_default_domain(domain_id):
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    domain = database.execute(
+        "SELECT * FROM domains WHERE id = ?",
+        (domain_id,),
+    ).fetchone()
+    if domain is None:
+        abort(404)
+    if domain_is_blocked(domain["name"], blocked_domain_names(database)):
+        flash("A blocked domain cannot be the default.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    database.execute("UPDATE domains SET is_default = 0")
+    database.execute(
+        "UPDATE domains SET is_default = 1 WHERE id = ?",
+        (domain_id,),
+    )
+    database.commit()
+    flash(f"{domain['name']} is now the default deployment domain.", "success")
+    return redirect(url_for("admin.domains_dashboard"))
+
+
+@bp.post("/domains/<int:domain_id>/delete")
+@login_required
+def delete_domain(domain_id):
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    domain = database.execute(
+        """
+        SELECT domains.*, COUNT(sites.id) AS site_count
+        FROM domains
+        LEFT JOIN sites ON sites.domain_id = domains.id
+        WHERE domains.id = ?
+        GROUP BY domains.id
+        """,
+        (domain_id,),
+    ).fetchone()
+    if domain is None:
+        abort(404)
+    if domain["site_count"]:
+        flash(
+            f"Move the {domain['site_count']} assigned site(s) before deleting this domain.",
+            "error",
+        )
+        return redirect(url_for("admin.domains_dashboard"))
+    database.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+    if domain["is_default"]:
+        blocked = blocked_domain_names(database)
+        replacement = next(
+            (
+                row
+                for row in database.execute(
+                    "SELECT id, name FROM domains ORDER BY id"
+                ).fetchall()
+                if not domain_is_blocked(row["name"], blocked)
+            ),
+            None,
+        )
+        if replacement:
+            database.execute(
+                "UPDATE domains SET is_default = 1 WHERE id = ?",
+                (replacement["id"],),
+            )
+    database.commit()
+    flash(f"Domain {domain['name']} removed.", "success")
+    return redirect(url_for("admin.domains_dashboard"))
+
+
+@bp.post("/domains/blocklist")
+@login_required
+def update_domain_blocklist():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    raw_entries = re.split(r"[\s,]+", request.form.get("blocked_domains", ""))
+    try:
+        blocked = {
+            normalize_domain(value)
+            for value in raw_entries
+            if value.strip()
+        }
+    except ValueError as exc:
+        flash(f"Blocklist not saved: {exc}", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+
+    database = get_db()
+    database.execute("DELETE FROM blocked_domains")
+    database.executemany(
+        "INSERT INTO blocked_domains (name) VALUES (?)",
+        ((name,) for name in sorted(blocked)),
+    )
+    default = database.execute(
+        "SELECT id, name FROM domains WHERE is_default = 1"
+    ).fetchone()
+    if default and domain_is_blocked(default["name"], blocked):
+        database.execute("UPDATE domains SET is_default = 0")
+        replacement = next(
+            (
+                row
+                for row in database.execute(
+                    "SELECT id, name FROM domains ORDER BY id"
+                ).fetchall()
+                if not domain_is_blocked(row["name"], blocked)
+            ),
+            None,
+        )
+        if replacement:
+            database.execute(
+                "UPDATE domains SET is_default = 1 WHERE id = ?",
+                (replacement["id"],),
+            )
+    database.commit()
+    flash(
+        f"Domain blocklist saved with {len(blocked)} entr{'y' if len(blocked) == 1 else 'ies'}.",
+        "success",
+    )
+    return redirect(url_for("admin.domains_dashboard"))
 
 
 @bp.get("/access")

@@ -170,6 +170,9 @@ class WebManagerTestCase(unittest.TestCase):
                 "SELECT local_path FROM repositories WHERE id = ?",
                 (repository_id,),
             ).fetchone()
+            domain_id = database.execute(
+                "SELECT id FROM domains WHERE is_default = 1 LIMIT 1"
+            ).fetchone()["id"]
             repository_root = Path(repository["local_path"]).resolve()
             resolved_document_root = Path(document_root).resolve()
             try:
@@ -181,14 +184,15 @@ class WebManagerTestCase(unittest.TestCase):
             cursor = database.execute(
                 """
                 INSERT INTO sites (
-                    user_id, repository_id, name, slug, folder, document_root,
+                    user_id, repository_id, domain_id, name, slug, folder, document_root,
                     index_file, port, spa_fallback, nginx_config, status,
                     runtime_backend
-                ) VALUES (?, ?, 'Demo', 'demo', ?, ?, 'index.html', ?, 1, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'Demo', 'demo', ?, ?, 'index.html', ?, 1, ?, ?, ?)
                 """,
                 (
                     user_id,
                     repository_id,
+                    domain_id,
                     folder,
                     str(document_root),
                     port,
@@ -411,6 +415,191 @@ class WebManagerTestCase(unittest.TestCase):
         site_access = self.client.get("/admin/access?section=sites")
         self.assertIn(f"/admin/sites/{site_id}/access".encode(), site_access.data)
         self.assertNotIn(f"/admin/pools/{pool_id}".encode(), site_access.data)
+
+    def test_super_admin_can_add_domain_and_assign_it_to_site(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        owner_id = self.add_user("owner")
+        repository_root = Path(self.temp_directory.name) / "domain-site-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        self.login_user(admin_id)
+
+        response = self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "school-sites.example",
+                "is_default": "on",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Domain school-sites.example added", response.data)
+        self.assertIn(b"*.school-sites.example", response.data)
+        self.assertIn(b"http://localhost:8080", response.data)
+
+        with self.app.app_context():
+            domain_id = get_db().execute(
+                "SELECT id FROM domains WHERE name = 'school-sites.example'"
+            ).fetchone()["id"]
+
+        self.login_user(owner_id)
+        with patch.object(
+            self.app.extensions["runtime_manager"],
+            "sync_nginx_configs",
+        ):
+            response = self.client.post(
+                f"/sites/{site_id}/settings",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "Demo",
+                    "slug": "demo",
+                    "folder": "domain-site-repo",
+                    "port": "43100",
+                    "domain_id": str(domain_id),
+                    "spa_fallback": "on",
+                },
+                follow_redirects=True,
+            )
+        self.assertIn(b"Site settings saved", response.data)
+        with self.app.app_context():
+            site = get_db().execute(
+                "SELECT * FROM sites WHERE id = ?",
+                (site_id,),
+            ).fetchone()
+        self.assertEqual(site["domain_id"], domain_id)
+        self.assertIn(
+            "server_name demo.school-sites.example",
+            site["nginx_config"],
+        )
+
+        self.login_user(admin_id)
+        blocked = self.client.post(
+            f"/admin/domains/{domain_id}/delete",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Move the 1 assigned site", blocked.data)
+
+    def test_delegated_admin_cannot_manage_domains(self):
+        manager_id = self.add_user("manager")
+        with self.app.app_context():
+            database = get_db()
+            group_id = database.execute(
+                "INSERT INTO groups (name) VALUES ('Access managers')"
+            ).lastrowid
+            database.execute(
+                """
+                INSERT INTO group_permissions (group_id, permission_code)
+                VALUES (?, 'access.manage')
+                """,
+                (group_id,),
+            )
+            database.execute(
+                "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)",
+                (manager_id, group_id),
+            )
+            database.commit()
+        self.login_user(manager_id)
+
+        self.assertEqual(self.client.get("/admin/domains").status_code, 403)
+        response = self.client.post(
+            "/admin/domains",
+            data={"_csrf_token": self.csrf(), "name": "blocked.example"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_domain_blocklist_blocks_parent_and_subdomains(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        owner_id = self.add_user("owner")
+        repository_root = Path(self.temp_directory.name) / "blocked-domain-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        site_id = self.add_site(owner_id, repository_id, repository_root)
+        self.login_user(admin_id)
+
+        response = self.client.post(
+            "/admin/domains/blocklist",
+            data={
+                "_csrf_token": self.csrf(),
+                "blocked_domains": "webmanager.example\ninternal.test",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"Domain blocklist saved with 2 entries", response.data)
+        self.assertIn(b"Blocked", response.data)
+        self.assertIn(b"Existing sites remain online until moved", response.data)
+
+        refused = self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "school.webmanager.example",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"blocked by the deployment-domain blocklist", refused.data)
+        with self.app.app_context():
+            self.assertIsNone(
+                get_db().execute(
+                    "SELECT id FROM domains WHERE name = 'school.webmanager.example'"
+                ).fetchone()
+            )
+            site = get_db().execute(
+                "SELECT * FROM sites WHERE id = ?",
+                (site_id,),
+            ).fetchone()
+        self.assertIn("server_name demo.webmanager.example", site["nginx_config"])
+
+        self.login_user(owner_id)
+        settings = self.client.get(f"/sites/{site_id}/settings")
+        self.assertIn(b"blocked; move recommended", settings.data)
+
+    def test_deleting_default_domain_does_not_promote_blocked_domain(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+
+        self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "blocked.example",
+            },
+        )
+        self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "replacement.example",
+                "is_default": "on",
+            },
+        )
+        self.client.post(
+            "/admin/domains/blocklist",
+            data={
+                "_csrf_token": self.csrf(),
+                "blocked_domains": "blocked.example",
+            },
+        )
+        with self.app.app_context():
+            database = get_db()
+            replacement_id = database.execute(
+                "SELECT id FROM domains WHERE name = 'replacement.example'"
+            ).fetchone()["id"]
+
+        self.client.post(
+            f"/admin/domains/{replacement_id}/delete",
+            data={"_csrf_token": self.csrf()},
+        )
+
+        with self.app.app_context():
+            default = get_db().execute(
+                "SELECT name FROM domains WHERE is_default = 1"
+            ).fetchone()
+        self.assertIsNotNone(default)
+        self.assertNotEqual(default["name"], "blocked.example")
 
     def test_admin_can_create_group_and_assign_it_to_user(self):
         admin_id = self.add_user("admin", is_admin=True)
@@ -872,11 +1061,16 @@ class WebManagerTestCase(unittest.TestCase):
                 site["nginx_config"],
             )
             self.assertIn("try_files $uri $uri/ /index.html", site["nginx_config"])
+            get_db().execute(
+                "UPDATE sites SET status = 'running' WHERE id = ?",
+                (site["id"],),
+            )
+            get_db().commit()
 
         response = self.client.get("/")
         self.assertIn(b"https://demo-site.webmanager.example", response.data)
-        self.assertNotIn(
-            b'href="https://demo-site.webmanager.example" target="_blank"',
+        self.assertIn(
+            b'href="https://demo-site.webmanager.example" target="_blank" rel="noopener noreferrer"',
             response.data,
         )
         response = self.client.get(f"/sites/{site['id']}")
@@ -887,8 +1081,8 @@ class WebManagerTestCase(unittest.TestCase):
             b"curl -I -H &#39;Host: demo-site.webmanager.example&#39;",
             response.data,
         )
-        self.assertNotIn(
-            b'href="https://demo-site.webmanager.example" target="_blank"',
+        self.assertIn(
+            b'href="https://demo-site.webmanager.example" target="_blank" rel="noopener noreferrer"',
             response.data,
         )
 
@@ -928,6 +1122,162 @@ class WebManagerTestCase(unittest.TestCase):
             [("Documentation", "docs"), ("Status", "status")],
         )
         self.assertNotEqual(sites[0]["port"], sites[1]["port"])
+
+    def test_site_can_be_deployed_at_domain_root(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "root-domain-repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("root", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        with self.app.app_context():
+            database = get_db()
+            domain_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('mhsit.club')"
+            ).lastrowid
+            database.commit()
+        self.login_user(user_id)
+
+        with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
+            response = self.client.post(
+                f"/repositories/{repository_id}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "multi_deploy": "1",
+                    "selected": "0",
+                    "folder_0": "public",
+                    "site_name_0": "Main site",
+                    "spa_fallback_0": "on",
+                    "domain_id": str(domain_id),
+                    "use_domain_root": "on",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"https://mhsit.club", response.data)
+        with self.app.app_context():
+            site = get_db().execute(
+                "SELECT * FROM sites WHERE domain_id = ?",
+                (domain_id,),
+            ).fetchone()
+        self.assertEqual(site["use_domain_root"], 1)
+        self.assertIn("server_name mhsit.club", site["nginx_config"])
+        self.assertNotIn("server_name main-site.mhsit.club", site["nginx_config"])
+
+        dashboard = self.client.get("/")
+        self.assertIn(b">mhsit.club<", dashboard.data)
+        self.assertNotIn(b"main-site.mhsit.club", dashboard.data)
+
+    def test_domain_root_can_only_be_assigned_to_one_site(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "root-conflict-repo"
+        first_root = repository_root / "first"
+        second_root = repository_root / "second"
+        first_root.mkdir(parents=True)
+        second_root.mkdir()
+        (first_root / "index.html").write_text("first", encoding="utf-8")
+        (second_root / "index.html").write_text("second", encoding="utf-8")
+        repository_id = self.add_repository(user_id, first_root)
+        first_site_id = self.add_site(user_id, repository_id, first_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE sites SET slug = 'first' WHERE id = ?",
+                (first_site_id,),
+            )
+            database.commit()
+        second_site_id = self.add_site(
+            user_id,
+            repository_id,
+            second_root,
+            port=43101,
+        )
+        with self.app.app_context():
+            database = get_db()
+            domain_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('mhsit.club')"
+            ).lastrowid
+            database.commit()
+        self.login_user(user_id)
+        runtime = self.app.extensions["runtime_manager"]
+
+        with patch.object(runtime, "sync_nginx_configs"):
+            first = self.client.post(
+                f"/sites/{first_site_id}/settings",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "First",
+                    "slug": "first",
+                    "folder": "first",
+                    "port": "43100",
+                    "domain_id": str(domain_id),
+                    "use_domain_root": "on",
+                },
+                follow_redirects=True,
+            )
+            second = self.client.post(
+                f"/sites/{second_site_id}/settings",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "Second",
+                    "slug": "second",
+                    "folder": "second",
+                    "port": "43101",
+                    "domain_id": str(domain_id),
+                    "use_domain_root": "on",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"Site settings saved", first.data)
+        self.assertIn(b"already has a site at its root", second.data)
+        with self.app.app_context():
+            root_sites = get_db().execute(
+                """
+                SELECT COUNT(*) AS count FROM sites
+                WHERE domain_id = ? AND use_domain_root = 1
+                """,
+                (domain_id,),
+            ).fetchone()["count"]
+        self.assertEqual(root_sites, 1)
+
+    def test_dashboard_hostname_cannot_be_used_as_site_root(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "dashboard-root-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("dashboard", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            domain_id = get_db().execute(
+                "SELECT id FROM domains WHERE name = 'webmanager.example'"
+            ).fetchone()["id"]
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/deploy",
+            data={
+                "_csrf_token": self.csrf(),
+                "multi_deploy": "1",
+                "selected": "0",
+                "folder_0": ".",
+                "site_name_0": "Conflict",
+                "domain_id": str(domain_id),
+                "use_domain_root": "on",
+            },
+            follow_redirects=True,
+        )
+
+        self.assertIn(
+            b"The WebManager dashboard hostname cannot also host a site",
+            response.data,
+        )
+        with self.app.app_context():
+            self.assertEqual(
+                get_db().execute("SELECT COUNT(*) AS count FROM sites").fetchone()[
+                    "count"
+                ],
+                0,
+            )
 
     def test_site_settings_can_change_folder_slug_port_and_fallback(self):
         user_id = self.add_user("alice")
@@ -1701,7 +2051,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
-        self.assertIn("server_name *.$SITE_BASE_DOMAIN", installer)
+        self.assertIn("managed gateway and receive its default 404", installer)
         self.assertIn("server_name $DASHBOARD_HOST", installer)
         self.assertIn("listen 8080", installer)
         self.assertIn("webmanager-uninstall", installer)
@@ -1711,7 +2061,14 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("WEBMANAGER_GOOGLE_CLIENT_SECRET", setup)
         self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
+        self.assertIn("Initial deployment domain:", setup)
+        self.assertIn("Default deployment domain added:", setup)
+        self.assertIn("INSERT INTO domains (name, is_default)", setup)
         self.assertNotIn("Configure Google sign-in now?", setup)
+        self.assertNotIn(
+            'set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"',
+            installer,
+        )
 
         google_setup = (root / "configure-google.sh").read_text(
             encoding="utf-8"
@@ -1724,8 +2081,9 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Allow unrestricted Google sign-in? [y/N]:", google_setup)
         self.assertIn("wildcard TLS coverage", google_setup)
         self.assertIn("Hosted site base domain", google_setup)
+        self.assertIn("CONFIGURED_SITE_BASE_DOMAIN", google_setup)
         self.assertIn("server_name $PUBLIC_HOST", google_setup)
-        self.assertIn("server_name *.$SITE_BASE_DOMAIN", google_setup)
+        self.assertIn("configured site hostnames at the loopback gateway", google_setup)
         self.assertIn(
             'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
             google_setup,

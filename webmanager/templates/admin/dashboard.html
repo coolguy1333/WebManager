@@ -45,6 +45,11 @@
   </a>
   {% endif %}
   {% if super_admin %}
+  <a class="panel admin-workspace-card" href="{{ url_for('admin.domains_dashboard') }}">
+    <span class="admin-workspace-icon">D</span>
+    <div><strong>Domains</strong><small>Add deployment domains and view Cloudflare setup.</small></div>
+    <span class="count-badge">{{ counts.domains }}</span>
+  </a>
   <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='updates') }}">
     <span class="admin-workspace-icon">↑</span>
     <div><strong>WebManager update</strong><small>Check, review, and approve program updates.</small></div>

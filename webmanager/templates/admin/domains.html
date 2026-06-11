@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="admin-hero">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>Domains</h1>
+    <p>Add public domain choices for deployments and configure each one in Cloudflare.</p>
+  </div>
+  <span class="head-meta">{{ domains|length }} configured</span>
+</section>
+
+{% include "admin/_nav.html" %}
+
+<section class="panel domain-blocklist-panel">
+  <div>
+    <p class="eyebrow">Restriction policy</p>
+    <h2>Blocked deployment domains</h2>
+    <p>Enter domains separated by commas or new lines. Blocking <code>example.com</code> also blocks every subdomain such as <code>school.example.com</code>.</p>
+  </div>
+  <form method="post" action="{{ url_for('admin.update_domain_blocklist') }}" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <label>
+      Domain blocklist
+      <textarea name="blocked_domains" rows="5" placeholder="example.com&#10;internal.example.net">{{ blocked_domains|join("\n") }}</textarea>
+    </label>
+    <button class="button primary" type="submit" data-loading-text="Saving...">Save blocklist</button>
+  </form>
+</section>
+
+<section class="panel cloudflare-guide">
+  <div>
+    <p class="eyebrow">Cloudflare Tunnel</p>
+    <h2>One origin, multiple domains</h2>
+    <p>For every domain below, publish its wildcard to the same WebManager origin. Keep the dashboard hostname as a separate exact route.</p>
+  </div>
+  <div class="cloudflare-steps">
+    {% if dashboard_host %}
+    <div><span>Dashboard route</span><code>{{ dashboard_host }} -> http://localhost:8080</code></div>
+    {% endif %}
+    <div><span>Tunnel service</span><code>http://localhost:8080</code></div>
+    <div><span>Remote connector</span><code>Use http://SERVER-LAN-IP:8080 if cloudflared runs on another machine.</code></div>
+    <div><span>Local verification</span><code>curl -I -H 'Host: SITE.DOMAIN' http://127.0.0.1:8080/</code></div>
+  </div>
+</section>
+
+<details class="panel admin-create-panel">
+  <summary>Add domain</summary>
+  <form class="admin-record-editor" method="post" action="{{ url_for('admin.create_domain') }}" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <div class="admin-form-grid">
+      <label>
+        Base domain
+        <input name="name" maxlength="253" placeholder="example.com" required>
+        <small>Sites become <code>site.example.com</code>.</small>
+      </label>
+      <label class="check-row domain-default-choice">
+        <input type="checkbox" name="is_default">
+        <span><strong>Make default</strong><small>Preselect this domain for new deployments.</small></span>
+      </label>
+    </div>
+    <div class="admin-record-actions"><span></span><button class="button primary" type="submit" data-loading-text="Adding...">Add domain</button></div>
+  </form>
+</details>
+
+<div class="admin-record-list">
+  {% for domain in domains %}
+  <details class="panel admin-record">
+    <summary>
+      <span class="admin-workspace-icon">D</span>
+      <span class="admin-record-title"><strong>{{ domain.name }}</strong><small>*.{{ domain.name }}</small></span>
+      <span class="admin-record-tags">
+        {% if domain.is_blocked %}<span class="pill error">Blocked</span>{% endif %}
+        {% if domain.is_default %}<span class="pill ready">Default</span>{% endif %}
+        <span class="count-badge">{{ domain.site_count }} sites</span>
+      </span>
+    </summary>
+    <div class="admin-record-editor">
+      <section class="domain-instructions">
+        {% if domain.is_blocked %}
+        <div class="flash warning"><span>This domain is blocked for new deployments and assignments. Existing sites remain online until moved.</span></div>
+        {% endif %}
+        <h3>Cloudflare setup</h3>
+        <ol>
+          <li>For root hosting, add published hostname <code>{{ domain.name }}</code> and send it to the WebManager origin.</li>
+          <li>In Zero Trust -> Networks -> Tunnels -> your tunnel, add published hostname <code>*.{{ domain.name }}</code>.</li>
+          <li>Set its service to <code>http://localhost:8080</code>, or the WebManager server LAN address when the connector is on another machine.</li>
+          <li>In DNS, confirm proxied Tunnel/CNAME records for the zone apex and wildcard <code>*</code> exist.</li>
+          <li>Test with <code>nslookup test.{{ domain.name }} 1.1.1.1</code>.</li>
+        </ol>
+      </section>
+      <div class="admin-record-actions">
+        <form method="post" action="{{ url_for('admin.delete_domain', domain_id=domain.id) }}" data-confirm="Remove this domain from WebManager?">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <button class="button danger-text small" type="submit" {% if domain.site_count %}disabled title="Move assigned sites first"{% endif %}>Delete</button>
+        </form>
+        {% if not domain.is_default and not domain.is_blocked %}
+        <form method="post" action="{{ url_for('admin.set_default_domain', domain_id=domain.id) }}">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <button class="button primary small" type="submit">Make default</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </details>
+  {% else %}
+  <div class="panel empty-state"><h3>No deployment domains</h3><p>Add a domain above before creating public site links.</p></div>
+  {% endfor %}
+</div>
+{% endblock %}

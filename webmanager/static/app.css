@@ -1882,6 +1882,98 @@ pre {
   padding: 24px;
 }
 
+.cloudflare-guide {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 28px;
+  margin-bottom: 14px;
+  padding: 22px;
+}
+
+.domain-blocklist-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 28px;
+  margin-bottom: 14px;
+  padding: 22px;
+  border-color: rgba(248, 81, 73, 0.28);
+}
+
+.domain-blocklist-panel h2,
+.domain-blocklist-panel p:last-child {
+  margin-bottom: 0;
+}
+
+.domain-blocklist-panel form {
+  display: grid;
+  gap: 12px;
+}
+
+.domain-blocklist-panel textarea {
+  min-height: 116px;
+  padding: 11px 13px;
+  resize: vertical;
+}
+
+.domain-blocklist-panel .button {
+  justify-self: end;
+}
+
+.cloudflare-guide h2,
+.cloudflare-guide p:last-child {
+  margin-bottom: 0;
+}
+
+.cloudflare-steps {
+  display: grid;
+  gap: 9px;
+}
+
+.cloudflare-steps > div {
+  display: grid;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.cloudflare-steps span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.cloudflare-steps code,
+.domain-instructions code {
+  overflow-wrap: anywhere;
+}
+
+.domain-default-choice {
+  align-self: end;
+  min-height: 78px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.domain-instructions {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.domain-instructions ol {
+  display: grid;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
 .admin-update-commits {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1942,6 +2034,11 @@ pre {
   margin-top: 18px;
   padding: 16px 18px;
   box-shadow: 0 8px 30px rgba(1, 4, 9, 0.6);
+}
+
+.domain-picker {
+  margin-bottom: 18px;
+  padding: 18px;
 }
 
 .deploy-submit-bar > div {
@@ -2129,6 +2226,14 @@ pre {
   .admin-permission-grid,
   .admin-acl-grid,
   .admin-update-commits {
+    grid-template-columns: 1fr;
+  }
+
+  .cloudflare-guide {
+    grid-template-columns: 1fr;
+  }
+
+  .domain-blocklist-panel {
     grid-template-columns: 1fr;
   }
 
