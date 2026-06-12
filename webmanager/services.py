@@ -158,10 +158,49 @@ class RuntimeManager:
         finally:
             log_handle.close()
 
-        time.sleep(0.15)
-        if process.poll() is not None:
-            message = f"Static server exited with code {process.returncode}. See {log_path}."
-            self._set_site_state(database, site_id, "error", "builtin", None, message)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                message = (
+                    f"Static server exited with code {process.returncode}. "
+                    f"See {log_path}."
+                )
+                self._set_site_state(
+                    database,
+                    site_id,
+                    "error",
+                    "builtin",
+                    None,
+                    message,
+                )
+                raise RuntimeErrorDetail(message)
+            try:
+                with socket.create_connection(
+                    ("127.0.0.1", site["port"]),
+                    timeout=0.2,
+                ):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            message = (
+                f"Static server did not accept connections within 5 seconds. "
+                f"See {log_path}."
+            )
+            self._set_site_state(
+                database,
+                site_id,
+                "error",
+                "builtin",
+                None,
+                message,
+            )
             raise RuntimeErrorDetail(message)
 
         self.processes[site_id] = process

@@ -1912,6 +1912,41 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(site["status"], "error")
         self.assertIn("permission denied", site["last_error"])
 
+    def test_builtin_runtime_waits_for_listener_readiness(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "slow-runtime-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+
+        process = SimpleNamespace(
+            pid=43210,
+            poll=lambda: None,
+            terminate=lambda: None,
+        )
+        connection_attempts = []
+
+        def delayed_connection(*_args, **_kwargs):
+            connection_attempts.append(1)
+            if len(connection_attempts) < 3:
+                raise ConnectionRefusedError
+            return socket.socket()
+
+        with (
+            self.app.app_context(),
+            patch("webmanager.services.subprocess.Popen", return_value=process),
+            patch(
+                "webmanager.services.socket.create_connection",
+                side_effect=delayed_connection,
+            ),
+            patch("webmanager.services.time.sleep"),
+        ):
+            backend = self.app.extensions["runtime_manager"].start_site(site_id)
+
+        self.assertEqual(backend, "builtin")
+        self.assertEqual(len(connection_attempts), 3)
+
     def test_nginx_stop_rolls_back_state_when_reload_fails(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "nginx-stop-repo"
