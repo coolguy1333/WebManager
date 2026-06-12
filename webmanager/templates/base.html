@@ -6,15 +6,15 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0b0d10">
   <title>{{ title }} | WebManager</title>
-  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="icon" href="{{ static_asset('favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ static_asset('app.css') }}">
 </head>
 <body class="{{ 'authenticated' if g.user else 'signed-out' }}">
   {% if g.user %}
   <div class="dashboard-shell">
     <aside class="sidebar" data-sidebar>
       <a class="sidebar-brand" href="{{ url_for('deployments.dashboard', view='sites') }}">
-        <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
+        <img src="{{ static_asset('logo-mark.svg') }}" alt="">
         <span><strong>WebManager</strong><small>Hosting control</small></span>
       </a>
 
@@ -101,7 +101,7 @@
   <div class="auth-shell">
     <header class="auth-header">
       <a class="sidebar-brand" href="{{ url_for('auth.login') }}">
-        <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
+        <img src="{{ static_asset('logo-mark.svg') }}" alt="">
         <span><strong>WebManager</strong><small>Hosting control</small></span>
       </a>
     </header>
@@ -125,6 +125,6 @@
     </main>
   </div>
   {% endif %}
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ static_asset('app.js') }}"></script>
 </body>
 </html>

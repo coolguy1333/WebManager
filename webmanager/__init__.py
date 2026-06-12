@@ -4,7 +4,7 @@ import secrets
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import admin, auth, db, deployments
@@ -126,6 +126,19 @@ def create_app(test_config=None):
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
 
+    @app.context_processor
+    def versioned_static_assets():
+        def static_asset(filename):
+            asset_path = Path(app.static_folder) / filename
+            try:
+                details = asset_path.stat()
+                version = f"{details.st_mtime_ns:x}-{details.st_size:x}"
+            except OSError:
+                version = "missing"
+            return url_for("static", filename=filename, v=version)
+
+        return {"static_asset": static_asset}
+
     with app.app_context():
         db.init_db()
 
@@ -185,6 +198,11 @@ def create_app(test_config=None):
     def security_headers(response):
         if request.method == "POST" and response.status_code in {301, 302}:
             response.status_code = 303
+        if request.endpoint == "static":
+            if request.args.get("v"):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "no-cache"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")

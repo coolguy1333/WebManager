@@ -212,6 +212,22 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertNotIn(b"Password", response.data)
         self.assertIn(b"favicon.svg", response.data)
         self.assertIn(b"logo-mark.svg", response.data)
+        self.assertIn(b"app.css?v=", response.data)
+        self.assertIn(b"app.js?v=", response.data)
+
+    def test_versioned_static_assets_are_cache_safe(self):
+        page = self.client.get("/auth/login")
+        css_url = page.data.decode("utf-8").split('href="/static/app.css?v=', 1)[1]
+        css_version = css_url.split('"', 1)[0]
+
+        response = self.client.get(f"/static/app.css?v={css_version}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["Cache-Control"],
+            "public, max-age=31536000, immutable",
+        )
+        response.close()
 
     def test_google_login_starts_oidc_with_configured_callback(self):
         with patch.object(
