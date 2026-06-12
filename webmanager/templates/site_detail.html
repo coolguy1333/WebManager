@@ -47,15 +47,22 @@
 {% if routing and can_manage %}
 <section class="panel program-update-card">
   <div class="program-update-copy">
-    {% if routing.use_domain_root %}
+    {% if routing|length > 1 %}
+    <strong>Cloudflare Tunnel must route every domain used by this site.</strong>
+    {% elif routing[0].use_domain_root %}
     <strong>Cloudflare Tunnel must include this exact root hostname.</strong>
-    <small>Add public hostname <code>{{ routing.hostname }}</code> with service <code>{{ routing.origin }}</code>. For a remote connector use <code>http://WEBMANAGER-LAN-IP:8080</code>. A wildcard hostname does not cover the domain root.</small>
     {% else %}
     <strong>Cloudflare Tunnel must include the wildcard hostname.</strong>
-    <small>An entry for the dashboard hostname alone does not route this site. Add public hostname <code>{{ routing.wildcard }}</code> with service <code>{{ routing.origin }}</code>, or <code>http://WEBMANAGER-LAN-IP:8080</code> for a remote connector, and ensure HTTPS covers the wildcard.</small>
     {% endif %}
+    {% for route in routing %}
+      {% if route.use_domain_root %}
+      <small><code>{{ route.hostname }}</code>: add this exact public hostname with service <code>{{ route.origin }}</code>. A wildcard hostname does not cover the domain root.</small>
+      {% else %}
+      <small><code>{{ route.hostname }}</code>: add wildcard public hostname <code>{{ route.wildcard }}</code> with service <code>{{ route.origin }}</code>.</small>
+      {% endif %}
+    {% endfor %}
     <small>Keep <code>:8080</code> in the service URL; omitting it sends traffic to port 80.</small>
-    <small>Local routing test: <code>{{ routing.local_test }}</code></small>
+    {% for route in routing %}<small>Local test: <code>{{ route.local_test }}</code></small>{% endfor %}
   </div>
 </section>
 {% endif %}
@@ -91,13 +98,15 @@
       </div>
     </div>
     <dl class="detail-list">
+      {% for url in public_urls %}
       <div>
-        <dt>Address</dt>
+        <dt>{{ "Primary address" if loop.first else "Additional address" }}</dt>
         <dd class="copy-row">
-          <a href="{{ public_url }}" target="_blank" rel="noopener noreferrer">{{ public_url }}</a>
-          <button class="copy-button" type="button" data-copy="{{ public_url }}">Copy</button>
+          <a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+          <button class="copy-button" type="button" data-copy="{{ url }}">Copy</button>
         </dd>
       </div>
+      {% endfor %}
       <div><dt>Internal port</dt><dd><code>{{ site.port }}</code></dd></div>
       <div><dt>Backend</dt><dd>{{ site.runtime_backend or "Stopped" }}</dd></div>
       <div><dt>Process ID</dt><dd>{{ site.runtime_pid or "-" }}</dd></div>

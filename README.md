@@ -130,7 +130,7 @@ Everything below is optional reference material for custom networking, private r
 - Automatic `index.html` and `index.htm` discovery
 - Selectable document root within a repository
 - Automatic collision-free internal site ports
-- Per-site public subdomains
+- Per-site public subdomains on one or more domains
 - Generated Nginx server configurations
 - Browser-based Nginx configuration editor
 - Static single-page application fallback
@@ -403,9 +403,17 @@ Existing sites keep their assigned domain. New deployments use the default
 domain unless the owner selects another configured domain, and a site's domain
 can be changed later from its settings page.
 
+A site may also use additional domain aliases. Choose one primary domain and
+check any additional domains during deployment or from **Site settings**. The
+same slug and address style apply to every selected domain, so `docs` can serve
+both `docs.example.com` and `docs.example.net`. The site detail page lists every
+public URL, and analytics combine traffic from all of them.
+
 A site can also be assigned to the domain root, such as `https://mhsit.club`,
 instead of `https://site.mhsit.club`. Only one site can claim each domain root,
-and the WebManager dashboard hostname cannot be assigned to a site.
+and the WebManager dashboard hostname cannot be assigned to a site. Root mode
+can use multiple domains, such as both `example.com` and `example.net`, provided
+no other site owns either root.
 
 The deployment screen presents **Site subdomain** and **Domain root** as
 separate address choices and previews the resulting URL. Root mode
@@ -423,8 +431,8 @@ new deployments, assigned to another site, or made the default. Existing sites
 using a newly blocked domain remain online and are marked so an administrator
 can move them without an unexpected outage.
 
-For every added domain, the Domains page displays the required Cloudflare
-configuration:
+For every primary or additional domain used by a site, the Domains page and
+site detail page display the required Cloudflare configuration:
 
 1. For root hosting, add the exact published hostname `example.com` with no
    subdomain or path.
@@ -544,8 +552,8 @@ After deployment:
 https://SITE-SLUG.webmanager.example.com
 ```
 
-The public subdomain and internal assigned port are shown on the site detail
-page.
+All public domain addresses and the internal assigned port are shown on the
+site detail page.
 
 ### Site source updates
 

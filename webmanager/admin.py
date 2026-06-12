@@ -28,6 +28,7 @@ from .domains import (
     domain_is_dashboard,
     domain_is_blocked,
     normalize_domain,
+    site_hostnames,
 )
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
@@ -184,9 +185,14 @@ def domains_dashboard():
     database = get_db()
     domain_rows = database.execute(
         """
-        SELECT domains.*, COUNT(sites.id) AS site_count
+        SELECT domains.*,
+               COUNT(DISTINCT primary_sites.id)
+               + COUNT(DISTINCT alias_sites.site_id) AS site_count
         FROM domains
-        LEFT JOIN sites ON sites.domain_id = domains.id
+        LEFT JOIN sites AS primary_sites
+          ON primary_sites.domain_id = domains.id
+        LEFT JOIN site_domain_aliases AS alias_sites
+          ON alias_sites.domain_id = domains.id
         GROUP BY domains.id
         ORDER BY domains.is_default DESC, domains.name COLLATE NOCASE
         """
@@ -251,21 +257,12 @@ def create_dashboard_domain():
     ).fetchone():
         flash("A deployment domain cannot also be a dashboard domain.", "error")
         return redirect(url_for("admin.domains_dashboard"))
-    site_hostnames = {
-        (
-            row["domain_name"]
-            if row["use_domain_root"]
-            else f"{row['slug']}.{row['domain_name']}"
-        )
-        for row in database.execute(
-            """
-            SELECT sites.slug, sites.use_domain_root, domains.name AS domain_name
-            FROM sites
-            JOIN domains ON domains.id = sites.domain_id
-            """
-        ).fetchall()
+    assigned_hostnames = {
+        hostname
+        for site in database.execute("SELECT * FROM sites").fetchall()
+        for hostname in site_hostnames(database, site)
     }
-    if name in site_hostnames:
+    if name in assigned_hostnames:
         flash("That hostname is already assigned to a hosted site.", "error")
         return redirect(url_for("admin.domains_dashboard"))
     make_primary = request.form.get("is_primary") == "on"
@@ -453,9 +450,14 @@ def delete_domain(domain_id):
     database = get_db()
     domain = database.execute(
         """
-        SELECT domains.*, COUNT(sites.id) AS site_count
+        SELECT domains.*,
+               COUNT(DISTINCT primary_sites.id)
+               + COUNT(DISTINCT alias_sites.site_id) AS site_count
         FROM domains
-        LEFT JOIN sites ON sites.domain_id = domains.id
+        LEFT JOIN sites AS primary_sites
+          ON primary_sites.domain_id = domains.id
+        LEFT JOIN site_domain_aliases AS alias_sites
+          ON alias_sites.domain_id = domains.id
         WHERE domains.id = ?
         GROUP BY domains.id
         """,

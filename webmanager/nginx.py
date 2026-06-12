@@ -32,13 +32,21 @@ def nginx_path(path: str | Path) -> str:
     return Path(path).resolve().as_posix().replace('"', '\\"')
 
 
+def _server_names(hostnames: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if not hostnames:
+        return []
+    if isinstance(hostnames, str):
+        return [hostnames]
+    return list(dict.fromkeys(hostnames))
+
+
 def build_site_config(
     site_name: str,
     document_root: Path,
     index_file: str,
     port: int,
     spa_fallback: bool,
-    hostname: str | None = None,
+    hostname: str | list[str] | tuple[str, ...] | None = None,
     gateway_port: int | None = None,
 ) -> str:
     fallback = f"/{index_file}" if spa_fallback else "@webmanager_not_found"
@@ -50,14 +58,15 @@ def build_site_config(
         return 404 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>404 Not Found</title><style>body{margin:0;background:#0d1117;color:#f0f6fc;font:16px system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:560px;padding:32px;text-align:center}h1{font-size:72px;margin:0;color:#58a6ff}p{color:#8b949e}a{color:#58a6ff}</style><main><h1>404</h1><h2>Page not found</h2><p>The requested file does not exist on this site.</p><a href="/">Return to the home page</a></main></html>';
     }
 """
-    if hostname and gateway_port:
+    hostnames = _server_names(hostname)
+    if hostnames and gateway_port:
         listeners = (
             f"    listen 127.0.0.1:{port};\n"
             f"    listen [::1]:{port};\n"
             f"    listen 127.0.0.1:{gateway_port};\n"
             f"    listen [::1]:{gateway_port};"
         )
-        server_name = hostname
+        server_name = " ".join(hostnames)
     else:
         listeners = f"    listen {port};\n    listen [::]:{port};"
         server_name = "_"
@@ -177,9 +186,10 @@ def config_uses_port(config: str, port: int) -> bool:
 def route_site_config(
     config: str,
     port: int,
-    hostname: str,
+    hostname: str | list[str] | tuple[str, ...],
     gateway_port: int,
 ) -> str:
+    server_names = " ".join(_server_names(hostname))
     routed = re.sub(
         r"(?m)^[ \t]*listen[ \t]+[^;\r\n]+;[ \t]*(?:\r?\n)?",
         "",
@@ -193,14 +203,14 @@ def route_site_config(
     )
     routed, count = re.subn(
         r"(?m)^\s*server_name\s+[^;]+;",
-        f"    server_name {hostname};",
+        f"    server_name {server_names};",
         routed,
         count=1,
     )
     if count == 0:
         routed = re.sub(
             r"(?m)^(\s*server\s*\{\s*)$",
-            rf"\1\n    server_name {hostname};",
+            rf"\1\n    server_name {server_names};",
             routed,
             count=1,
         )
@@ -216,7 +226,7 @@ def validate_site_config(
     config: str,
     document_root: str | Path,
     port: int,
-    hostname: str | None = None,
+    hostname: str | list[str] | tuple[str, ...] | None = None,
     gateway_port: int | None = None,
 ):
     directives = _parse_directives(_tokenize(config))
@@ -249,16 +259,17 @@ def validate_site_config(
 
     seen_ports = set()
     allowed_ports = {port}
-    if hostname and gateway_port:
+    hostnames = _server_names(hostname)
+    if hostnames and gateway_port:
         allowed_ports.add(gateway_port)
         server_names = [
             arguments
             for name, arguments, nested in server_directives
             if name.lower() == "server_name" and nested is None
         ]
-        if server_names != [[hostname]]:
+        if server_names != [hostnames]:
             raise NginxConfigError(
-                f"The server block must keep hostname {hostname}."
+                f"The server block must keep hostnames {' '.join(hostnames)}."
             )
 
     def inspect(children, inside_server=True):

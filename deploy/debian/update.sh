@@ -93,6 +93,85 @@ wait_for_webmanager() {
     return 1
 }
 
+sync_data_backup() {
+    local destination=$1
+    python3 - "$DATA_DIR" "$destination" <<'PY'
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+
+
+def remove_path(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def copy_owner(source_path, destination_path, follow_symlinks=True):
+    details = source_path.stat() if follow_symlinks else source_path.lstat()
+    os.chown(
+        destination_path,
+        details.st_uid,
+        details.st_gid,
+        follow_symlinks=follow_symlinks,
+    )
+
+
+def sync_directory(source_dir, destination_dir):
+    if destination_dir.is_symlink() or (
+        destination_dir.exists() and not destination_dir.is_dir()
+    ):
+        remove_path(destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    source_names = {entry.name for entry in source_dir.iterdir()}
+    for old_entry in destination_dir.iterdir():
+        if old_entry.name not in source_names:
+            remove_path(old_entry)
+
+    for source_entry in source_dir.iterdir():
+        destination_entry = destination_dir / source_entry.name
+        if source_entry.is_symlink():
+            target = os.readlink(source_entry)
+            if not destination_entry.is_symlink() or os.readlink(destination_entry) != target:
+                remove_path(destination_entry)
+                destination_entry.symlink_to(target)
+            copy_owner(source_entry, destination_entry, follow_symlinks=False)
+        elif source_entry.is_dir():
+            sync_directory(source_entry, destination_entry)
+        elif source_entry.is_file():
+            source_stat = source_entry.stat()
+            force_copy = source_entry.name.startswith("webmanager.sqlite3")
+            unchanged = False
+            if destination_entry.is_symlink():
+                remove_path(destination_entry)
+            if destination_entry.is_file() and not destination_entry.is_symlink():
+                destination_stat = destination_entry.stat()
+                unchanged = (
+                    source_stat.st_size == destination_stat.st_size
+                    and source_stat.st_mtime_ns == destination_stat.st_mtime_ns
+                )
+            if force_copy or not unchanged:
+                if destination_entry.exists() and not destination_entry.is_file():
+                    remove_path(destination_entry)
+                shutil.copy2(source_entry, destination_entry)
+            copy_owner(source_entry, destination_entry)
+
+    shutil.copystat(source_dir, destination_dir)
+    copy_owner(source_dir, destination_dir)
+
+
+destination.mkdir(parents=True, exist_ok=True)
+sync_directory(source, destination)
+PY
+}
+
 INSTALLED_COMMIT=
 NEW_COMMIT=
 APPROVED_COMMIT=
@@ -115,6 +194,12 @@ record_failure() {
                 message="The approved update failed its application test suite. Review the updater journal."
                 if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
                     message="$message Last test output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
+                fi
+                ;;
+            preflighting_install)
+                message="The approved update could not start safely with a copy of the installed data. The running installation was not stopped."
+                if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
+                    message="$message Last preflight output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
                 fi
                 ;;
             *)
@@ -282,6 +367,88 @@ else
     run_application_tests "$TEST_PYTHON"
 fi
 
+UPDATE_STAGE=preflighting_install
+write_status "testing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+    "Testing the approved update with a safe copy of installed data."
+PREFLIGHT_DIR="$WORK_DIR/preflight"
+PREFLIGHT_DATABASE="$PREFLIGHT_DIR/webmanager.sqlite3"
+mkdir -p "$PREFLIGHT_DIR"
+TEST_LOG="$WORK_DIR/preflight.log"
+if [[ -f "$DATA_DIR/webmanager.sqlite3" ]]; then
+    "$TEST_PYTHON" - "$DATA_DIR/webmanager.sqlite3" "$PREFLIGHT_DATABASE" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+PY
+fi
+"$TEST_PYTHON" - \
+    "$SOURCE_DIR" \
+    "$PREFLIGHT_DATABASE" \
+    "$PREFLIGHT_DIR" \
+    "$APP_ENV_FILE" >"$TEST_LOG" 2>&1 <<'PY'
+import os
+import sys
+from pathlib import Path
+
+source_dir, database_path, preflight_dir, env_path = sys.argv[1:]
+sys.path.insert(0, source_dir)
+
+settings = {}
+try:
+    for line in Path(env_path).read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            settings[key] = value
+except OSError:
+    pass
+
+root = Path(preflight_dir)
+from webmanager import create_app
+
+app = create_app(
+    {
+        "TESTING": True,
+        "SECRET_KEY": "updater-preflight-only",
+        "DATABASE": database_path,
+        "REPOSITORY_ROOT": str(root / "repositories"),
+        "NGINX_ROOT": str(root / "nginx"),
+        "LOG_ROOT": str(root / "logs"),
+        "NGINX_BINARY": str(root / "nginx-disabled"),
+        "SITE_GATEWAY_PORT": int(
+            settings.get("WEBMANAGER_SITE_GATEWAY_PORT", "8090")
+        ),
+        "SITE_BASE_DOMAIN": settings.get("WEBMANAGER_SITE_BASE_DOMAIN", ""),
+        "SITE_PUBLIC_SCHEME": settings.get(
+            "WEBMANAGER_SITE_PUBLIC_SCHEME", "http"
+        ),
+        "GOOGLE_REDIRECT_URI": settings.get(
+            "WEBMANAGER_GOOGLE_REDIRECT_URI", ""
+        ),
+        "AUTO_REFRESH_ENABLED": False,
+        "PROGRAM_UPDATE_STATUS_FILE": str(root / "status.json"),
+        "PROGRAM_UPDATE_REQUEST_FILE": str(root / "install.commit"),
+        "PROGRAM_UPDATE_CHECK_REQUEST_FILE": str(root / "check"),
+    }
+)
+with app.app_context():
+    app.extensions["runtime_manager"].sync_nginx_configs()
+response = app.test_client().get("/healthz")
+if response.status_code != 200 or response.get_json() != {"status": "ok"}:
+    raise SystemExit(
+        f"Candidate health check returned {response.status_code}: "
+        f"{response.get_data(as_text=True)[:500]}"
+    )
+print("Candidate data migration, Nginx generation, and health check passed.")
+PY
+cat "$TEST_LOG"
+
 UPDATE_STAGE=backing_up
 BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-${INSTALLED_COMMIT:-unknown}"
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
@@ -311,6 +478,11 @@ for updater_file in \
     fi
 done
 
+write_status "backing_up" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+    "Preparing the data backup while WebManager remains online."
+DATA_BACKUP_DIR="$BACKUP_DIR/data"
+sync_data_backup "$DATA_BACKUP_DIR"
+
 DATA_BACKUP_COMPLETE=0
 rollback() {
     local exit_code=$?
@@ -322,7 +494,7 @@ rollback() {
     cp -a "$BACKUP_DIR/app" "$APP_DIR"
     if [[ $DATA_BACKUP_COMPLETE -eq 1 ]]; then
         rm -rf "$DATA_DIR"
-        tar -C /var/lib -xzf "$BACKUP_DIR/webmanager-data.tar.gz"
+        cp -a "$DATA_BACKUP_DIR" "$DATA_DIR"
         message="Update failed. Application and persistent data were restored."
     else
         message="Update stopped before a complete data backup was created. Existing data was left untouched."
@@ -374,9 +546,9 @@ rollback() {
 trap rollback ERR
 
 write_status "backing_up" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-    "Stopping WebManager and backing up all persistent data."
+    "Pausing WebManager briefly to finalize the prepared data backup."
 systemctl stop webmanager
-tar -C /var/lib -czf "$BACKUP_DIR/webmanager-data.tar.gz" webmanager
+sync_data_backup "$DATA_BACKUP_DIR"
 DATA_BACKUP_COMPLETE=1
 
 write_status "installing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \

@@ -46,6 +46,23 @@
       <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" value="{{ site.port }}" required>
     </label>
   </div>
+  {% if site_domains|length > 1 %}
+  <fieldset class="domain-alias-picker">
+    <legend>Additional domains</legend>
+    <p>The site will answer on every checked domain. Its URL slug and address style apply to all of them.</p>
+    <div class="domain-alias-grid">
+      {% for domain in site_domains %}
+      <label class="compact-check">
+        <input type="checkbox" name="additional_domain_ids" value="{{ domain.id }}" {% if domain.id in alias_domain_ids %}checked{% endif %}>
+        <span>
+          <strong>{{ domain.name }}</strong>
+          <small>{% if domain.root_site_id and domain.root_site_id != site.id %}Root used by {{ domain.root_site_name }}{% else %}Available as an alias{% endif %}</small>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  {% endif %}
   <fieldset class="hosting-mode-picker" data-settings-hosting-picker>
     <legend>Public address style</legend>
     <label class="hosting-mode-option">

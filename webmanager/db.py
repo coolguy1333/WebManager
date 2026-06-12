@@ -134,6 +134,17 @@ CREATE TABLE IF NOT EXISTS sites (
 
 CREATE INDEX IF NOT EXISTS sites_user_id_idx ON sites(user_id);
 
+CREATE TABLE IF NOT EXISTS site_domain_aliases (
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    use_domain_root INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, domain_id)
+);
+
+CREATE INDEX IF NOT EXISTS site_domain_aliases_domain_id_idx
+ON site_domain_aliases(domain_id);
+
 CREATE TABLE IF NOT EXISTS pool_sites (
     pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
     site_id INTEGER NOT NULL UNIQUE REFERENCES sites(id) ON DELETE CASCADE,
@@ -195,6 +206,7 @@ def init_db():
     _migrate_domains(database)
     _migrate_dashboard_domains(database)
     _migrate_sites(database)
+    _migrate_site_domain_aliases(database)
     _seed_permissions(database)
     _ensure_initial_admin(database)
     database.commit()
@@ -319,6 +331,26 @@ def _migrate_sites(database):
         used_slugs.add(slug)
     database.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS sites_slug_uq ON sites(slug)"
+    )
+
+
+def _migrate_site_domain_aliases(database):
+    database.execute(
+        """
+        CREATE TABLE IF NOT EXISTS site_domain_aliases (
+            site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+            domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+            use_domain_root INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (site_id, domain_id)
+        )
+        """
+    )
+    database.execute(
+        """
+        CREATE INDEX IF NOT EXISTS site_domain_aliases_domain_id_idx
+        ON site_domain_aliases(domain_id)
+        """
     )
 
 

@@ -76,6 +76,7 @@ const hostingUrl = document.querySelector("[data-hosting-url]");
 const hostingHelp = document.querySelector("[data-hosting-help]");
 const subdomainPreview = document.querySelector("[data-subdomain-preview]");
 const rootPreview = document.querySelector("[data-root-preview]");
+const domainAliasInputs = document.querySelectorAll('input[name="additional_domain_ids"]');
 const slugifyPreview = (value) => value
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, "-")
@@ -104,6 +105,13 @@ const updateHostingChoice = () => {
   const selectedMode = document.querySelector('input[name="hosting_mode"]:checked')?.value || "subdomain";
   const rootMode = selectedMode === "root";
   const option = hostingDomain.selectedOptions[0];
+  domainAliasInputs.forEach((input) => {
+    const isPrimary = input.value === hostingDomain.value;
+    input.disabled = isPrimary;
+    if (isPrimary) {
+      input.checked = false;
+    }
+  });
   const domain = option?.dataset.domain || option?.textContent.trim() || "";
   const rootAvailable = option?.dataset.rootAvailable !== "false";
   const rootSite = option?.dataset.rootSite || "another site";
@@ -187,6 +195,13 @@ const updateSettingsHostingChoice = () => {
   }
   const mode = document.querySelector('.settings-form input[name="hosting_mode"]:checked')?.value || "subdomain";
   const option = settingsDomain.selectedOptions[0];
+  document.querySelectorAll('.settings-form input[name="additional_domain_ids"]').forEach((input) => {
+    const isPrimary = input.value === settingsDomain.value;
+    input.disabled = isPrimary;
+    if (isPrimary) {
+      input.checked = false;
+    }
+  });
   const domain = option?.dataset.domain || "";
   const rootMode = mode === "root";
   const rootAvailable = option?.dataset.rootAvailable !== "false";

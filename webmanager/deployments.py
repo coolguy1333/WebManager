@@ -21,11 +21,14 @@ from .db import get_db
 from .domains import (
     available_domains,
     blocked_domain_names,
+    domain_root_owner,
     domain_is_dashboard,
     default_domain,
     domain_is_blocked,
+    site_domain_bindings,
     site_domain,
     site_hostname,
+    site_hostnames,
 )
 from .git_service import (
     GitError,
@@ -82,23 +85,84 @@ def site_public_url(site) -> str:
     return f"http://{request_hostname()}:{site['port']}"
 
 
-def site_routing_details(site) -> dict[str, str] | None:
+def site_public_urls(site) -> list[str]:
+    hostnames = site_hostnames(get_db(), site)
+    if hostnames:
+        scheme = current_app.config["SITE_PUBLIC_SCHEME"]
+        return [f"{scheme}://{hostname}" for hostname in hostnames]
+    return [f"http://{request_hostname()}:{site['port']}"]
+
+
+def site_routing_details(site) -> list[dict[str, str]]:
     database = get_db()
-    domain = site_domain(database, site)
-    hostname = site_hostname(database, site)
-    if not hostname:
-        return None
-    return {
-        "hostname": hostname,
-        "wildcard": f"*.{domain}",
-        "use_domain_root": bool(
-            "use_domain_root" in site.keys() and site["use_domain_root"]
-        ),
-        "origin": "http://localhost:8080",
-        "local_test": (
-            f"curl -I -H 'Host: {hostname}' http://127.0.0.1:8080/"
-        ),
+    details = []
+    for binding in site_domain_bindings(database, site):
+        hostname = (
+            binding["domain"]
+            if binding["use_domain_root"]
+            else f"{site['slug']}.{binding['domain']}"
+        )
+        details.append(
+            {
+                "hostname": hostname,
+                "wildcard": f"*.{binding['domain']}",
+                "use_domain_root": binding["use_domain_root"],
+                "is_primary": binding["is_primary"],
+                "origin": "http://localhost:8080",
+                "local_test": (
+                    f"curl -I -H 'Host: {hostname}' http://127.0.0.1:8080/"
+                ),
+            }
+        )
+    return details
+
+
+def requested_additional_domains(database, primary_domain_id: int | None):
+    requested_ids = {
+        int(value)
+        for value in request.form.getlist("additional_domain_ids")
+        if value.isdigit()
     }
+    if primary_domain_id:
+        requested_ids.discard(primary_domain_id)
+    if not requested_ids:
+        return []
+    placeholders = ",".join("?" for _ in requested_ids)
+    rows = database.execute(
+        f"SELECT * FROM domains WHERE id IN ({placeholders}) ORDER BY name COLLATE NOCASE",
+        tuple(sorted(requested_ids)),
+    ).fetchall()
+    if len(rows) != len(requested_ids):
+        abort(400, "Unknown additional domain.")
+    return rows
+
+
+def validate_site_domains(
+    database,
+    domains,
+    use_domain_root,
+    exclude_site_id=None,
+    allowed_blocked_domain_ids=(),
+):
+    blocked = blocked_domain_names(database)
+    allowed_blocked_domain_ids = set(allowed_blocked_domain_ids)
+    for domain in domains:
+        if (
+            domain_is_blocked(domain["name"], blocked)
+            and domain["id"] not in allowed_blocked_domain_ids
+        ):
+            raise ValueError(f"{domain['name']} is blocked by an administrator.")
+        hostname = domain["name"] if use_domain_root else None
+        if hostname and domain_is_dashboard(database, hostname):
+            raise ValueError(
+                "The WebManager dashboard hostname cannot also host a site."
+            )
+        if use_domain_root:
+            owner = domain_root_owner(database, domain["id"], exclude_site_id)
+            if owner:
+                raise ValueError(
+                    f"{domain['name']} already has a site at its root."
+                )
 
 
 def repository_path_is_managed(path: str | Path) -> bool:
@@ -210,6 +274,7 @@ def dashboard():
         summary=summary,
         host=request_hostname(),
         site_public_url=site_public_url,
+        site_public_urls=site_public_urls,
         site_domains=available_domains(database),
         refresh_min=MIN_REFRESH_MINUTES,
         refresh_max=MAX_REFRESH_MINUTES,
@@ -430,14 +495,11 @@ def deploy_repository(repository_id):
         domain = default_domain(database)
     if requested_domain and domain is None:
         abort(400, "Unknown domain.")
-    if domain and domain_is_blocked(
-        domain["name"],
-        blocked_domain_names(database),
-    ):
-        flash("The selected domain is blocked by an administrator.", "error")
-        return redirect(
-            url_for("deployments.select_folder", repository_id=repository_id)
-        )
+    additional_domains = requested_additional_domains(
+        database,
+        domain["id"] if domain else None,
+    )
+    selected_domains = ([domain] if domain else []) + additional_domains
     hosting_mode = request.form.get("hosting_mode", "")
     use_domain_root = (
         hosting_mode == "root"
@@ -458,21 +520,10 @@ def deploy_repository(repository_id):
     if use_domain_root and domain is None:
         flash("Select a public domain before using its root address.", "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
-    if (
-        use_domain_root
-        and domain
-        and domain_is_dashboard(database, domain["name"])
-    ):
-        flash(
-            "The WebManager dashboard hostname cannot also host a site.",
-            "error",
-        )
-        return redirect(url_for("deployments.select_folder", repository_id=repository_id))
-    if use_domain_root and database.execute(
-        "SELECT 1 FROM sites WHERE domain_id = ? AND use_domain_root = 1",
-        (domain["id"],),
-    ).fetchone():
-        flash(f"{domain['name']} already has a site at its root.", "error")
+    try:
+        validate_site_domains(database, selected_domains, use_domain_root)
+    except ValueError as exc:
+        flash(str(exc), "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
     if selected_indexes:
         for index in selected_indexes:
@@ -525,21 +576,25 @@ def deploy_repository(repository_id):
                 requested_port,
             )
             slug = unique_slug(database, item["name"])
-            hostname = domain["name"] if use_domain_root else (
-                f"{slug}.{domain['name']}" if domain else None
-            )
-            if hostname and domain_is_dashboard(database, hostname):
-                raise ValueError(
-                    "The generated hostname is reserved for the WebManager dashboard."
-                )
+            hostnames = [
+                selected_domain["name"]
+                if use_domain_root
+                else f"{slug}.{selected_domain['name']}"
+                for selected_domain in selected_domains
+            ]
+            for hostname in hostnames:
+                if domain_is_dashboard(database, hostname):
+                    raise ValueError(
+                        "The generated hostname is reserved for the WebManager dashboard."
+                    )
             config = build_site_config(
                 item["name"],
                 selected,
                 index_file,
                 port,
                 item["spa_fallback"],
-                hostname,
-                current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+                hostnames,
+                current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
             )
             cursor = database.execute(
                 """
@@ -564,13 +619,24 @@ def deploy_repository(repository_id):
                     config,
                 ),
             )
+            site_id = cursor.lastrowid
+            database.executemany(
+                """
+                INSERT INTO site_domain_aliases (
+                    site_id, domain_id, use_domain_root
+                ) VALUES (?, ?, ?)
+                """,
+                (
+                    (site_id, alias["id"], int(use_domain_root))
+                    for alias in additional_domains
+                ),
+            )
             database.commit()
         except (GitError, RuntimeErrorDetail, ValueError, sqlite3.IntegrityError) as exc:
             database.rollback()
             flash(f"Could not deploy {item['name']}: {exc}", "error")
             continue
 
-        site_id = cursor.lastrowid
         created.append(
             {
                 "id": site_id,
@@ -609,19 +675,21 @@ def site_detail(site_id):
     site = owned_site(site_id)
     database = get_db()
     hostname = site_hostname(database, site) or request_hostname()
+    hostnames = site_hostnames(database, site) or [hostname]
     return render_template(
         "site_detail.html",
         title=site["name"],
         site=site,
         host=request_hostname(),
         public_url=site_public_url(site),
+        public_urls=site_public_urls(site),
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
         can_manage=can_manage_site(site, database),
         can_manage_repository=can_manage_resource(site["user_id"]),
         routing=site_routing_details(site),
         analytics=site_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
-            hostname,
+            hostnames,
         ),
     )
 
@@ -639,6 +707,17 @@ def site_settings(site_id):
     domains = available_domains(database)
     current_domain = None
     current_domain_blocked = False
+    alias_bindings = [
+        binding
+        for binding in site_domain_bindings(database, site)
+        if not binding["is_primary"]
+    ]
+    current_bindings = {
+        binding["domain_id"]: binding
+        for binding in site_domain_bindings(database, site)
+        if binding["domain_id"]
+    }
+    alias_domain_ids = {binding["domain_id"] for binding in alias_bindings}
     if site["domain_id"]:
         current_domain = database.execute(
             "SELECT * FROM domains WHERE id = ?",
@@ -655,6 +734,14 @@ def site_settings(site_id):
             domain["id"] != current_domain["id"] for domain in domains
         ):
             domains.append(current_domain)
+    for binding in alias_bindings:
+        if all(domain["id"] != binding["domain_id"] for domain in domains):
+            alias_domain = database.execute(
+                "SELECT * FROM domains WHERE id = ?",
+                (binding["domain_id"],),
+            ).fetchone()
+            if alias_domain:
+                domains.append(alias_domain)
     if request.method == "POST":
         validate_csrf()
         name = request.form.get("name", "").strip()
@@ -699,6 +786,11 @@ def site_settings(site_id):
             ).fetchone()
         else:
             domain = default_domain(database)
+        additional_domains = requested_additional_domains(
+            database,
+            domain["id"] if domain else None,
+        )
+        selected_domains = ([domain] if domain else []) + additional_domains
         try:
             port = int(request.form.get("port", ""))
         except ValueError:
@@ -722,25 +814,20 @@ def site_settings(site_id):
             flash(f"Port {port} is already in use.", "error")
         elif use_domain_root and domain is None:
             flash("Select a public domain before using its root address.", "error")
-        elif (
-            use_domain_root
-            and domain
-            and domain_is_dashboard(database, domain["name"])
-        ):
+        elif domain is None and additional_domains:
             flash(
-                "The WebManager dashboard hostname cannot also host a site.",
+                "Choose a primary public domain before adding domain aliases.",
                 "error",
             )
-        elif use_domain_root and database.execute(
-            """
-            SELECT 1 FROM sites
-            WHERE domain_id = ? AND use_domain_root = 1 AND id != ?
-            """,
-            (domain["id"], site_id),
-        ).fetchone():
-            flash(f"{domain['name']} already has a site at its root.", "error")
         else:
             try:
+                validate_site_domains(
+                    database,
+                    selected_domains,
+                    use_domain_root,
+                    exclude_site_id=site_id,
+                    allowed_blocked_domain_ids=current_bindings,
+                )
                 selected = resolve_folder(Path(repository["local_path"]), folder)
                 index_files = {
                     path.name.lower(): path.name
@@ -751,31 +838,42 @@ def site_settings(site_id):
                 if not index_file:
                     raise GitError("The selected folder does not contain an index page.")
                 slug = unique_slug(database, slug, exclude_site_id=site_id)
-                hostname = domain["name"] if use_domain_root else (
-                    f"{slug}.{domain['name']}" if domain else None
-                )
-                if hostname and domain_is_dashboard(database, hostname):
-                    raise GitError(
-                        "The generated hostname is reserved for the WebManager dashboard."
-                    )
-                if (
-                    current_domain_blocked
-                    and domain
-                    and domain["id"] == site["domain_id"]
-                    and hostname != site_hostname(database, site)
-                ):
-                    raise GitError(
-                        "The current domain is blocked. Keep the existing public "
-                        "hostname or move the site to an allowed domain."
-                    )
+                hostnames = [
+                    selected_domain["name"]
+                    if use_domain_root
+                    else f"{slug}.{selected_domain['name']}"
+                    for selected_domain in selected_domains
+                ]
+                for hostname in hostnames:
+                    if domain_is_dashboard(database, hostname):
+                        raise GitError(
+                            "The generated hostname is reserved for the WebManager dashboard."
+                        )
+                blocked = blocked_domain_names(database)
+                for selected_domain, hostname in zip(selected_domains, hostnames):
+                    previous = current_bindings.get(selected_domain["id"])
+                    if (
+                        previous
+                        and domain_is_blocked(selected_domain["name"], blocked)
+                    ):
+                        previous_hostname = (
+                            previous["domain"]
+                            if previous["use_domain_root"]
+                            else f"{site['slug']}.{previous['domain']}"
+                        )
+                        if hostname != previous_hostname:
+                            raise GitError(
+                                "The current domain is blocked. Keep the existing "
+                                "public hostname or move the site to an allowed domain."
+                            )
                 config = build_site_config(
                     name,
                     selected,
                     index_file,
                     port,
                     spa_fallback,
-                    hostname,
-                    current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+                    hostnames,
+                    current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
                 )
                 database.execute(
                     """
@@ -800,8 +898,23 @@ def site_settings(site_id):
                         site_id,
                     ),
                 )
+                database.execute(
+                    "DELETE FROM site_domain_aliases WHERE site_id = ?",
+                    (site_id,),
+                )
+                database.executemany(
+                    """
+                    INSERT INTO site_domain_aliases (
+                        site_id, domain_id, use_domain_root
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (
+                        (site_id, alias["id"], int(use_domain_root))
+                        for alias in additional_domains
+                    ),
+                )
                 database.commit()
-            except (GitError, sqlite3.IntegrityError) as exc:
+            except (GitError, ValueError, sqlite3.IntegrityError) as exc:
                 database.rollback()
                 flash(f"Could not save site settings: {exc}", "error")
             else:
@@ -832,6 +945,7 @@ def site_settings(site_id):
         port_max=current_app.config["SITE_PORT_MAX"],
         site_domains=domains,
         current_domain_blocked=current_domain_blocked,
+        alias_domain_ids=alias_domain_ids,
         site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
     )
 
@@ -889,13 +1003,13 @@ def edit_config(site_id):
             flash("Configuration must be smaller than 128 KB.", "error")
         else:
             try:
-                hostname = site_hostname(get_db(), site)
+                hostnames = site_hostnames(get_db(), site)
                 validate_site_config(
                     config,
                     site["document_root"],
                     site["port"],
-                    hostname,
-                    current_app.config["SITE_GATEWAY_PORT"] if hostname else None,
+                    hostnames,
+                    current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
                 )
             except NginxConfigError as exc:
                 flash(str(exc), "error")

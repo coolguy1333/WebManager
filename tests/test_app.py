@@ -1364,6 +1364,128 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn(b">mhsit.club<", dashboard.data)
         self.assertNotIn(b"main-site.mhsit.club", dashboard.data)
 
+    def test_site_can_be_deployed_on_multiple_domains(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "multi-domain-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("multi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            primary_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('primary.example')"
+            ).lastrowid
+            alias_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('alias.example')"
+            ).lastrowid
+            database.commit()
+        self.login_user(user_id)
+
+        with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
+            response = self.client.post(
+                f"/repositories/{repository_id}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "multi_deploy": "1",
+                    "selected": "0",
+                    "folder_0": "multi-domain-repo",
+                    "site_name_0": "Multi Domain",
+                    "spa_fallback_0": "on",
+                    "domain_id": str(primary_id),
+                    "additional_domain_ids": str(alias_id),
+                    "hosting_mode": "subdomain",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"https://multi-domain.primary.example", response.data)
+        self.assertIn(b"https://multi-domain.alias.example", response.data)
+        self.assertIn(b"route every domain used by this site", response.data)
+        with self.app.app_context():
+            database = get_db()
+            site = database.execute(
+                "SELECT * FROM sites WHERE domain_id = ?",
+                (primary_id,),
+            ).fetchone()
+            alias = database.execute(
+                """
+                SELECT * FROM site_domain_aliases
+                WHERE site_id = ? AND domain_id = ?
+                """,
+                (site["id"], alias_id),
+            ).fetchone()
+        self.assertIsNotNone(alias)
+        self.assertIn(
+            "server_name multi-domain.primary.example multi-domain.alias.example;",
+            site["nginx_config"],
+        )
+
+    def test_root_domain_alias_cannot_replace_an_existing_root_site(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "root-alias-conflict"
+        first_root = repository_root / "first"
+        second_root = repository_root / "second"
+        first_root.mkdir(parents=True)
+        second_root.mkdir()
+        (first_root / "index.html").write_text("first", encoding="utf-8")
+        (second_root / "index.html").write_text("second", encoding="utf-8")
+        repository_id = self.add_repository(user_id, first_root)
+        first_site_id = self.add_site(user_id, repository_id, first_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE sites SET slug = 'first' WHERE id = ?",
+                (first_site_id,),
+            )
+            database.commit()
+        second_site_id = self.add_site(
+            user_id,
+            repository_id,
+            second_root,
+            port=43101,
+        )
+        with self.app.app_context():
+            database = get_db()
+            occupied_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('occupied.example')"
+            ).lastrowid
+            primary_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('second.example')"
+            ).lastrowid
+            database.execute(
+                """
+                UPDATE sites
+                SET domain_id = ?, use_domain_root = 1
+                WHERE id = ?
+                """,
+                (occupied_id, first_site_id),
+            )
+            database.commit()
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/sites/{second_site_id}/settings",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Second",
+                "slug": "second",
+                "folder": "second",
+                "port": "43101",
+                "domain_id": str(primary_id),
+                "additional_domain_ids": str(occupied_id),
+                "hosting_mode": "root",
+            },
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"occupied.example already has a site at its root", response.data)
+        with self.app.app_context():
+            aliases = get_db().execute(
+                "SELECT COUNT(*) AS count FROM site_domain_aliases WHERE site_id = ?",
+                (second_site_id,),
+            ).fetchone()["count"]
+        self.assertEqual(aliases, 0)
+
     def test_domain_root_can_only_be_assigned_to_one_site(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "root-conflict-repo"
@@ -2254,6 +2376,28 @@ class ServiceUnitTests(unittest.TestCase):
             8090,
         )
 
+    def test_site_config_supports_multiple_server_names(self):
+        root = Path.cwd()
+        hostnames = (
+            "demo.primary.example",
+            "demo.alias.example",
+        )
+        config = build_site_config(
+            "Demo",
+            root,
+            "index.html",
+            8123,
+            True,
+            hostnames,
+            8090,
+        )
+
+        self.assertIn(
+            "server_name demo.primary.example demo.alias.example;",
+            config,
+        )
+        validate_site_config(config, root, 8123, hostnames, 8090)
+
     def test_runtime_requirements_include_authlib_requests_integration(self):
         root = Path(__file__).resolve().parent.parent
         requirements = (root / "requirements.txt").read_text(
@@ -2295,6 +2439,18 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("Last test output:", updater)
         self.assertIn("UPDATE_STAGE=installing_dependencies", updater)
+        self.assertIn("UPDATE_STAGE=preflighting_install", updater)
+        self.assertIn("source.backup(target)", updater)
+        self.assertIn('"runtime_manager"].sync_nginx_configs()', updater)
+        self.assertIn('app.test_client().get("/healthz")', updater)
+        self.assertIn(
+            "The running installation was not stopped.",
+            updater,
+        )
+        self.assertLess(
+            updater.index("UPDATE_STAGE=preflighting_install"),
+            updater.rindex('systemctl stop webmanager\n'),
+        )
         self.assertIn("--retries 5", updater)
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
@@ -2339,7 +2495,11 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("flock -n", updater)
         self.assertIn("APPROVED_COMMIT", updater)
-        self.assertIn("webmanager-data.tar.gz", updater)
+        self.assertIn("sync_data_backup()", updater)
+        self.assertIn("Preparing the data backup while WebManager remains online.", updater)
+        self.assertIn('sync_data_backup "$DATA_BACKUP_DIR"', updater)
+        self.assertIn('cp -a "$DATA_BACKUP_DIR" "$DATA_DIR"', updater)
+        self.assertNotIn("webmanager-data.tar.gz", updater)
         self.assertIn("waiting for super-admin approval", updater)
         self.assertIn("OnUnitActiveSec=15min", timer)
         self.assertIn("Persistent=true", timer)

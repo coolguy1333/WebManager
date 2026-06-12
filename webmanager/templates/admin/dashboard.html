@@ -210,7 +210,7 @@
       <button class="button ghost" type="submit" data-loading-text="Requesting...">Check now</button>
     </form>
     {% if update_status.update_available and update_status.state == 'available' %}
-    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will briefly stop after backing up persistent data.">
+    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
       <button class="button primary" type="submit" data-loading-text="Approving...">Approve and install</button>

@@ -39,12 +39,17 @@ def available_domains(database):
         for row in database.execute(
             """
             SELECT domains.*,
-                   root_site.id AS root_site_id,
-                   root_site.name AS root_site_name
+                   COALESCE(primary_root.id, alias_root.id) AS root_site_id,
+                   COALESCE(primary_root.name, alias_root.name) AS root_site_name
             FROM domains
-            LEFT JOIN sites AS root_site
-              ON root_site.domain_id = domains.id
-             AND root_site.use_domain_root = 1
+            LEFT JOIN sites AS primary_root
+              ON primary_root.domain_id = domains.id
+             AND primary_root.use_domain_root = 1
+            LEFT JOIN site_domain_aliases AS root_alias
+              ON root_alias.domain_id = domains.id
+             AND root_alias.use_domain_root = 1
+            LEFT JOIN sites AS alias_root
+              ON alias_root.id = root_alias.site_id
             ORDER BY domains.is_default DESC, domains.name COLLATE NOCASE
             """
         ).fetchall()
@@ -108,3 +113,77 @@ def site_hostname(database, site) -> str | None:
     if "use_domain_root" in site.keys() and site["use_domain_root"]:
         return domain
     return f"{site['slug']}.{domain}"
+
+
+def site_domain_bindings(database, site):
+    bindings = []
+    domain = site_domain(database, site)
+    if domain:
+        bindings.append(
+            {
+                "domain_id": site["domain_id"] if "domain_id" in site.keys() else None,
+                "domain": domain,
+                "use_domain_root": bool(
+                    "use_domain_root" in site.keys() and site["use_domain_root"]
+                ),
+                "is_primary": True,
+            }
+        )
+    if "id" not in site.keys():
+        return bindings
+    bindings.extend(
+        {
+            "domain_id": row["domain_id"],
+            "domain": row["domain_name"],
+            "use_domain_root": bool(row["use_domain_root"]),
+            "is_primary": False,
+        }
+        for row in database.execute(
+            """
+            SELECT aliases.domain_id, aliases.use_domain_root,
+                   domains.name AS domain_name
+            FROM site_domain_aliases AS aliases
+            JOIN domains ON domains.id = aliases.domain_id
+            WHERE aliases.site_id = ?
+              AND aliases.domain_id != COALESCE(?, -1)
+            ORDER BY domains.name COLLATE NOCASE
+            """,
+            (
+                site["id"],
+                site["domain_id"] if "domain_id" in site.keys() else None,
+            ),
+        ).fetchall()
+    )
+    return bindings
+
+
+def site_hostnames(database, site) -> list[str]:
+    return list(
+        dict.fromkeys(
+            binding["domain"]
+            if binding["use_domain_root"]
+            else f"{site['slug']}.{binding['domain']}"
+            for binding in site_domain_bindings(database, site)
+        )
+    )
+
+
+def domain_root_owner(database, domain_id: int, exclude_site_id: int | None = None):
+    return database.execute(
+        """
+        SELECT sites.id, sites.name
+        FROM sites
+        WHERE sites.domain_id = ?
+          AND sites.use_domain_root = 1
+          AND sites.id != ?
+        UNION ALL
+        SELECT sites.id, sites.name
+        FROM site_domain_aliases AS aliases
+        JOIN sites ON sites.id = aliases.site_id
+        WHERE aliases.domain_id = ?
+          AND aliases.use_domain_root = 1
+          AND sites.id != ?
+        LIMIT 1
+        """,
+        (domain_id, exclude_site_id or -1, domain_id, exclude_site_id or -1),
+    ).fetchone()

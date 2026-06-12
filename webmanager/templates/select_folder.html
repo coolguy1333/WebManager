@@ -30,6 +30,20 @@
         {% endfor %}
       </select>
     </label>
+    {% if site_domains|length > 1 %}
+    <fieldset class="domain-alias-picker">
+      <legend>Additional domains</legend>
+      <p>Serve each selected site on the same address across more domains.</p>
+      <div class="domain-alias-grid">
+        {% for domain in site_domains %}
+        <label class="compact-check">
+          <input type="checkbox" name="additional_domain_ids" value="{{ domain.id }}" data-domain-alias="{{ domain.id }}">
+          <span><strong>{{ domain.name }}</strong><small>Uses the same site slug or root mode.</small></span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% endif %}
     <fieldset class="hosting-mode-picker">
       <legend>Choose public address style</legend>
       <label class="hosting-mode-option">

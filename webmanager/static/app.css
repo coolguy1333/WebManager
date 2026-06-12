@@ -2052,6 +2052,29 @@ pre {
   border: 0;
 }
 
+.domain-alias-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0;
+  padding: 16px;
+}
+
+.domain-alias-picker legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.domain-alias-picker > p {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.domain-alias-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .hosting-mode-picker legend {
   grid-column: 1 / -1;
   margin-bottom: 2px;

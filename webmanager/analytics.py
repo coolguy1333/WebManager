@@ -8,11 +8,15 @@ from urllib.parse import urlsplit
 MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
-def site_analytics(log_path: str | Path, hostname: str, days: int = 30):
+def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 30):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    hostnames = {
+        value.lower()
+        for value in ([hostname] if isinstance(hostname, str) else hostname)
+    }
     requests = []
     for record in _recent_records(Path(log_path)):
-        if str(record.get("host", "")).lower() != hostname.lower():
+        if str(record.get("host", "")).lower() not in hostnames:
             continue
         try:
             recorded_at = datetime.fromisoformat(record["time"])

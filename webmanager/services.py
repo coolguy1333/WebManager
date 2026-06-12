@@ -9,7 +9,7 @@ from pathlib import Path
 from flask import current_app
 
 from .db import get_db
-from .domains import site_hostname
+from .domains import site_hostnames
 from .nginx import (
     NginxConfigError,
     build_main_config,
@@ -83,13 +83,13 @@ class RuntimeManager:
             database = get_db()
             sites = database.execute("SELECT * FROM sites").fetchall()
             for site in sites:
-                hostname = site_hostname(database, site)
-                if not hostname:
+                hostnames = site_hostnames(database, site)
+                if not hostnames:
                     continue
                 routed = route_site_config(
                     site["nginx_config"],
                     site["port"],
-                    hostname,
+                    hostnames,
                     gateway_port,
                 )
                 if routed != site["nginx_config"]:
@@ -351,15 +351,15 @@ class RuntimeManager:
 
             for site in active:
                 try:
-                    hostname = site_hostname(database, site)
+                    hostnames = site_hostnames(database, site)
                     gateway_port = (
-                        self.app.config["SITE_GATEWAY_PORT"] if hostname else None
+                        self.app.config["SITE_GATEWAY_PORT"] if hostnames else None
                     )
                     validate_site_config(
                         site["nginx_config"],
                         site["document_root"],
                         site["port"],
-                        hostname,
+                        hostnames,
                         gateway_port,
                     )
                 except NginxConfigError as exc:
