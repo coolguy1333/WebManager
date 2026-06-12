@@ -163,6 +163,10 @@ echo "[4/8] Preparing the Python virtual environment"
 if [[ $REUSE_VENV -eq 1 ]]; then
     echo "Reusing the installed Python environment because requirements are unchanged."
 else
+    if [[ -e "$APP_DIR/.venv" ]]; then
+        echo "Rebuilding the installed Python environment because it is missing or unhealthy."
+        rm -rf "$APP_DIR/.venv"
+    fi
     python3 -m venv "$APP_DIR/.venv"
     "$APP_DIR/.venv/bin/python" -m pip install \
         --disable-pip-version-check \
@@ -174,6 +178,12 @@ else
         --retries 5 \
         --timeout 30 \
         -r "$APP_DIR/requirements.txt"
+fi
+if [[ ! -x "$APP_DIR/.venv/bin/python" ]] \
+    || ! "$APP_DIR/.venv/bin/python" -c \
+        "import authlib, flask, requests, waitress" 2>/dev/null; then
+    echo "The installed Python environment failed validation." >&2
+    exit 1
 fi
 chown -R root:root "$APP_DIR/.venv"
 

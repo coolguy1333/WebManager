@@ -1349,7 +1349,9 @@ update status and updater journal.
 Running `bash setup.sh` over an existing installation also reuses a healthy
 virtual environment when requirements are unchanged. The database, repository
 clones, site logs, and Google configuration remain under `/var/lib/webmanager`
-and `/etc/webmanager` and are not replaced.
+and `/etc/webmanager` and are not replaced. If the installed virtual
+environment is missing or unhealthy, setup rebuilds only
+`/opt/webmanager/.venv`.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.

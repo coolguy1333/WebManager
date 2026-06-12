@@ -2094,6 +2094,11 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("--retries 5", updater)
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
+        self.assertIn(
+            "Rebuilding the installed Python environment because it is missing or unhealthy.",
+            installer,
+        )
+        self.assertIn("The installed Python environment failed validation.", installer)
         self.assertIn("rollback()", updater)
         self.assertIn("wait_for_webmanager()", updater)
         self.assertIn("systemctl reset-failed webmanager", updater)
