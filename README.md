@@ -1378,6 +1378,10 @@ application, configuration, and persistent data, restarts the service, and
 waits for `/healthz` before completing. A failed recovery is recorded in the
 update status and updater journal.
 
+The updater also performs a second independent `/healthz` check after the
+installer returns. Its exit handler attempts an emergency service restart if
+the updater is interrupted or exits unexpectedly while WebManager is offline.
+
 Running `bash setup.sh` over an existing installation also reuses a healthy
 virtual environment when requirements are unchanged. The database, repository
 clones, site logs, and Google configuration remain under `/var/lib/webmanager`
@@ -1387,6 +1391,9 @@ beside it, then atomically swaps only `/opt/webmanager/.venv`. A failed package
 installation leaves the active environment untouched. The previous environment
 is retained until the restarted service passes `/healthz` and is restored
 automatically if any later installation step fails.
+
+Replacement virtual environments are installed with traverse permissions for
+the unprivileged `webmanager` service account while remaining owned by root.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.

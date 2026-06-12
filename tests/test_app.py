@@ -2454,6 +2454,11 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("--retries 5", updater)
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
+        self.assertIn('chmod 0755 "$APP_DIR/.venv"', installer)
+        self.assertIn(
+            "No previous Python environment existed; keeping the validated replacement.",
+            installer,
+        )
         self.assertIn(
             "Building a replacement Python environment before changing the active one.",
             installer,
@@ -2488,6 +2493,13 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("rollback()", updater)
         self.assertIn("wait_for_webmanager()", updater)
+        self.assertIn("SERVICE_WAS_STOPPED=1", updater)
+        self.assertIn("UPDATE_STAGE=verifying_install", updater)
+        self.assertIn(
+            "Updater exited while WebManager was offline; attempting emergency recovery.",
+            updater,
+        )
+        self.assertGreaterEqual(updater.count("wait_for_webmanager"), 3)
         self.assertIn("systemctl reset-failed webmanager", updater)
         self.assertIn(
             "Rollback restored the files, but WebManager did not become healthy.",

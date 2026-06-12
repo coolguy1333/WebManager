@@ -108,14 +108,17 @@ cleanup_install() {
     fi
     if [[ $INSTALL_SUCCEEDED -ne 1 && $VENV_SWAPPED -eq 1 ]]; then
         systemctl stop webmanager 2>/dev/null || true
-        if rm -rf "$APP_DIR/.venv" \
-            && [[ ! -e "$APP_DIR/.venv" ]] \
-            && [[ -n $OLD_VENV && -e $OLD_VENV ]] \
-            && mv "$OLD_VENV" "$APP_DIR/.venv"; then
-            restored=1
-            echo "Restored the previous Python environment after installation failure." >&2
-        elif [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
-            echo "Could not restore the previous Python environment automatically." >&2
+        if [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
+            if rm -rf "$APP_DIR/.venv" \
+                && [[ ! -e "$APP_DIR/.venv" ]] \
+                && mv "$OLD_VENV" "$APP_DIR/.venv"; then
+                restored=1
+                echo "Restored the previous Python environment after installation failure." >&2
+            else
+                echo "Could not restore the previous Python environment automatically." >&2
+            fi
+        elif [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+            echo "No previous Python environment existed; keeping the validated replacement." >&2
         fi
         if [[ $SELF_UPDATE -eq 0 && $restored -eq 1 ]]; then
             systemctl reset-failed webmanager 2>/dev/null || true
@@ -227,6 +230,9 @@ if [[ ! -x "$APP_DIR/.venv/bin/python" ]] \
     echo "The installed Python environment failed validation." >&2
     exit 1
 fi
+# mktemp creates the replacement environment's top directory with mode 0700.
+# The service runs as webmanager and must be able to traverse that directory.
+chmod 0755 "$APP_DIR/.venv"
 chown -R root:root "$APP_DIR/.venv"
 
 echo "[5/8] Preparing persistent data and configuration"

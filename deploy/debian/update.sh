@@ -177,6 +177,8 @@ NEW_COMMIT=
 APPROVED_COMMIT=
 UPDATE_STAGE=checking
 TEST_LOG=
+SERVICE_WAS_STOPPED=0
+UPDATE_COMPLETED=0
 record_failure() {
     local exit_code=$?
     local message
@@ -201,6 +203,9 @@ record_failure() {
                 if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
                     message="$message Last preflight output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
                 fi
+                ;;
+            verifying_install)
+                message="The approved update installed, but WebManager did not pass its final health check. The previous version will be restored."
                 ;;
             *)
                 message="The approved update failed validation before installation. Review the updater journal."
@@ -243,7 +248,20 @@ fi
 
 WORK_DIR=$(mktemp -d "$STATE_DIR/check.XXXXXX")
 cleanup() {
+    local exit_code=$?
+    set +e
     rm -rf "$WORK_DIR"
+    if [[ $SERVICE_WAS_STOPPED -eq 1 && $UPDATE_COMPLETED -ne 1 ]] \
+        && ! systemctl is-active --quiet webmanager; then
+        echo "Updater exited while WebManager was offline; attempting emergency recovery." >&2
+        systemctl reset-failed webmanager 2>/dev/null || true
+        systemctl restart webmanager 2>/dev/null || true
+        if ! wait_for_webmanager; then
+            echo "Emergency restart did not restore WebManager. Recent logs:" >&2
+            journalctl -u webmanager -n 80 --no-pager >&2 || true
+        fi
+    fi
+    exit "$exit_code"
 }
 trap cleanup EXIT
 
@@ -548,6 +566,7 @@ trap rollback ERR
 write_status "backing_up" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
     "Pausing WebManager briefly to finalize the prepared data backup."
 systemctl stop webmanager
+SERVICE_WAS_STOPPED=1
 sync_data_backup "$DATA_BACKUP_DIR"
 DATA_BACKUP_COMPLETE=1
 
@@ -557,9 +576,18 @@ WEBMANAGER_UPDATE_REPOSITORY="$REPOSITORY" \
 WEBMANAGER_UPDATE_BRANCH="$BRANCH" \
     bash "$SOURCE_DIR/deploy/debian/install.sh" --self-update
 
+UPDATE_STAGE=verifying_install
+write_status "installing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+    "Verifying the restarted WebManager service."
+if ! wait_for_webmanager; then
+    journalctl -u webmanager -n 80 --no-pager >&2 || true
+    false
+fi
+
 printf '%s\n' "$NEW_COMMIT" >"$APP_DIR/.installed-commit"
 chmod 0644 "$APP_DIR/.installed-commit"
 rm -f "$REQUEST_FILE"
+UPDATE_COMPLETED=1
 trap - ERR
 write_status "current" "$NEW_COMMIT" "$NEW_COMMIT" \
     "The approved update was installed successfully. Persistent data was preserved."
