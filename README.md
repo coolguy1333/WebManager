@@ -403,6 +403,10 @@ Existing sites keep their assigned domain. New deployments use the default
 domain unless the owner selects another configured domain, and a site's domain
 can be changed later from its settings page.
 
+A dashboard hostname may also be registered as a deployment domain. WebManager
+reserves only the exact dashboard hostname: subdomain deployments remain
+available, while root hosting at that exact address is blocked.
+
 A site may also use additional domain aliases. Choose one primary domain and
 check any additional domains during deployment or from **Site settings**. The
 same slug and address style apply to every selected domain, so `docs` can serve

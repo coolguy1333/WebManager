@@ -652,21 +652,64 @@ class WebManagerTestCase(unittest.TestCase):
             )
         self.assertIn(b"Dashboard domain control.example removed", deleted.data)
 
-    def test_dashboard_domain_cannot_be_added_as_deployment_domain(self):
+    def test_dashboard_domain_can_also_be_a_deployment_domain(self):
         admin_id = self.add_user("admin", is_admin=True)
         self.login_user(admin_id)
+        runtime = self.app.extensions["runtime_manager"]
+        with patch.object(runtime, "apply_nginx_configs"):
+            self.client.post(
+                "/admin/domains/dashboard",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "shared.example",
+                },
+            )
         response = self.client.post(
             "/admin/domains",
             data={
                 "_csrf_token": self.csrf(),
-                "name": "webmanager.example",
+                "name": "shared.example",
             },
             follow_redirects=True,
         )
-        self.assertIn(
-            b"A dashboard domain cannot also be used for deployments",
-            response.data,
-        )
+        self.assertIn(b"Domain shared.example added", response.data)
+        self.assertIn(b"Dashboard address reserved", response.data)
+        with self.app.app_context():
+            domain = get_db().execute(
+                "SELECT * FROM domains WHERE name = 'shared.example'"
+            ).fetchone()
+        self.assertIsNotNone(domain)
+
+    def test_deployment_domain_can_also_be_added_as_dashboard_domain(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "INSERT INTO domains (name) VALUES ('shared.example')"
+            )
+            database.commit()
+        runtime = self.app.extensions["runtime_manager"]
+
+        with patch.object(runtime, "apply_nginx_configs"):
+            response = self.client.post(
+                "/admin/domains/dashboard",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "shared.example",
+                },
+                follow_redirects=True,
+            )
+
+        self.assertIn(b"Dashboard domain shared.example added", response.data)
+        with self.app.app_context():
+            dashboard_domain = get_db().execute(
+                """
+                SELECT * FROM dashboard_domains
+                WHERE name = 'shared.example'
+                """
+            ).fetchone()
+        self.assertIsNotNone(dashboard_domain)
 
     def test_domain_blocklist_blocks_parent_and_subdomains(self):
         admin_id = self.add_user("admin", is_admin=True)

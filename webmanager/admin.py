@@ -205,7 +205,11 @@ def domains_dashboard():
         """
     ).fetchall()
     domains = [
-        {**dict(domain), "is_blocked": domain_is_blocked(domain["name"], blocked)}
+        {
+            **dict(domain),
+            "is_blocked": domain_is_blocked(domain["name"], blocked),
+            "is_dashboard": domain_is_dashboard(database, domain["name"]),
+        }
         for domain in domain_rows
     ]
     return render_template(
@@ -251,12 +255,6 @@ def create_dashboard_domain():
         flash(str(exc), "error")
         return redirect(url_for("admin.domains_dashboard"))
     database = get_db()
-    if database.execute(
-        "SELECT 1 FROM domains WHERE name = ? COLLATE NOCASE",
-        (name,),
-    ).fetchone():
-        flash("A deployment domain cannot also be a dashboard domain.", "error")
-        return redirect(url_for("admin.domains_dashboard"))
     assigned_hostnames = {
         hostname
         for site in database.execute("SELECT * FROM sites").fetchall()
@@ -358,9 +356,6 @@ def create_domain():
             f"{name} is blocked by the deployment-domain blocklist.",
             "error",
         )
-        return redirect(url_for("admin.domains_dashboard"))
-    if domain_is_dashboard(database, name):
-        flash("A dashboard domain cannot also be used for deployments.", "error")
         return redirect(url_for("admin.domains_dashboard"))
     make_default = request.form.get("is_default") == "on"
     try:

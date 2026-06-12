@@ -16,7 +16,7 @@
     <div>
       <p class="eyebrow">WebManager interface</p>
       <h2>Dashboard domains</h2>
-      <p>The primary domain is the preferred address. Aliases also open WebManager and use their own Google callback.</p>
+      <p>The primary domain is the preferred address. Aliases also open WebManager and use their own Google callback. The same hostname may be a deployment domain; only its exact dashboard address is reserved.</p>
     </div>
     <span class="count-badge">{{ dashboard_domains|length }} configured</span>
   </div>
@@ -109,7 +109,7 @@
       <label>
         Base domain
         <input name="name" maxlength="253" placeholder="example.com" required>
-        <small>Sites become <code>site.example.com</code>.</small>
+        <small>Sites become <code>site.example.com</code>. A dashboard may use the domain root while deployments use subdomains.</small>
       </label>
       <label class="check-row domain-default-choice">
         <input type="checkbox" name="is_default">
@@ -128,6 +128,7 @@
       <span class="admin-record-title"><strong>{{ domain.name }}</strong><small>*.{{ domain.name }}</small></span>
       <span class="admin-record-tags">
         {% if domain.is_blocked %}<span class="pill error">Blocked</span>{% endif %}
+        {% if domain.is_dashboard %}<span class="pill warning">Dashboard address reserved</span>{% endif %}
         {% if domain.is_default %}<span class="pill ready">Default</span>{% endif %}
         <span class="count-badge">{{ domain.site_count }} sites</span>
       </span>
@@ -137,6 +138,11 @@
         {% if domain.is_blocked %}
         <div class="flash warning"><span>This domain is blocked for new deployments and assignments. Existing sites remain online until moved.</span></div>
         {% endif %}
+        {% if domain.is_dashboard %}
+        <h3>Dashboard owns the domain root</h3>
+        <p><code>https://{{ domain.name }}</code> opens WebManager, so a hosted site cannot use this exact root address. Subdomain deployments such as <code>project.{{ domain.name }}</code> remain available.</p>
+        <div class="flash warning"><span>Keep the exact Cloudflare route for <code>{{ domain.name }}</code> pointed at WebManager. Add <code>*.{{ domain.name }}</code> for hosted sites.</span></div>
+        {% else %}
         <h3>Host a site at the domain root</h3>
         <p>This serves one site directly at <code>https://{{ domain.name }}</code>. A wildcard entry does not cover this address.</p>
         <ol>
@@ -148,6 +154,7 @@
           <li>Test locally with <code>curl -I -H 'Host: {{ domain.name }}' http://127.0.0.1:8080/</code>.</li>
         </ol>
         <div class="flash warning"><span>HTTPS must cover <code>{{ domain.name }}</code>. Cloudflare normally includes the zone apex when the domain is active and proxied.</span></div>
+        {% endif %}
 
         <h3>Host sites on subdomains</h3>
         <p>This serves addresses such as <code>project.{{ domain.name }}</code> and supports multiple sites.</p>
