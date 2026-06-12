@@ -3,92 +3,128 @@
 <section class="page-head compact">
   <div>
     <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">&larr; {{ site.name }}</a>
-    <p class="eyebrow">Deployment configuration</p>
-    <h1>Site settings</h1>
-    <p>Change the public name, source folder, port, and fallback behavior after deployment.</p>
+    <p class="eyebrow">Site configuration</p>
+    <h1>Settings</h1>
+    <p>Choose the site identity, public addresses, source folder, and runtime behavior.</p>
   </div>
 </section>
 
-<form class="panel settings-form" method="post" data-loading>
+<form class="settings-form" method="post" data-loading>
   <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-  <div class="settings-grid">
-    <label>
-      Site name
-      <input name="name" maxlength="80" value="{{ site.name }}" required>
-    </label>
-    <label>
-      URL slug
-      <input name="slug" maxlength="48" value="{{ site.slug }}" required>
-      <small>Used in the public hostname and Nginx filename.</small>
-    </label>
-    <label data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
-      Public domain
-      <select name="domain_id" data-hosting-domain>
-        <option value="">Direct port only</option>
-        {% for domain in site_domains %}
-        <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id or domain.root_site_id == site.id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}" {% if domain.id == site.domain_id %}selected{% endif %}>{{ domain.name }}{% if domain.is_default %} (default){% endif %}{% if domain.id == site.domain_id and current_domain_blocked %} (blocked; move recommended){% endif %}</option>
-        {% endfor %}
-      </select>
-      {% if site.domain_name %}<small>{{ site_public_scheme }}://{% if not site.use_domain_root %}{{ site.slug }}.{% endif %}{{ site.domain_name }}</small>{% endif %}
-    </label>
-    <label>
-      Repository folder
-      <select name="folder" required>
-        {% for candidate in candidates %}
-        <option value="{{ candidate.folder }}" {% if candidate.folder == site.folder %}selected{% endif %}>
-          {{ "Repository root" if candidate.folder == "." else candidate.folder }} / {{ candidate.index_file }}
-        </option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      Internal port
-      <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" value="{{ site.port }}" required>
-    </label>
-  </div>
-  {% if site_domains|length > 1 %}
-  <fieldset class="domain-alias-picker">
-    <legend>Additional domains</legend>
-    <p>The site will answer on every checked domain. Its URL slug and address style apply to all of them.</p>
-    <div class="domain-alias-grid">
-      {% for domain in site_domains %}
-      <label class="compact-check">
-        <input type="checkbox" name="additional_domain_ids" value="{{ domain.id }}" {% if domain.id in alias_domain_ids %}checked{% endif %}>
-        <span>
-          <strong>{{ domain.name }}</strong>
-          <small>{% if domain.root_site_id and domain.root_site_id != site.id %}Root used by {{ domain.root_site_name }}{% else %}Available as an alias{% endif %}</small>
-        </span>
+
+  <section class="panel settings-section">
+    <div class="settings-section-head">
+      <div><h2>Site identity</h2><p>The name is shown in WebManager. The URL slug is used for default subdomains and aliases.</p></div>
+    </div>
+    <div class="settings-grid">
+      <label>Site name<input name="name" maxlength="80" value="{{ site.name }}" required></label>
+      <label>URL slug<input name="slug" maxlength="48" value="{{ site.slug }}" required><small>Example: <code>{{ site.slug }}.example.com</code></small></label>
+    </div>
+  </section>
+
+  <section class="panel settings-section">
+    <div class="settings-section-head">
+      <div><h2>Main address</h2><p>This is the primary public address shown throughout WebManager.</p></div>
+    </div>
+    <div class="primary-hosting-grid">
+      <label data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
+        Base domain
+        <select name="domain_id" data-hosting-domain>
+          <option value="">No public domain (direct port only)</option>
+          {% for domain in site_domains %}
+          <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id or domain.root_site_id == site.id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}" {% if domain.id == site.domain_id %}selected{% endif %}>{{ domain.name }}{% if domain.is_default %} (default){% endif %}{% if domain.id == site.domain_id and current_domain_blocked %} (blocked; move recommended){% endif %}</option>
+          {% endfor %}
+        </select>
       </label>
+      <fieldset class="hosting-mode-picker compact-picker" data-settings-hosting-picker>
+        <legend>Address type</legend>
+        <label class="hosting-mode-option">
+          <input type="radio" name="hosting_mode" value="subdomain" {% if not site.use_domain_root %}checked{% endif %}>
+          <span><strong>Subdomain</strong><small><code>{{ site.slug }}.example.com</code></small></span>
+        </label>
+        <label class="hosting-mode-option">
+          <input type="radio" name="hosting_mode" value="root" {% if site.use_domain_root %}checked{% endif %}>
+          <span><strong>Domain root</strong><small><code>example.com</code></small></span>
+        </label>
+      </fieldset>
+    </div>
+    <div class="hosting-preview" data-settings-hosting-preview data-public-scheme="{{ site_public_scheme }}">
+      <span>Resulting main address</span>
+      <code data-settings-hosting-url></code>
+      <small data-settings-hosting-help></small>
+    </div>
+  </section>
+
+  {% if site_domains|length > 1 %}
+  <section class="panel settings-section">
+    <input type="hidden" name="alias_configuration" value="1">
+    <div class="settings-section-head">
+      <div>
+        <h2>Connected domains and aliases</h2>
+        <p>Add more addresses and choose independently how each domain reaches this site.</p>
+      </div>
+      <span class="count-badge">{{ alias_domain_ids|length }} connected</span>
+    </div>
+    <div class="alias-mode-guide">
+      <div><strong>Alternate address</strong><small>Uses the site slug on another domain, such as <code>{{ site.slug }}.example.net</code>.</small></div>
+      <div><strong>Custom subdomain</strong><small>Uses a different subdomain, such as <code>docs.example.net</code>.</small></div>
+      <div><strong>Domain root</strong><small>Uses the domain directly, such as <code>example.net</code>.</small></div>
+    </div>
+    <div class="alias-routing-list">
+      {% for domain in site_domains %}
+      {% set binding = alias_bindings_by_id.get(domain.id) %}
+      <div class="alias-routing-row" data-alias-row data-domain-id="{{ domain.id }}">
+        <label class="alias-enable">
+          <input type="checkbox" name="alias_enabled_{{ domain.id }}" {% if binding %}checked{% endif %} data-alias-enabled>
+          <span><strong>{{ domain.name }}</strong><small data-alias-summary>{% if domain.id == site.domain_id %}Selected as the main domain{% elif binding and binding.use_domain_root %}Hosted at domain root{% elif binding and binding.hostname_prefix %}Custom subdomain: {{ binding.hostname_prefix }}{% elif binding %}Alternate address{% else %}Not connected{% endif %}</small></span>
+        </label>
+        <label>
+          Address type
+          <select name="alias_mode_{{ domain.id }}" data-alias-mode>
+            <option value="alternate" {% if binding and not binding.use_domain_root and not binding.hostname_prefix %}selected{% endif %}>Alternate address</option>
+            <option value="subdomain" {% if binding and binding.hostname_prefix %}selected{% endif %}>Custom subdomain</option>
+            <option value="root" {% if binding and binding.use_domain_root %}selected{% endif %}>Domain root</option>
+          </select>
+        </label>
+        <label data-alias-prefix-wrap>
+          Subdomain
+          <input name="alias_prefix_{{ domain.id }}" value="{{ binding.hostname_prefix if binding and binding.hostname_prefix else '' }}" maxlength="63" placeholder="docs" data-alias-prefix>
+        </label>
+        <span class="alias-result" data-alias-result></span>
+      </div>
       {% endfor %}
     </div>
-  </fieldset>
+  </section>
   {% endif %}
-  <fieldset class="hosting-mode-picker" data-settings-hosting-picker>
-    <legend>Public address style</legend>
-    <label class="hosting-mode-option">
-      <input type="radio" name="hosting_mode" value="subdomain" {% if not site.use_domain_root %}checked{% endif %}>
-      <span><strong>Site subdomain</strong><small>Use the URL slug before the selected domain.</small></span>
-    </label>
-    <label class="hosting-mode-option">
-      <input type="radio" name="hosting_mode" value="root" {% if site.use_domain_root %}checked{% endif %}>
-      <span><strong>Domain root</strong><small>Serve this site directly at the selected domain.</small></span>
-    </label>
-  </fieldset>
-  <div class="hosting-preview" data-settings-hosting-preview data-public-scheme="{{ site_public_scheme }}">
-    <strong>Resulting public address</strong>
-    <code data-settings-hosting-url></code>
-    <small data-settings-hosting-help></small>
-  </div>
-  <label class="check-row">
-    <input type="checkbox" name="spa_fallback" {% if site.spa_fallback %}checked{% endif %}>
-    <span><strong>Single-page app fallback</strong><small>Serve the index page for routes that do not match a file.</small></span>
-  </label>
-  <div class="flash warning">
-    Changing these settings rebuilds the managed Nginx configuration. Any manual Nginx edits for this site will be replaced.
-  </div>
-  <div class="editor-actions">
-    <a class="button ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
-    <button class="button primary" type="submit" data-loading-text="Saving...">Save and apply</button>
+
+  <details class="panel settings-section advanced-settings">
+    <summary>Advanced site settings</summary>
+    <div class="settings-section-body">
+      <div class="settings-grid">
+        <label>
+          Repository folder
+          <select name="folder" required>
+            {% for candidate in candidates %}
+            <option value="{{ candidate.folder }}" {% if candidate.folder == site.folder %}selected{% endif %}>{{ "Repository root" if candidate.folder == "." else candidate.folder }} / {{ candidate.index_file }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Internal port<input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" value="{{ site.port }}" required><small>Only change this when resolving a port conflict.</small></label>
+      </div>
+      <label class="check-row">
+        <input type="checkbox" name="spa_fallback" {% if site.spa_fallback %}checked{% endif %}>
+        <span><strong>Single-page app fallback</strong><small>Serve the index page when a path does not match a file.</small></span>
+      </label>
+      <div class="flash warning">Saving rebuilds the managed Nginx configuration. Manual configuration edits for this site will be replaced.</div>
+    </div>
+  </details>
+
+  <div class="settings-savebar panel">
+    <span>Changes are applied after validation. Running sites restart automatically.</span>
+    <div class="button-row">
+      <a class="button ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
+      <button class="button primary" type="submit" data-loading-text="Saving...">Save changes</button>
+    </div>
   </div>
 </form>
 {% endblock %}

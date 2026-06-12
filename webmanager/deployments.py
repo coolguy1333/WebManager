@@ -20,8 +20,10 @@ from .analytics import site_analytics
 from .db import get_db
 from .domains import (
     available_domains,
+    binding_hostname,
     blocked_domain_names,
     domain_root_owner,
+    hostname_owner,
     domain_is_dashboard,
     default_domain,
     domain_is_blocked,
@@ -52,6 +54,7 @@ from .services import RuntimeErrorDetail, allocate_port, port_is_available
 
 bp = Blueprint("deployments", __name__)
 SLUG_RE = re.compile(r"[^a-z0-9]+")
+HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def slugify(value: str) -> str:
@@ -77,6 +80,13 @@ def request_hostname() -> str:
     return f"[{hostname}]" if ":" in hostname else hostname
 
 
+def action_redirect(endpoint: str, **values):
+    requested = request.form.get("next", "").strip()
+    if requested.startswith("/") and not requested.startswith("//"):
+        return redirect(requested, code=303)
+    return redirect(url_for(endpoint, **values), code=303)
+
+
 def site_public_url(site) -> str:
     hostname = site_hostname(get_db(), site)
     if hostname:
@@ -97,11 +107,7 @@ def site_routing_details(site) -> list[dict[str, str]]:
     database = get_db()
     details = []
     for binding in site_domain_bindings(database, site):
-        hostname = (
-            binding["domain"]
-            if binding["use_domain_root"]
-            else f"{site['slug']}.{binding['domain']}"
-        )
+        hostname = binding_hostname(site, binding)
         details.append(
             {
                 "hostname": hostname,
@@ -115,6 +121,113 @@ def site_routing_details(site) -> list[dict[str, str]]:
             }
         )
     return details
+
+
+def site_domain_summary(site):
+    bindings = site_domain_bindings(get_db(), site)
+    groups = {"root": [], "subdomains": [], "aliases": []}
+    main = None
+    for binding in bindings:
+        hostname = binding_hostname(site, binding)
+        item = {
+            **binding,
+            "hostname": hostname,
+            "label": (
+                "Root domain"
+                if binding["use_domain_root"]
+                else "Primary subdomain"
+                if binding["is_primary"]
+                else "Custom subdomain"
+                if binding["hostname_prefix"]
+                else "Alias"
+            ),
+        }
+        if binding["is_primary"]:
+            main = item
+        if binding["use_domain_root"]:
+            groups["root"].append(item)
+        elif not binding["is_primary"] and not binding["hostname_prefix"]:
+            groups["aliases"].append(item)
+        else:
+            groups["subdomains"].append(item)
+    return {
+        "main": main,
+        "groups": groups,
+        "count": len(bindings),
+    }
+
+
+def repository_update_display(repository):
+    keys = repository.keys()
+    state_key = (
+        "update_state"
+        if "update_state" in keys
+        else "repository_update_state"
+    )
+    interval_key = (
+        "auto_refresh_minutes"
+        if "auto_refresh_minutes" in keys
+        else "repository_auto_refresh_minutes"
+    )
+    error_key = (
+        "update_error"
+        if "update_error" in keys
+        else "repository_update_error"
+    )
+    fallback_error_key = "error" if "error" in keys else "repository_error"
+    state = repository[state_key] or "idle"
+    if state == "checking":
+        label = "Checking"
+    elif state == "updating":
+        label = "Updating"
+    elif state == "failed":
+        label = "Failed"
+    elif repository[interval_key]:
+        label = "Enabled"
+    else:
+        label = "Disabled"
+    return {
+        "state": state,
+        "label": label,
+        "enabled": bool(repository[interval_key]),
+        "error": repository[error_key] or repository[fallback_error_key],
+    }
+
+
+def site_attention_reasons(site):
+    reasons = []
+    if site["status"] == "error":
+        reasons.append(site["last_error"] or "The hosting process failed.")
+    elif site["status"] == "running" and not site["runtime_backend"]:
+        reasons.append("The site is marked running but has no active hosting backend.")
+    document_root = Path(site["document_root"])
+    if not document_root.is_dir():
+        reasons.append("The selected repository folder is missing.")
+    elif not (document_root / site["index_file"]).is_file():
+        reasons.append(f"The required index page {site['index_file']} is missing.")
+    if (
+        "repository_update_state" in site.keys()
+        and site["repository_update_state"] == "failed"
+    ):
+        prefix = (
+            "Automatic update failed"
+            if site["repository_auto_refresh_minutes"]
+            else "Source update check failed"
+        )
+        reasons.append(
+            f"{prefix}: "
+            f"{site['repository_update_error'] or site['repository_error'] or 'unknown error'}"
+        )
+    return list(dict.fromkeys(reasons))
+
+
+def recent_site_log(site_id: int, limit=80):
+    path = Path(current_app.config["LOG_ROOT"]) / f"site-{site_id}.log"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-limit:])
 
 
 def requested_additional_domains(database, primary_domain_id: int | None):
@@ -135,6 +248,51 @@ def requested_additional_domains(database, primary_domain_id: int | None):
     if len(rows) != len(requested_ids):
         abort(400, "Unknown additional domain.")
     return rows
+
+
+def requested_alias_bindings(
+    database,
+    primary_domain_id: int | None,
+    site_slug: str,
+    legacy_use_domain_root=False,
+):
+    if "alias_configuration" not in request.form:
+        return [
+            {
+                "domain": domain,
+                "use_domain_root": legacy_use_domain_root,
+                "hostname_prefix": None,
+            }
+            for domain in requested_additional_domains(database, primary_domain_id)
+        ]
+
+    bindings = []
+    domains = database.execute(
+        "SELECT * FROM domains ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    for domain in domains:
+        if domain["id"] == primary_domain_id:
+            continue
+        if request.form.get(f"alias_enabled_{domain['id']}") != "on":
+            continue
+        mode = request.form.get(f"alias_mode_{domain['id']}", "alternate")
+        if mode not in {"alternate", "subdomain", "root"}:
+            abort(400, "Unknown alias hosting mode.")
+        prefix = None
+        if mode == "subdomain":
+            prefix = request.form.get(f"alias_prefix_{domain['id']}", "").strip().lower()
+            if not HOST_LABEL_RE.fullmatch(prefix):
+                raise ValueError(
+                    f"Enter a valid subdomain for {domain['name']}."
+                )
+        bindings.append(
+            {
+                "domain": domain,
+                "use_domain_root": mode == "root",
+                "hostname_prefix": prefix if prefix != site_slug else None,
+            }
+        )
+    return bindings
 
 
 def validate_site_domains(
@@ -163,6 +321,50 @@ def validate_site_domains(
                 raise ValueError(
                     f"{domain['name']} already has a site at its root."
                 )
+
+
+def validate_site_bindings(
+    database,
+    bindings,
+    site_slug,
+    exclude_site_id=None,
+    allowed_blocked_domain_ids=(),
+):
+    blocked = blocked_domain_names(database)
+    allowed_blocked_domain_ids = set(allowed_blocked_domain_ids)
+    hostnames = set()
+    site_stub = {"slug": site_slug}
+    for binding in bindings:
+        domain = binding["domain"]
+        if (
+            domain_is_blocked(domain["name"], blocked)
+            and domain["id"] not in allowed_blocked_domain_ids
+        ):
+            raise ValueError(f"{domain['name']} is blocked by an administrator.")
+        normalized = {
+            "domain": domain["name"],
+            "use_domain_root": binding["use_domain_root"],
+            "hostname_prefix": binding.get("hostname_prefix"),
+        }
+        hostname = binding_hostname(site_stub, normalized)
+        if hostname in hostnames:
+            raise ValueError(f"{hostname} is selected more than once.")
+        hostnames.add(hostname)
+        if domain_is_dashboard(database, hostname):
+            raise ValueError(
+                "The WebManager dashboard hostname cannot also host a site."
+            )
+        if binding["use_domain_root"]:
+            owner = domain_root_owner(database, domain["id"], exclude_site_id)
+            if owner:
+                raise ValueError(
+                    f"{domain['name']} already has a site at its root."
+                )
+        owner = hostname_owner(database, hostname, exclude_site_id)
+        if owner:
+            raise ValueError(
+                f"{hostname} is already used by {owner['name']}."
+            )
 
 
 def repository_path_is_managed(path: str | Path) -> bool:
@@ -195,6 +397,12 @@ def owned_site(site_id: int, manage=False):
                repositories.pending_commit AS repository_pending_commit,
                repositories.pending_at AS repository_pending_at,
                repositories.update_mode AS repository_update_mode,
+               repositories.auto_refresh_minutes AS repository_auto_refresh_minutes,
+               repositories.last_checked_at AS repository_last_checked_at,
+               repositories.last_update_at AS repository_last_update_at,
+               repositories.update_state AS repository_update_state,
+               repositories.update_error AS repository_update_error,
+               repositories.error AS repository_error,
                domains.name AS domain_name
         FROM sites
         JOIN repositories ON repositories.id = sites.repository_id
@@ -222,6 +430,10 @@ def dashboard():
     sites = database.execute(
         """
         SELECT sites.*, repositories.name AS repository_name,
+               repositories.error AS repository_error,
+               repositories.update_state AS repository_update_state,
+               repositories.update_error AS repository_update_error,
+               repositories.auto_refresh_minutes AS repository_auto_refresh_minutes,
                users.display_name AS owner_name, users.email AS owner_email,
                pools.name AS pool_name, domains.name AS domain_name
         FROM sites JOIN repositories ON repositories.id = sites.repository_id
@@ -246,6 +458,14 @@ def dashboard():
         or has_permission(RESOURCE_MANAGE_ALL)
         or access_levels.get(site["id"], 0) >= 2
     }
+    site_domain_summaries = {
+        site["id"]: site_domain_summary(site)
+        for site in sites
+    }
+    attention_reasons = {
+        site["id"]: site_attention_reasons(site)
+        for site in sites
+    }
     repository_where = "" if show_all else "WHERE repositories.user_id = ?"
     parameters = () if show_all else (g.user["id"],)
     repositories = database.execute(
@@ -264,12 +484,16 @@ def dashboard():
     summary = {
         "running": sum(site["status"] == "running" for site in sites),
         "stopped": sum(site["status"] == "stopped" for site in sites),
-        "attention": sum(site["status"] == "error" for site in sites),
+        "attention": sum(bool(attention_reasons[site["id"]]) for site in sites),
         "repositories": len(repositories),
+    }
+    repository_update_states = {
+        repository["id"]: repository_update_display(repository)
+        for repository in repositories
     }
     return render_template(
         "dashboard.html",
-        title="Dashboard",
+        title="Sites" if active_view == "sites" else "Sources",
         sites=sites,
         repositories=repositories,
         port_min=current_app.config["SITE_PORT_MIN"],
@@ -284,6 +508,10 @@ def dashboard():
         show_all=show_all,
         manage_all=has_permission(RESOURCE_MANAGE_ALL),
         manageable_site_ids=manageable_site_ids,
+        site_domain_summaries=site_domain_summaries,
+        attention_reasons=attention_reasons,
+        repository_update_states=repository_update_states,
+        auto_refresh_service_enabled=current_app.config["AUTO_REFRESH_ENABLED"],
         active_view=active_view,
     )
 
@@ -302,7 +530,7 @@ def inspect_repository():
         url = validate_repo_url(raw_url)
     except GitError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("deployments.dashboard"))
+        return action_redirect("deployments.dashboard", view="sources")
 
     name = repo_name_from_url(url)
     cursor = database.execute(
@@ -328,6 +556,8 @@ def inspect_repository():
             """
             UPDATE repositories
             SET status = 'ready', error = NULL,
+                update_state = 'idle', update_error = NULL,
+                last_checked_at = CURRENT_TIMESTAMP,
                 current_commit = ?,
                 last_refreshed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
@@ -338,12 +568,19 @@ def inspect_repository():
         database.commit()
     except GitError as exc:
         database.execute(
-            "UPDATE repositories SET status = 'error', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (str(exc), repository_id),
+            """
+            UPDATE repositories
+            SET status = 'error', error = ?,
+                update_state = 'failed', update_error = ?,
+                last_checked_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (str(exc), str(exc), repository_id),
         )
         database.commit()
         flash(f"Could not clone repository: {exc}", "error")
-        return redirect(url_for("deployments.dashboard"))
+        return action_redirect("deployments.dashboard", view="sources")
 
     if not candidates:
         flash("Repository cloned, but no index.html or index.htm file was found.", "warning")
@@ -387,7 +624,7 @@ def refresh_repository(repository_id):
         flash(result.message, "warning")
     else:
         flash(f"Update check failed: {result.message}", "error")
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sources")
 
 
 @bp.post("/repositories/<int:repository_id>/schedule")
@@ -408,14 +645,14 @@ def schedule_repository_refresh(repository_id):
             minutes = int(raw_minutes)
         except ValueError:
             flash("Automatic refresh must be a whole number of minutes.", "error")
-            return redirect(url_for("deployments.dashboard"))
+            return action_redirect("deployments.dashboard", view="sources")
         if minutes < MIN_REFRESH_MINUTES or minutes > MAX_REFRESH_MINUTES:
             flash(
                 f"Automatic refresh must be between {MIN_REFRESH_MINUTES} "
                 f"and {MAX_REFRESH_MINUTES} minutes.",
                 "error",
             )
-            return redirect(url_for("deployments.dashboard"))
+            return action_redirect("deployments.dashboard", view="sources")
         next_run = next_refresh_time(minutes)
 
     database = get_db()
@@ -445,7 +682,7 @@ def schedule_repository_refresh(repository_id):
             flash(result.message, "success")
         elif repository["pending_commit"] and result.status != "missing":
             flash(f"Could not apply pending update: {result.message}", "error")
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sources")
 
 
 @bp.post("/repositories/<int:repository_id>/updates/approve")
@@ -462,7 +699,7 @@ def approve_repository_update(repository_id):
         flash(result.message, "warning")
     else:
         flash(f"Could not apply update: {result.message}", "error")
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sources")
 
 
 @bp.post("/repositories/<int:repository_id>/updates/discard")
@@ -477,7 +714,7 @@ def discard_repository_update(repository_id):
         result.message,
         "warning" if result.status == "busy" else "success",
     )
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sources")
 
 
 @bp.post("/repositories/<int:repository_id>/deploy")
@@ -670,7 +907,7 @@ def deploy_repository(repository_id):
         f"Deployed {len(created)} sites from {repository['name']}.",
         "success",
     )
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sites")
 
 
 @bp.get("/sites/<int:site_id>")
@@ -687,10 +924,15 @@ def site_detail(site_id):
         host=request_hostname(),
         public_url=site_public_url(site),
         public_urls=site_public_urls(site),
+        site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
         nginx_available=bool(current_app.extensions["runtime_manager"].nginx_binary),
         can_manage=can_manage_site(site, database),
         can_manage_repository=can_manage_resource(site["user_id"]),
         routing=site_routing_details(site),
+        domain_summary=site_domain_summary(site),
+        attention_reasons=site_attention_reasons(site),
+        update_display=repository_update_display(site),
+        site_log=recent_site_log(site_id),
         analytics=site_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
             hostnames,
@@ -722,6 +964,9 @@ def site_settings(site_id):
         if binding["domain_id"]
     }
     alias_domain_ids = {binding["domain_id"] for binding in alias_bindings}
+    alias_bindings_by_id = {
+        binding["domain_id"]: binding for binding in alias_bindings
+    }
     if site["domain_id"]:
         current_domain = database.execute(
             "SELECT * FROM domains WHERE id = ?",
@@ -790,11 +1035,30 @@ def site_settings(site_id):
             ).fetchone()
         else:
             domain = default_domain(database)
-        additional_domains = requested_additional_domains(
-            database,
-            domain["id"] if domain else None,
-        )
-        selected_domains = ([domain] if domain else []) + additional_domains
+        try:
+            requested_aliases = requested_alias_bindings(
+                database,
+                domain["id"] if domain else None,
+                slug,
+                legacy_use_domain_root=use_domain_root,
+            )
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(
+                url_for("deployments.site_settings", site_id=site_id),
+                code=303,
+            )
+        selected_bindings = (
+            [
+                {
+                    "domain": domain,
+                    "use_domain_root": use_domain_root,
+                    "hostname_prefix": None,
+                }
+            ]
+            if domain
+            else []
+        ) + requested_aliases
         try:
             port = int(request.form.get("port", ""))
         except ValueError:
@@ -818,17 +1082,17 @@ def site_settings(site_id):
             flash(f"Port {port} is already in use.", "error")
         elif use_domain_root and domain is None:
             flash("Select a public domain before using its root address.", "error")
-        elif domain is None and additional_domains:
+        elif domain is None and requested_aliases:
             flash(
                 "Choose a primary public domain before adding domain aliases.",
                 "error",
             )
         else:
             try:
-                validate_site_domains(
+                validate_site_bindings(
                     database,
-                    selected_domains,
-                    use_domain_root,
+                    selected_bindings,
+                    slug,
                     exclude_site_id=site_id,
                     allowed_blocked_domain_ids=current_bindings,
                 )
@@ -842,29 +1106,27 @@ def site_settings(site_id):
                 if not index_file:
                     raise GitError("The selected folder does not contain an index page.")
                 slug = unique_slug(database, slug, exclude_site_id=site_id)
+                site_stub = {"slug": slug}
                 hostnames = [
-                    selected_domain["name"]
-                    if use_domain_root
-                    else f"{slug}.{selected_domain['name']}"
-                    for selected_domain in selected_domains
+                    binding_hostname(
+                        site_stub,
+                        {
+                            "domain": binding["domain"]["name"],
+                            "use_domain_root": binding["use_domain_root"],
+                            "hostname_prefix": binding.get("hostname_prefix"),
+                        },
+                    )
+                    for binding in selected_bindings
                 ]
-                for hostname in hostnames:
-                    if domain_is_dashboard(database, hostname):
-                        raise GitError(
-                            "The generated hostname is reserved for the WebManager dashboard."
-                        )
                 blocked = blocked_domain_names(database)
-                for selected_domain, hostname in zip(selected_domains, hostnames):
+                for binding, hostname in zip(selected_bindings, hostnames):
+                    selected_domain = binding["domain"]
                     previous = current_bindings.get(selected_domain["id"])
                     if (
                         previous
                         and domain_is_blocked(selected_domain["name"], blocked)
                     ):
-                        previous_hostname = (
-                            previous["domain"]
-                            if previous["use_domain_root"]
-                            else f"{site['slug']}.{previous['domain']}"
-                        )
+                        previous_hostname = binding_hostname(site, previous)
                         if hostname != previous_hostname:
                             raise GitError(
                                 "The current domain is blocked. Keep the existing "
@@ -909,12 +1171,17 @@ def site_settings(site_id):
                 database.executemany(
                     """
                     INSERT INTO site_domain_aliases (
-                        site_id, domain_id, use_domain_root
-                    ) VALUES (?, ?, ?)
+                        site_id, domain_id, use_domain_root, hostname_prefix
+                    ) VALUES (?, ?, ?, ?)
                     """,
                     (
-                        (site_id, alias["id"], int(use_domain_root))
-                        for alias in additional_domains
+                        (
+                            site_id,
+                            alias["domain"]["id"],
+                            int(alias["use_domain_root"]),
+                            alias.get("hostname_prefix"),
+                        )
+                        for alias in requested_aliases
                     ),
                 )
                 database.commit()
@@ -938,7 +1205,10 @@ def site_settings(site_id):
                     else:
                         flash("Site settings saved.", "success")
                 return redirect(url_for("deployments.site_detail", site_id=site_id))
-        site = owned_site(site_id, manage=True)
+        return redirect(
+            url_for("deployments.site_settings", site_id=site_id),
+            code=303,
+        )
 
     return render_template(
         "site_settings.html",
@@ -950,6 +1220,7 @@ def site_settings(site_id):
         site_domains=domains,
         current_domain_blocked=current_domain_blocked,
         alias_domain_ids=alias_domain_ids,
+        alias_bindings_by_id=alias_bindings_by_id,
         site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
     )
 
@@ -965,7 +1236,7 @@ def start_site(site_id):
         flash(f"Could not start site: {exc}", "error")
     else:
         flash(f"Site started with {backend}.", "success")
-    return redirect(url_for("deployments.site_detail", site_id=site_id))
+    return action_redirect("deployments.site_detail", site_id=site_id)
 
 
 @bp.post("/sites/<int:site_id>/stop")
@@ -979,7 +1250,7 @@ def stop_site(site_id):
         flash(f"Could not stop site: {exc}", "error")
     else:
         flash("Site stopped.", "success")
-    return redirect(url_for("deployments.site_detail", site_id=site_id))
+    return action_redirect("deployments.site_detail", site_id=site_id)
 
 
 @bp.post("/sites/<int:site_id>/restart")
@@ -993,7 +1264,7 @@ def restart_site(site_id):
         flash(f"Could not restart site: {exc}", "error")
     else:
         flash("Site restarted.", "success")
-    return redirect(url_for("deployments.site_detail", site_id=site_id))
+    return action_redirect("deployments.site_detail", site_id=site_id)
 
 
 @bp.route("/sites/<int:site_id>/config", methods=("GET", "POST"))
@@ -1005,6 +1276,10 @@ def edit_config(site_id):
         config = request.form.get("nginx_config", "")
         if len(config.encode("utf-8")) > 128 * 1024:
             flash("Configuration must be smaller than 128 KB.", "error")
+            return redirect(
+                url_for("deployments.edit_config", site_id=site_id),
+                code=303,
+            )
         else:
             try:
                 hostnames = site_hostnames(get_db(), site)
@@ -1017,12 +1292,9 @@ def edit_config(site_id):
                 )
             except NginxConfigError as exc:
                 flash(str(exc), "error")
-                site = owned_site(site_id, manage=True)
-                return render_template(
-                    "config_editor.html",
-                    title=f"Edit {site['name']}",
-                    site=site,
-                    submitted_config=config,
+                return redirect(
+                    url_for("deployments.edit_config", site_id=site_id),
+                    code=303,
                 )
 
             database = get_db()
@@ -1058,7 +1330,6 @@ def edit_config(site_id):
                 runtime.sync_nginx_configs()
                 flash(message, "success")
             return redirect(url_for("deployments.edit_config", site_id=site_id))
-        site = owned_site(site_id, manage=True)
     return render_template("config_editor.html", title=f"Edit {site['name']}", site=site)
 
 
@@ -1071,12 +1342,12 @@ def delete_site(site_id):
         current_app.extensions["runtime_manager"].stop_site(site_id)
     except RuntimeErrorDetail as exc:
         flash(f"Site was not deleted because it could not be stopped: {exc}", "error")
-        return redirect(url_for("deployments.site_detail", site_id=site_id))
+        return action_redirect("deployments.site_detail", site_id=site_id)
     database = get_db()
     database.execute("DELETE FROM sites WHERE id = ?", (site_id,))
     database.commit()
     flash(f"{site['name']} was deleted.", "success")
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sites")
 
 
 @bp.post("/repositories/<int:repository_id>/delete")
@@ -1099,7 +1370,7 @@ def delete_repository(repository_id):
                     f"Repository was not deleted because one of its sites could not be stopped: {exc}",
                     "error",
                 )
-                return redirect(url_for("deployments.dashboard"))
+                return action_redirect("deployments.dashboard", view="sources")
         database.execute(
             "DELETE FROM repositories WHERE id = ?",
             (repository_id,),
@@ -1117,4 +1388,4 @@ def delete_repository(repository_id):
                 f"Repository record {repository['name']} was deleted, but its unsafe stored path was not removed.",
                 "warning",
             )
-    return redirect(url_for("deployments.dashboard"))
+    return action_redirect("deployments.dashboard", view="sources")

@@ -1,87 +1,120 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-head compact">
+<section class="page-head compact site-page-head">
   <div>
     <a class="back-link" href="{{ url_for('deployments.dashboard', view='sites') }}">&larr; Sites</a>
     <div class="title-status">
       <h1>{{ site.name }}</h1>
-      <span class="pill {{ site.status }}">{{ site.status }}</span>
+      <span class="pill {{ 'error' if attention_reasons else site.status }}">{{ "Needs attention" if attention_reasons else site.status|capitalize }}</span>
     </div>
     <p>{{ site.repository_name }} / {{ site.folder }}</p>
   </div>
-  <div class="button-row">
+  <div class="button-row site-actions">
+    {% if site.status == "running" %}<a class="button primary" href="{{ public_url }}" target="_blank" rel="noopener noreferrer">Open site</a>{% endif %}
     {% if can_manage %}
-      <a class="button ghost" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Settings</a>
+    <a class="button ghost" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Edit settings</a>
     {% if site.status == "running" %}
-      <a class="button primary" href="{{ public_url }}" target="_blank" rel="noopener noreferrer">Open site &rarr;</a>
-      <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <button class="button ghost" type="submit" data-loading-text="Restarting...">Restart</button>
-      </form>
-      <form method="post" action="{{ url_for('deployments.stop_site', site_id=site.id) }}" data-loading>
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <button class="button ghost" type="submit" data-loading-text="Stopping...">Stop</button>
-      </form>
+    <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button ghost" type="submit" data-loading-text="Restarting...">Restart</button>
+    </form>
+    <form method="post" action="{{ url_for('deployments.stop_site', site_id=site.id) }}" data-loading data-confirm="Stop this site? Its public addresses will stop serving traffic until it is started again.">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button ghost" type="submit" data-loading-text="Stopping...">Stop</button>
+    </form>
     {% else %}
-      <form method="post" action="{{ url_for('deployments.start_site', site_id=site.id) }}" data-loading>
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <button class="button primary" type="submit" data-loading-text="Starting...">Start site</button>
-      </form>
+    <form method="post" action="{{ url_for('deployments.start_site', site_id=site.id) }}" data-loading>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <button class="button primary" type="submit" data-loading-text="Starting...">Start site</button>
+    </form>
     {% endif %}
     {% endif %}
   </div>
 </section>
 
-<section class="runtime-banner {{ site.status }}">
-  <div>
-    <span class="status-dot {{ site.status }}"></span>
-    <strong>{{ "Site is live" if site.status == "running" else "Site is not serving traffic" if site.status == "stopped" else "Site needs attention" }}</strong>
-  </div>
-  <span>Last updated {{ site.updated_at }}</span>
+{% if attention_reasons %}
+<section class="panel site-alert-panel">
+  <div><span class="status-dot error"></span><strong>This site needs attention</strong></div>
+  <ul>{% for reason in attention_reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
 </section>
-
-{% if site.last_error %}
-  <div class="flash error">{{ site.last_error }}</div>
 {% endif %}
 
-{% if routing and can_manage %}
-<section class="panel program-update-card">
-  <div class="program-update-copy">
-    {% if routing|length > 1 %}
-    <strong>Cloudflare Tunnel must route every domain used by this site.</strong>
-    {% elif routing[0].use_domain_root %}
-    <strong>Cloudflare Tunnel must include this exact root hostname.</strong>
+<section class="site-overview-grid">
+  <article class="panel overview-card">
+    <span>Status</span>
+    <strong><span class="status-dot {{ site.status }}"></span>{{ site.status|capitalize }}</strong>
+    <small>Last changed {{ site.updated_at }}</small>
+  </article>
+  <article class="panel overview-card">
+    <span>Main address</span>
+    {% if domain_summary.main %}
+    <strong class="truncate"><a href="{{ public_url }}" target="_blank" rel="noopener noreferrer">{{ domain_summary.main.hostname }}</a></strong>
+    <small>{{ domain_summary.main.label }}</small>
     {% else %}
-    <strong>Cloudflare Tunnel must include the wildcard hostname.</strong>
+    <strong>Port {{ site.port }}</strong><small>Direct access only</small>
     {% endif %}
-    {% for route in routing %}
-      {% if route.use_domain_root %}
-      <small><code>{{ route.hostname }}</code>: add this exact public hostname with service <code>{{ route.origin }}</code>. A wildcard hostname does not cover the domain root.</small>
-      {% else %}
-      <small><code>{{ route.hostname }}</code>: add wildcard public hostname <code>{{ route.wildcard }}</code> with service <code>{{ route.origin }}</code>.</small>
+  </article>
+  <article class="panel overview-card">
+    <span>Automatic updates</span>
+    <strong class="update-state update-{{ update_display.state }}">{{ update_display.label }}</strong>
+    <small>{% if site.repository_last_update_at %}Last updated successfully {{ site.repository_last_update_at }}{% elif site.repository_last_checked_at %}Last checked {{ site.repository_last_checked_at }}{% else %}No completed check yet{% endif %}</small>
+  </article>
+  <article class="panel overview-card">
+    <span>Connected addresses</span>
+    <strong>{{ domain_summary.count }}</strong>
+    <small>{{ "No public domain" if not domain_summary.count else "Across configured domains and aliases" }}</small>
+  </article>
+</section>
+
+<div class="detail-grid site-primary-grid">
+  <section class="panel hosting-panel">
+    <div class="section-heading">
+      <div><h2>Hosting details</h2><p>Public addresses currently routed to this deployment.</p></div>
+      {% if can_manage %}<a class="button ghost small" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Manage domains</a>{% endif %}
+    </div>
+    {% if domain_summary.count %}
+    <div class="address-groups">
+      {% if domain_summary.groups.root %}
+      <div><h3>Root domains</h3>{% for item in domain_summary.groups.root %}<div class="address-row"><a href="{{ site_public_scheme|default('https') }}://{{ item.hostname }}" target="_blank" rel="noopener noreferrer">{{ item.hostname }}</a><span>{{ "Main" if item.is_primary else "Alias" }}</span></div>{% endfor %}</div>
       {% endif %}
-    {% endfor %}
-    <small>Keep <code>:8080</code> in the service URL; omitting it sends traffic to port 80.</small>
-    {% for route in routing %}<small>Local test: <code>{{ route.local_test }}</code></small>{% endfor %}
-  </div>
-</section>
-{% endif %}
+      {% if domain_summary.groups.subdomains %}
+      <div><h3>Subdomains</h3>{% for item in domain_summary.groups.subdomains %}<div class="address-row"><a href="{{ site_public_scheme }}://{{ item.hostname }}" target="_blank" rel="noopener noreferrer">{{ item.hostname }}</a><span>{{ "Main" if item.is_primary else "Custom" }}</span></div>{% endfor %}</div>
+      {% endif %}
+      {% if domain_summary.groups.aliases %}
+      <div><h3>Aliases</h3>{% for item in domain_summary.groups.aliases %}<div class="address-row"><a href="{{ site_public_scheme }}://{{ item.hostname }}" target="_blank" rel="noopener noreferrer">{{ item.hostname }}</a><span>Alternate</span></div>{% endfor %}</div>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="muted">This site is available only through internal port <code>{{ site.port }}</code>.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel source-health-panel">
+    <div class="section-heading"><div><h2>Source updates</h2><p>{{ site.repository_name }}</p></div><span class="pill update-{{ update_display.state }}">{{ update_display.label }}</span></div>
+    <dl class="detail-list compact-list">
+      <div><dt>Policy</dt><dd>{{ "Apply automatically" if site.repository_update_mode == "auto" else "Owner approval" }}</dd></div>
+      <div><dt>Schedule</dt><dd>{% if site.repository_auto_refresh_minutes %}Every {{ site.repository_auto_refresh_minutes }} minutes{% else %}Manual checks only{% endif %}</dd></div>
+      <div><dt>Last checked</dt><dd>{{ site.repository_last_checked_at or "Never" }}</dd></div>
+      <div><dt>Last updated</dt><dd>{{ site.repository_last_update_at or "No update applied" }}</dd></div>
+    </dl>
+    {% if update_display.error %}<p class="inline-error">{{ update_display.error }}</p>{% endif %}
+    <a class="text-link" href="{{ url_for('deployments.dashboard', view='sources') }}">Manage source updates &rarr;</a>
+  </section>
+</div>
 
 {% if site.repository_pending_commit and can_manage_repository %}
-<section class="panel program-update-card">
-  <div class="program-update-copy">
-    <strong>A validated source update is waiting for approval.</strong>
-    <small>Revision <code>{{ site.repository_pending_commit[:12] }}</code> affects every site using {{ site.repository_name }}.</small>
-    {% if site.repository_pending_at %}<small>Staged {{ site.repository_pending_at }} UTC</small>{% endif %}
-  </div>
+<section class="panel source-update-callout">
+  <div><strong>A validated source update is waiting for approval.</strong><small>Revision <code>{{ site.repository_pending_commit[:12] }}</code> affects every site using {{ site.repository_name }}.</small></div>
   {% if can_manage %}
   <div class="button-row">
     <form method="post" action="{{ url_for('deployments.approve_repository_update', repository_id=site.repository_id) }}" data-loading data-confirm="Apply this update to every site using this repository?">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ request.path }}">
       <button class="button primary" type="submit" data-loading-text="Applying...">Approve update</button>
     </form>
     <form method="post" action="{{ url_for('deployments.discard_repository_update', repository_id=site.repository_id) }}" data-confirm="Discard this staged update?">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ request.path }}">
       <button class="button ghost" type="submit">Discard</button>
     </form>
   </div>
@@ -89,55 +122,8 @@
 </section>
 {% endif %}
 
-<div class="detail-grid">
-  <section class="panel">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Runtime</p>
-        <h2>Hosting details</h2>
-      </div>
-    </div>
-    <dl class="detail-list">
-      {% for url in public_urls %}
-      <div>
-        <dt>{{ "Primary address" if loop.first else "Additional address" }}</dt>
-        <dd class="copy-row">
-          <a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a>
-          <button class="copy-button" type="button" data-copy="{{ url }}">Copy</button>
-        </dd>
-      </div>
-      {% endfor %}
-      <div><dt>Internal port</dt><dd><code>{{ site.port }}</code></dd></div>
-      <div><dt>Backend</dt><dd>{{ site.runtime_backend or "Stopped" }}</dd></div>
-      <div><dt>Process ID</dt><dd>{{ site.runtime_pid or "-" }}</dd></div>
-      <div><dt>SPA fallback</dt><dd>{{ "Enabled" if site.spa_fallback else "Disabled" }}</dd></div>
-    </dl>
-  </section>
-
-  <section class="panel">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Source</p>
-        <h2>Document root</h2>
-      </div>
-    </div>
-    <dl class="detail-list">
-      <div><dt>Repository</dt><dd>{{ site.repository_url }}</dd></div>
-      <div><dt>Folder</dt><dd><code>{{ site.folder }}</code></dd></div>
-      <div><dt>Index page</dt><dd><code>{{ site.index_file }}</code></dd></div>
-      <div class="stacked"><dt>Local path</dt><dd><code>{{ site.document_root }}</code></dd></div>
-    </dl>
-  </section>
-</div>
-
 <section class="section-block">
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Last {{ analytics.days }} days</p>
-      <h2>Site analytics</h2>
-      <p>Collected from the managed Nginx access log. No tracking script is added to the site.</p>
-    </div>
-  </div>
+  <div class="section-heading"><div><h2>Traffic</h2><p>Last {{ analytics.days }} days from the managed Nginx access log. No tracking script is added.</p></div></div>
   <div class="summary-grid analytics-summary">
     <div class="summary-card"><span>Requests</span><strong>{{ analytics.requests }}</strong></div>
     <div class="summary-card"><span>Unique visitors</span><strong>{{ analytics.visitors }}</strong></div>
@@ -148,55 +134,69 @@
     <section class="panel analytics-panel">
       <h3>Daily traffic</h3>
       {% if analytics.daily %}
-      <div class="traffic-bars">
-        {% for day, count in analytics.daily %}
-        <div class="traffic-row">
-          <span>{{ day[5:] }}</span>
-          <progress max="{{ analytics.daily_max }}" value="{{ count }}">{{ count }}</progress>
-          <strong>{{ count }}</strong>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p class="muted">No requests have been recorded for this hostname yet.</p>
-      {% endif %}
+      <div class="traffic-bars">{% for day, count in analytics.daily %}<div class="traffic-row"><span>{{ day[5:] }}</span><progress max="{{ analytics.daily_max }}" value="{{ count }}">{{ count }}</progress><strong>{{ count }}</strong></div>{% endfor %}</div>
+      {% else %}<p class="muted">No requests have been recorded for this hostname yet.</p>{% endif %}
     </section>
     <section class="panel analytics-panel">
       <h3>Top paths</h3>
-      {% if analytics.top_paths %}
-      <div class="analytics-list">
-        {% for path, count in analytics.top_paths %}
-        <div><code>{{ path }}</code><strong>{{ count }}</strong></div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p class="muted">Traffic details will appear after the site receives requests.</p>
-      {% endif %}
+      {% if analytics.top_paths %}<div class="analytics-list">{% for path, count in analytics.top_paths %}<div><code>{{ path }}</code><strong>{{ count }}</strong></div>{% endfor %}</div>
+      {% else %}<p class="muted">Traffic details appear after the site receives requests.</p>{% endif %}
     </section>
   </div>
 </section>
 
-<section class="panel config-preview">
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Web server</p>
-      <h2>Nginx configuration</h2>
-      <p>{{ "Managed Nginx is available." if nginx_available else "Nginx is unavailable, so the built-in static server is active." }}</p>
-    </div>
-    {% if can_manage %}<a class="button ghost" href="{{ url_for('deployments.edit_config', site_id=site.id) }}">Edit config</a>{% endif %}
+<details class="panel operational-details">
+  <summary>Routing, runtime, and logs</summary>
+  <div class="operational-grid">
+    <section>
+      <h3>Runtime</h3>
+      <dl class="detail-list compact-list">
+        <div><dt>Internal port</dt><dd><code>{{ site.port }}</code></dd></div>
+        <div><dt>Backend</dt><dd>{{ site.runtime_backend or "Stopped" }}</dd></div>
+        <div><dt>Process ID</dt><dd>{{ site.runtime_pid or "-" }}</dd></div>
+        <div><dt>SPA fallback</dt><dd>{{ "Enabled" if site.spa_fallback else "Disabled" }}</dd></div>
+      </dl>
+    </section>
+    <section>
+      <h3>Source</h3>
+      <dl class="detail-list compact-list">
+        <div><dt>Folder</dt><dd><code>{{ site.folder }}</code></dd></div>
+        <div><dt>Index page</dt><dd><code>{{ site.index_file }}</code></dd></div>
+        <div class="stacked"><dt>Local path</dt><dd><code>{{ site.document_root }}</code></dd></div>
+      </dl>
+    </section>
   </div>
-  <details>
-    <summary>Preview configuration</summary>
+  {% if routing and can_manage %}
+  <div class="routing-guide">
+    <h3>Cloudflare Tunnel routing</h3>
+    {% if routing|length > 1 %}<p><strong>Cloudflare Tunnel must route every domain used by this site.</strong></p>
+    {% elif routing[0].use_domain_root %}<p><strong>Cloudflare Tunnel must include this exact root hostname.</strong> A wildcard hostname does not cover the domain root.</p>
+    {% else %}<p><strong>Cloudflare Tunnel must include the wildcard hostname.</strong></p>{% endif %}
+    {% for route in routing %}
+    <p><code>{{ route.hostname }}</code>: {% if route.use_domain_root %}add this exact public hostname{% else %}add wildcard public hostname <code>{{ route.wildcard }}</code>{% endif %} with service <code>{{ route.origin }}</code>.</p>
+    {% endfor %}
+    <p>Keep <code>:8080</code> in the service URL; omitting it sends traffic to port 80.</p>
+    {% for route in routing %}<p>Local test: <code>{{ route.local_test }}</code></p>{% endfor %}
+  </div>
+  {% endif %}
+  <div class="runtime-log">
+    <h3>Recent runtime log</h3>
+    {% if site_log %}<pre><code>{{ site_log }}</code></pre>{% else %}<p class="muted">No site-specific runtime log has been recorded.</p>{% endif %}
+  </div>
+</details>
+
+<details class="panel config-preview">
+  <summary>Nginx configuration</summary>
+  <div class="config-preview-body">
+    <p>{{ "Managed Nginx is available." if nginx_available else "Nginx is unavailable, so the built-in static server is active." }}</p>
+    {% if can_manage %}<a class="button ghost small" href="{{ url_for('deployments.edit_config', site_id=site.id) }}">Edit configuration</a>{% endif %}
     <pre><code>{{ site.nginx_config }}</code></pre>
-  </details>
-</section>
+  </div>
+</details>
 
 {% if can_manage %}
 <section class="danger-zone panel">
-  <div>
-    <h3>Delete deployment</h3>
-    <p>This removes the site record. The shared repository remains available.</p>
-  </div>
+  <div><h3>Delete site</h3><p>Removes this deployment. The shared repository remains available.</p></div>
   <form method="post" action="{{ url_for('deployments.delete_site', site_id=site.id) }}" data-confirm="Delete this deployment?" data-loading>
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <button class="button danger" type="submit" data-loading-text="Deleting...">Delete site</button>

@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS repositories (
     auto_refresh_minutes INTEGER,
     next_refresh_at TEXT,
     last_refreshed_at TEXT,
+    last_checked_at TEXT,
+    last_update_at TEXT,
+    update_state TEXT NOT NULL DEFAULT 'idle',
+    update_error TEXT,
     update_mode TEXT NOT NULL DEFAULT 'approval',
     current_commit TEXT,
     pending_path TEXT,
@@ -138,6 +142,7 @@ CREATE TABLE IF NOT EXISTS site_domain_aliases (
     site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
     domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
     use_domain_root INTEGER NOT NULL DEFAULT 0,
+    hostname_prefix TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (site_id, domain_id)
 );
@@ -341,11 +346,22 @@ def _migrate_site_domain_aliases(database):
             site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
             domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
             use_domain_root INTEGER NOT NULL DEFAULT 0,
+            hostname_prefix TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (site_id, domain_id)
         )
         """
     )
+    columns = {
+        row["name"]
+        for row in database.execute(
+            "PRAGMA table_info(site_domain_aliases)"
+        ).fetchall()
+    }
+    if "hostname_prefix" not in columns:
+        database.execute(
+            "ALTER TABLE site_domain_aliases ADD COLUMN hostname_prefix TEXT"
+        )
     database.execute(
         """
         CREATE INDEX IF NOT EXISTS site_domain_aliases_domain_id_idx
@@ -443,6 +459,10 @@ def _migrate_repositories(database):
         "auto_refresh_minutes": "INTEGER",
         "next_refresh_at": "TEXT",
         "last_refreshed_at": "TEXT",
+        "last_checked_at": "TEXT",
+        "last_update_at": "TEXT",
+        "update_state": "TEXT NOT NULL DEFAULT 'idle'",
+        "update_error": "TEXT",
         "update_mode": "TEXT NOT NULL DEFAULT 'approval'",
         "current_commit": "TEXT",
         "pending_path": "TEXT",
@@ -460,6 +480,17 @@ def _migrate_repositories(database):
         CREATE INDEX IF NOT EXISTS repositories_next_refresh_idx
         ON repositories(next_refresh_at)
         WHERE auto_refresh_minutes IS NOT NULL
+        """
+    )
+    database.execute(
+        """
+        UPDATE repositories
+        SET update_state = 'failed',
+            update_error = COALESCE(
+                update_error,
+                'The previous update operation was interrupted by a WebManager restart.'
+            )
+        WHERE update_state IN ('checking', 'updating')
         """
     )
 

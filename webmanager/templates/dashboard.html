@@ -3,49 +3,102 @@
 {% if active_view == "sites" %}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Deployment workspace</p>
+    <p class="eyebrow">Hosting</p>
     <h1>Sites at a glance</h1>
-    <p>See what is live, what needs attention, and who can manage each site.</p>
+    <p>Monitor live sites, review connected domains, and open common actions.</p>
   </div>
-  <a class="button primary" href="{{ url_for('deployments.dashboard', view='sources') }}">Add from Git</a>
+  <a class="button primary" href="{{ url_for('deployments.dashboard', view='sources') }}">Add site</a>
 </section>
 
-<section class="summary-grid" aria-label="Deployment summary">
+<section class="summary-grid" aria-label="Site summary">
   <div class="summary-card"><span>Total sites</span><strong>{{ sites|length }}</strong></div>
-  <div class="summary-card success"><span>Running</span><strong>{{ summary.running }}</strong></div>
+  <div class="summary-card"><span>Running</span><strong>{{ summary.running }}</strong></div>
   <div class="summary-card"><span>Stopped</span><strong>{{ summary.stopped }}</strong></div>
   <div class="summary-card {% if summary.attention %}danger{% endif %}">
     <span>Needs attention</span><strong>{{ summary.attention }}</strong>
   </div>
 </section>
 
-<section class="section-block">
+<details class="attention-definition panel">
+  <summary>What counts as needs attention?</summary>
+  <p>WebManager counts a site when it has a hosting failure, a missing source folder or index page, an invalid running state, or a failed source update check. A deliberately stopped site is not counted. DNS and certificate health are shown through routing guidance but are not guessed without an external verification check.</p>
+</details>
+
+{% if summary.attention %}
+<section class="attention-list panel">
   <div class="section-heading">
-    <div>
-      <p class="eyebrow">Live inventory</p>
-      <h2>Hosted sites</h2>
-    </div>
-    {% if site_domains %}
-      <span class="range-label">{{ site_domains|length }} public domain{{ "" if site_domains|length == 1 else "s" }}</span>
-    {% else %}
-      <span class="range-label">Port range {{ port_min }}-{{ port_max }}</span>
-    {% endif %}
+    <div><h2>Action required</h2><p>Every item included in the count is listed here.</p></div>
+  </div>
+  {% for site in sites if attention_reasons[site.id] %}
+  <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">
+    <span class="status-dot error"></span>
+    <span><strong>{{ site.name }}</strong><small>{{ attention_reasons[site.id]|join(" ") }}</small></span>
+    <span>&rarr;</span>
+  </a>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="section-block sites-section">
+  <div class="section-heading">
+    <div><h2>Hosted sites</h2><p>Select a site to view status, domains, traffic, and settings.</p></div>
+    <span class="count-badge">{{ sites|length }} site{{ "" if sites|length == 1 else "s" }}</span>
   </div>
   {% if sites %}
   <div class="site-grid">
     {% for site in sites %}
+    {% set domain_info = site_domain_summaries[site.id] %}
     <article class="site-card status-{{ site.status }}">
       <div class="site-card-top">
-        <span class="status-dot {{ site.status }}"></span>
-        <span class="status-label">{{ site.status }}</span>
-        <span class="port-chip">{% if site.domain_name %}{% if not site.use_domain_root %}{{ site.slug }}.{% endif %}{{ site.domain_name }}{% else %}{{ site.slug }}:{{ site.port }}{% endif %}</span>
+        <span class="site-status">
+          <span class="status-dot {{ 'error' if attention_reasons[site.id] else site.status }}"></span>
+          <span>{{ "Needs attention" if attention_reasons[site.id] else site.status|capitalize }}</span>
+        </span>
+        {% if site.id not in manageable_site_ids %}<span class="pill">Read only</span>{% endif %}
       </div>
-      <a class="site-card-title" href="{{ url_for('deployments.site_detail', site_id=site.id) }}"><h3>{{ site.name }}</h3></a>
-      <p class="site-source">{{ site.repository_name }} / {{ site.folder }}</p>
-      {% if site.pool_name %}<span class="table-meta">Pool: {{ site.pool_name }}</span>{% endif %}
-      {% if show_all or site.user_id != g.user.id %}<span class="table-meta">Owner: {{ site.owner_name or site.owner_email }}</span>{% endif %}
+
+      <div class="site-card-main">
+        <a class="site-card-title" href="{{ url_for('deployments.site_detail', site_id=site.id) }}"><h3>{{ site.name }}</h3></a>
+        <p>{{ site.repository_name }} / {{ site.folder }}</p>
+        {% if show_all or site.user_id != g.user.id %}<small>Owner: {{ site.owner_name or site.owner_email }}</small>{% endif %}
+      </div>
+
+      <div class="primary-domain">
+        <span>Main address</span>
+        {% if domain_info.main %}
+        <a href="{{ site_public_url(site) }}" target="_blank" rel="noopener noreferrer">{{ domain_info.main.hostname }}</a>
+        <small>{{ domain_info.main.label }}</small>
+        {% else %}
+        <strong>Direct port {{ site.port }}</strong>
+        <small>No public domain selected</small>
+        {% endif %}
+      </div>
+
+      {% if domain_info.count > 1 %}
+      <details class="site-domains">
+        <summary>{{ domain_info.count }} connected domains</summary>
+        <div class="domain-groups">
+          {% if domain_info.groups.root %}
+          <div><strong>Root domains</strong>{% for item in domain_info.groups.root %}<span>{{ item.hostname }}</span>{% endfor %}</div>
+          {% endif %}
+          {% if domain_info.groups.subdomains %}
+          <div><strong>Subdomains</strong>{% for item in domain_info.groups.subdomains %}<span>{{ item.hostname }}</span>{% endfor %}</div>
+          {% endif %}
+          {% if domain_info.groups.aliases %}
+          <div><strong>Aliases</strong>{% for item in domain_info.groups.aliases %}<span>{{ item.hostname }}</span>{% endfor %}</div>
+          {% endif %}
+        </div>
+      </details>
+      {% else %}
+      <div class="site-domains single"><span>{{ domain_info.count }} connected domain</span></div>
+      {% endif %}
+
+      {% if attention_reasons[site.id] %}
+      <div class="site-card-alert">{{ attention_reasons[site.id][0] }}</div>
+      {% endif %}
+
       <div class="site-card-foot">
-        <span class="backend-label">{% if site.id not in manageable_site_ids %}Read only{% else %}{{ site.runtime_backend or "Not started" }}{% endif %}</span>
+        <span>{% if site.pool_name %}Pool: {{ site.pool_name }}{% else %}{{ site.runtime_backend|capitalize if site.runtime_backend else "No pool" }}{% endif %}</span>
         <div class="card-actions">
           {% if site.status == "running" %}<a href="{{ site_public_url(site) }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
           <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ "Manage" if site.id in manageable_site_ids else "View" }} &rarr;</a>
@@ -56,10 +109,9 @@
   </div>
   {% else %}
   <div class="panel empty-state">
-    <div class="empty-icon">&lt;/&gt;</div>
-    <h3>No sites deployed yet</h3>
-    <p>Add a Git repository, then choose one or more folders containing an index page.</p>
-    <a class="button primary" href="{{ url_for('deployments.dashboard', view='sources') }}">Add your first source</a>
+    <h3>No sites yet</h3>
+    <p>Connect a Git repository and select the folder containing your index page.</p>
+    <a class="button primary" href="{{ url_for('deployments.dashboard', view='sources') }}">Add your first site</a>
   </div>
   {% endif %}
 </section>
@@ -67,75 +119,68 @@
 {% else %}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Source library</p>
+    <p class="eyebrow">Hosting</p>
     <h1>Git sources</h1>
-    <p>Add repositories, deploy folders, and choose how site updates are approved.</p>
+    <p>Connect repositories, deploy folders, and control how updates are applied.</p>
   </div>
   <span class="head-meta">{{ summary.repositories }} source{{ "" if summary.repositories == 1 else "s" }}</span>
 </section>
 
-<section class="panel deploy-panel">
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Add source</p>
-      <h2>Connect a Git repository</h2>
-      <p>WebManager finds every folder containing an <code>index.html</code> or <code>index.htm</code> page.</p>
-    </div>
-    <span class="step-badge">Step 1 of 2</span>
-  </div>
+{% if not auto_refresh_service_enabled %}
+<div class="flash warning">
+  <span>Automatic update checks are disabled for this WebManager installation. Manual "Check now" actions still work. Set <code>WEBMANAGER_AUTO_REFRESH_ENABLED=1</code> and restart WebManager to enable schedules.</span>
+</div>
+{% endif %}
+
+<details class="panel add-source-panel" {% if not repositories %}open{% endif %}>
+  <summary>Connect a Git repository</summary>
   <form class="deploy-form" method="post" action="{{ url_for('deployments.inspect_repository') }}" data-loading>
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <label class="grow">
-      Repository URL
-      <input type="text" inputmode="url" name="repository_url" maxlength="2048" placeholder="https://github.com/you/project.git" required>
-    </label>
-    <label>
-      Branch <span class="muted">(optional)</span>
-      <input name="branch" maxlength="200" placeholder="Default branch">
-    </label>
-    <button class="button primary" type="submit" data-loading-text="Cloning repository...">Inspect repository</button>
+    <label class="grow">Repository URL<input type="url" name="repository_url" maxlength="2048" placeholder="https://github.com/you/project.git" required></label>
+    <label>Branch <span class="muted">(optional)</span><input name="branch" maxlength="200" placeholder="Default branch"></label>
+    <button class="button primary" type="submit" data-loading-text="Inspecting...">Connect source</button>
   </form>
-  <div class="panel-note">
-    <span class="note-icon">i</span>
-    <span>Public HTTPS repositories work immediately. Private repositories can use the server's SSH deploy key.</span>
-  </div>
-</section>
+  <p class="panel-note">Public HTTPS repositories work immediately. Private repositories can use the server SSH deploy key.</p>
+</details>
 
 <section class="section-block">
   <div class="section-heading">
-    <div><p class="eyebrow">Connected repositories</p><h2>Sources</h2></div>
+    <div><h2>Connected sources</h2><p>Update state and scheduling are shown separately from repository readiness.</p></div>
     <span class="count-badge">{{ repositories|length }} total</span>
   </div>
   {% if repositories %}
   <div class="source-grid">
     {% for repository in repositories %}
-    <details class="panel source-card" {% if repository.pending_commit or repository.error %}open{% endif %}>
+    {% set update = repository_update_states[repository.id] %}
+    <details class="panel source-card" {% if repository.pending_commit or update.state in ['failed', 'checking', 'updating'] %}open{% endif %}>
       <summary class="source-card-summary">
         <span class="source-mark">G</span>
-        <span class="source-title">
-          <strong>{{ repository.name }}</strong>
-          <small>{{ repository.url }}</small>
-        </span>
+        <span class="source-title"><strong>{{ repository.name }}</strong><small>{{ repository.url }}</small></span>
         <span class="source-summary-meta">
-          <span class="pill {{ repository.status }}">{{ repository.status }}</span>
+          <span class="pill update-{{ update.state }} {{ 'ready' if update.label == 'Enabled' else 'error' if update.label == 'Failed' else '' }}">{{ update.label }}</span>
           <span class="count-badge">{{ repository.site_count }} site{{ "" if repository.site_count == 1 else "s" }}</span>
         </span>
       </summary>
       <div class="source-card-body">
         <dl class="source-meta">
+          <div><dt>Repository</dt><dd>{{ repository.status|replace('_', ' ')|capitalize }}</dd></div>
           <div><dt>Branch</dt><dd>{{ repository.branch or "Default" }}</dd></div>
-          <div><dt>Last checked</dt><dd>{{ (repository.last_refreshed_at or repository.updated_at)[:16] }}</dd></div>
-          {% if show_all %}<div><dt>Owner</dt><dd>{{ repository.owner_name or repository.owner_email }}</dd></div>{% endif %}
-          <div><dt>Update policy</dt><dd>{% if repository.auto_refresh_minutes %}Every {{ repository.auto_refresh_minutes }} min, {% endif %}{{ repository.update_mode|replace('_', ' ') }}</dd></div>
+          <div><dt>Last checked</dt><dd>{{ repository.last_checked_at or "Never" }}</dd></div>
+          <div><dt>Next check</dt><dd>{% if repository.auto_refresh_minutes %}{{ repository.next_refresh_at or "Scheduling" }}{% else %}Not scheduled{% endif %}</dd></div>
+          <div><dt>Last updated successfully</dt><dd>{{ repository.last_update_at or "No update applied" }}</dd></div>
         </dl>
 
-        {% if repository.error %}<div class="flash error"><span>{{ repository.error }}</span></div>{% endif %}
+        {% if update.state == "failed" %}
+        <div class="source-update-callout error-state"><div><strong>Update check failed</strong><small>{{ update.error or "No error details were recorded." }}</small></div></div>
+        {% elif update.state == "checking" %}
+        <div class="source-update-callout"><div><strong>Checking for updates</strong><small>WebManager is validating the latest repository revision.</small></div></div>
+        {% elif update.state == "updating" %}
+        <div class="source-update-callout"><div><strong>Applying update</strong><small>The validated revision is being activated and running sites will reload.</small></div></div>
+        {% endif %}
+
         {% if repository.pending_commit %}
         <div class="source-update-callout">
-          <div>
-            <strong>Update ready for approval</strong>
-            <small><code>{{ repository.pending_commit[:12] }}</code> affects {{ repository.affected_site_names or "future deployments" }}.</small>
-          </div>
+          <div><strong>Update ready for approval</strong><small><code>{{ repository.pending_commit[:12] }}</code> affects {{ repository.affected_site_names or "future deployments" }}.</small></div>
           {% if manage_all or repository.user_id == g.user.id %}
           <div class="button-row">
             <form method="post" action="{{ url_for('deployments.approve_repository_update', repository_id=repository.id) }}" data-loading data-confirm="Apply this validated revision to every site using this repository?">
@@ -144,7 +189,7 @@
             </form>
             <form method="post" action="{{ url_for('deployments.discard_repository_update', repository_id=repository.id) }}" data-confirm="Discard this staged update?">
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-              <button class="button danger-text small" type="submit">Discard</button>
+              <button class="button ghost small" type="submit">Discard</button>
             </form>
           </div>
           {% endif %}
@@ -154,49 +199,34 @@
         {% if manage_all or repository.user_id == g.user.id %}
         <form class="source-settings" method="post" action="{{ url_for('deployments.schedule_repository_refresh', repository_id=repository.id) }}" data-loading>
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-          <div>
-            <strong>Automatic checks</strong>
-            <small>Leave the interval blank for manual checks only.</small>
-          </div>
-          <label>
-            Check every
-            <span class="interval-control">
-              <input class="interval-input" type="number" name="auto_refresh_minutes" min="{{ refresh_min }}" max="{{ refresh_max }}" value="{{ repository.auto_refresh_minutes or '' }}" placeholder="Off">
-              <span>minutes</span>
-            </span>
-          </label>
-          <label>
-            When an update is found
-            <select name="update_mode">
-              <option value="approval" {% if repository.update_mode == "approval" %}selected{% endif %}>Wait for owner approval</option>
-              <option value="auto" {% if repository.update_mode == "auto" %}selected{% endif %}>Apply automatically</option>
-            </select>
-          </label>
-          <button class="button ghost small" type="submit" data-loading-text="Saving...">Save policy</button>
+          <div><strong>Automatic updates</strong><small>Automatic checks: {{ "enabled" if update.enabled else "disabled" }}</small></div>
+          <label>Check every<span class="interval-control"><input class="interval-input" type="number" name="auto_refresh_minutes" min="{{ refresh_min }}" max="{{ refresh_max }}" value="{{ repository.auto_refresh_minutes or '' }}" placeholder="Off"><span>minutes</span></span></label>
+          <label>When found<select name="update_mode"><option value="approval" {% if repository.update_mode == "approval" %}selected{% endif %}>Ask for approval</option><option value="auto" {% if repository.update_mode == "auto" %}selected{% endif %}>Apply automatically</option></select></label>
+          <button class="button ghost small" type="submit" data-loading-text="Saving...">Save</button>
         </form>
 
         <div class="source-actions">
           <div class="button-row">
-            {% if repository.status == "ready" %}<a class="button primary small" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">Deploy folders</a>{% endif %}
+            {% if repository.status in ["ready", "update_available"] %}<a class="button primary small" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">Deploy folder</a>{% endif %}
             <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-              <button class="button ghost small" type="submit" data-loading-text="{{ 'Retrying...' if repository.status == 'error' else 'Checking...' }}">{{ "Retry check" if repository.status == "error" else "Check now" }}</button>
+              <button class="button ghost small" type="submit" data-loading-text="Checking...">Check now</button>
             </form>
           </div>
-          <form method="post" action="{{ url_for('deployments.delete_repository', repository_id=repository.id) }}" data-confirm="Delete this repository and every site created from it?">
+          <form method="post" action="{{ url_for('deployments.delete_repository', repository_id=repository.id) }}" data-confirm="Delete this source and every site created from it?">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <button class="button danger-text small" type="submit">Delete source</button>
           </form>
         </div>
         {% else %}
-        <div class="source-actions"><span class="muted">This source is read only for your account.</span></div>
+        <p class="muted">This source is read only for your account.</p>
         {% endif %}
       </div>
     </details>
     {% endfor %}
   </div>
   {% else %}
-  <div class="panel empty-state"><h3>No Git sources</h3><p>Connect a repository above to find deployable folders.</p></div>
+  <div class="panel empty-state"><h3>No Git sources</h3><p>Open "Add a Git source" above to connect your first repository.</p></div>
   {% endif %}
 </section>
 {% endif %}

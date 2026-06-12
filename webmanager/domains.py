@@ -126,6 +126,7 @@ def site_domain_bindings(database, site):
                 "use_domain_root": bool(
                     "use_domain_root" in site.keys() and site["use_domain_root"]
                 ),
+                "hostname_prefix": None,
                 "is_primary": True,
             }
         )
@@ -136,11 +137,13 @@ def site_domain_bindings(database, site):
             "domain_id": row["domain_id"],
             "domain": row["domain_name"],
             "use_domain_root": bool(row["use_domain_root"]),
+            "hostname_prefix": row["hostname_prefix"],
             "is_primary": False,
         }
         for row in database.execute(
             """
             SELECT aliases.domain_id, aliases.use_domain_root,
+                   aliases.hostname_prefix,
                    domains.name AS domain_name
             FROM site_domain_aliases AS aliases
             JOIN domains ON domains.id = aliases.domain_id
@@ -157,12 +160,17 @@ def site_domain_bindings(database, site):
     return bindings
 
 
+def binding_hostname(site, binding) -> str:
+    if binding["use_domain_root"]:
+        return binding["domain"]
+    prefix = binding.get("hostname_prefix") or site["slug"]
+    return f"{prefix}.{binding['domain']}"
+
+
 def site_hostnames(database, site) -> list[str]:
     return list(
         dict.fromkeys(
-            binding["domain"]
-            if binding["use_domain_root"]
-            else f"{site['slug']}.{binding['domain']}"
+            binding_hostname(site, binding)
             for binding in site_domain_bindings(database, site)
         )
     )
@@ -187,3 +195,14 @@ def domain_root_owner(database, domain_id: int, exclude_site_id: int | None = No
         """,
         (domain_id, exclude_site_id or -1, domain_id, exclude_site_id or -1),
     ).fetchone()
+
+
+def hostname_owner(database, hostname: str, exclude_site_id: int | None = None):
+    sites = database.execute(
+        "SELECT * FROM sites WHERE id != ? ORDER BY id",
+        (exclude_site_id or -1,),
+    ).fetchall()
+    for site in sites:
+        if hostname in site_hostnames(database, site):
+            return site
+    return None

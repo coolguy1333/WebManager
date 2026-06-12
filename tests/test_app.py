@@ -927,6 +927,36 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn(b"Connect a Git repository", sources.data)
         self.assertIn(b"Automatic checks", sources.data)
 
+    def test_dashboard_explains_every_site_needing_attention(self):
+        owner_id = self.add_user("owner")
+        repository_root = Path(self.temp_directory.name) / "attention-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, repository_root)
+        self.add_site(owner_id, repository_id, repository_root)
+        self.login_user(owner_id)
+
+        healthy = self.client.get("/")
+        self.assertIn(b"Needs attention</span><strong>0", healthy.data)
+
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                UPDATE repositories
+                SET update_state = 'failed',
+                    update_error = 'Repository authentication failed'
+                WHERE id = ?
+                """,
+                (repository_id,),
+            )
+            database.commit()
+
+        failed = self.client.get("/")
+        self.assertIn(b"Needs attention</span><strong>1", failed.data)
+        self.assertIn(b"Source update check failed", failed.data)
+        self.assertIn(b"Repository authentication failed", failed.data)
+
     def test_view_all_permission_is_read_only_for_other_users_resources(self):
         owner_id = self.add_user("owner")
         viewer_id = self.add_user("viewer")
@@ -1000,7 +1030,7 @@ class WebManagerTestCase(unittest.TestCase):
                 f"/sites/{site_id}/start",
                 data={"_csrf_token": self.csrf()},
             )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
 
     def test_direct_site_viewer_can_see_but_not_control_site(self):
         owner_id = self.add_user("owner")
@@ -1082,7 +1112,7 @@ class WebManagerTestCase(unittest.TestCase):
                 f"/sites/{site_id}/start",
                 data={"_csrf_token": self.csrf()},
             )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
         self.assertEqual(
             self.client.get(f"/repositories/{repository_id}/select").status_code,
             404,
@@ -1112,7 +1142,7 @@ class WebManagerTestCase(unittest.TestCase):
                 "description": "Delegated customer deployments",
             },
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
         with self.app.app_context():
             pool_id = get_db().execute(
                 "SELECT id FROM pools WHERE name = 'Customer sites'"
@@ -1127,7 +1157,7 @@ class WebManagerTestCase(unittest.TestCase):
                 f"user_role_{viewer_id}": "viewer",
             },
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
         self.login_user(viewer_id)
         self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
 
@@ -1136,7 +1166,7 @@ class WebManagerTestCase(unittest.TestCase):
             f"/admin/pools/{pool_id}/delete",
             data={"_csrf_token": self.csrf()},
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
         with self.app.app_context():
             self.assertIsNotNone(
                 get_db().execute(
@@ -1325,7 +1355,7 @@ class WebManagerTestCase(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 303)
         with self.app.app_context():
             site = get_db().execute("SELECT * FROM sites").fetchone()
             self.assertEqual(site["user_id"], user_id)
@@ -1513,6 +1543,156 @@ class WebManagerTestCase(unittest.TestCase):
             "server_name multi-domain.primary.example multi-domain.alias.example;",
             site["nginx_config"],
         )
+
+    def test_site_aliases_can_use_root_custom_subdomain_and_alternate_modes(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "alias-modes-repo"
+        site_root = repository_root / "public"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("aliases", encoding="utf-8")
+        repository_id = self.add_repository(user_id, site_root)
+        site_id = self.add_site(user_id, repository_id, site_root)
+        with self.app.app_context():
+            database = get_db()
+            primary_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('primary.example')"
+            ).lastrowid
+            alternate_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('alternate.example')"
+            ).lastrowid
+            custom_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('custom.example')"
+            ).lastrowid
+            root_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('root.example')"
+            ).lastrowid
+            database.commit()
+        self.login_user(user_id)
+
+        with patch.object(
+            self.app.extensions["runtime_manager"],
+            "sync_nginx_configs",
+        ):
+            response = self.client.post(
+                f"/sites/{site_id}/settings",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "Alias Modes",
+                    "slug": "alias-modes",
+                    "folder": "public",
+                    "port": "43100",
+                    "domain_id": str(primary_id),
+                    "hosting_mode": "subdomain",
+                    "alias_configuration": "1",
+                    f"alias_enabled_{alternate_id}": "on",
+                    f"alias_mode_{alternate_id}": "alternate",
+                    f"alias_enabled_{custom_id}": "on",
+                    f"alias_mode_{custom_id}": "subdomain",
+                    f"alias_prefix_{custom_id}": "docs",
+                    f"alias_enabled_{root_id}": "on",
+                    f"alias_mode_{root_id}": "root",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        with self.app.app_context():
+            database = get_db()
+            aliases = {
+                row["domain_id"]: row
+                for row in database.execute(
+                    """
+                    SELECT * FROM site_domain_aliases
+                    WHERE site_id = ?
+                    """,
+                    (site_id,),
+                ).fetchall()
+            }
+            site = database.execute(
+                "SELECT * FROM sites WHERE id = ?",
+                (site_id,),
+            ).fetchone()
+        self.assertIsNone(aliases[alternate_id]["hostname_prefix"])
+        self.assertEqual(aliases[alternate_id]["use_domain_root"], 0)
+        self.assertEqual(aliases[custom_id]["hostname_prefix"], "docs")
+        self.assertEqual(aliases[root_id]["use_domain_root"], 1)
+        self.assertIn("alias-modes.primary.example", site["nginx_config"])
+        self.assertIn("alias-modes.alternate.example", site["nginx_config"])
+        self.assertIn("docs.custom.example", site["nginx_config"])
+        self.assertIn("root.example", site["nginx_config"])
+
+        dashboard = self.client.get("/")
+        self.assertIn(b"Root domains", dashboard.data)
+        self.assertIn(b"Subdomains", dashboard.data)
+        self.assertIn(b"Aliases", dashboard.data)
+        self.assertIn(b"docs.custom.example", dashboard.data)
+
+    def test_custom_alias_subdomain_cannot_collide_with_another_site(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "alias-collision-repo"
+        first_root = repository_root / "first"
+        second_root = repository_root / "second"
+        first_root.mkdir(parents=True)
+        second_root.mkdir()
+        (first_root / "index.html").write_text("first", encoding="utf-8")
+        (second_root / "index.html").write_text("second", encoding="utf-8")
+        repository_id = self.add_repository(user_id, first_root)
+        first_site_id = self.add_site(user_id, repository_id, first_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE sites SET slug = 'first' WHERE id = ?",
+                (first_site_id,),
+            )
+            database.commit()
+        second_site_id = self.add_site(
+            user_id,
+            repository_id,
+            second_root,
+            port=43101,
+        )
+        with self.app.app_context():
+            database = get_db()
+            shared_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('shared.example')"
+            ).lastrowid
+            other_id = database.execute(
+                "INSERT INTO domains (name) VALUES ('other.example')"
+            ).lastrowid
+            database.execute(
+                "UPDATE sites SET domain_id = ? WHERE id = ?",
+                (shared_id, first_site_id),
+            )
+            database.commit()
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/sites/{second_site_id}/settings",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Second",
+                "slug": "second",
+                "folder": "second",
+                "port": "43101",
+                "domain_id": str(other_id),
+                "hosting_mode": "subdomain",
+                "alias_configuration": "1",
+                f"alias_enabled_{shared_id}": "on",
+                f"alias_mode_{shared_id}": "subdomain",
+                f"alias_prefix_{shared_id}": "first",
+            },
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"first.shared.example is already used by Demo", response.data)
+        with self.app.app_context():
+            alias = get_db().execute(
+                """
+                SELECT 1 FROM site_domain_aliases
+                WHERE site_id = ? AND domain_id = ?
+                """,
+                (second_site_id, shared_id),
+            ).fetchone()
+        self.assertIsNone(alias)
 
     def test_root_domain_alias_cannot_replace_an_existing_root_site(self):
         user_id = self.add_user("alice")
@@ -1982,6 +2162,83 @@ class WebManagerTestCase(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(repository["auto_refresh_minutes"])
 
+    def test_site_actions_use_see_other_and_do_not_resubmit(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "prg-site-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+        self.login_user(user_id)
+        runtime = self.app.extensions["runtime_manager"]
+
+        with patch.object(runtime, "stop_site") as stop:
+            response = self.client.post(
+                f"/sites/{site_id}/stop",
+                data={"_csrf_token": self.csrf()},
+            )
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers["Location"], f"/sites/{site_id}")
+            first_get = self.client.get(response.headers["Location"])
+            refreshed = self.client.get(response.headers["Location"])
+
+        self.assertEqual(first_get.status_code, 200)
+        self.assertEqual(refreshed.status_code, 200)
+        stop.assert_called_once_with(site_id)
+
+    def test_invalid_site_settings_redirect_to_safe_get(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "settings-prg-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        site_id = self.add_site(user_id, repository_id, repository_root)
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/sites/{site_id}/settings",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "",
+                "slug": "demo",
+                "folder": ".",
+                "port": "43100",
+            },
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["Location"],
+            f"/sites/{site_id}/settings",
+        )
+
+    def test_failed_initial_repository_clone_records_visible_failure_state(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+
+        with patch(
+            "webmanager.deployments.clone_repository",
+            side_effect=GitError("Repository authentication failed."),
+        ):
+            response = self.client.post(
+                "/repositories/inspect",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "repository_url": "https://example.com/private.git",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/?view=sources")
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(repository["status"], "error")
+        self.assertEqual(repository["update_state"], "failed")
+        self.assertIsNotNone(repository["last_checked_at"])
+        self.assertIn("authentication failed", repository["update_error"])
+
     def test_scheduled_refresh_rejects_update_that_breaks_deployed_site(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "protected-refresh-repo"
@@ -2012,6 +2269,61 @@ class WebManagerTestCase(unittest.TestCase):
                 (repository_id,),
             ).fetchone()
             self.assertIn("deployed folder", repository["error"])
+            self.assertEqual(repository["update_state"], "failed")
+            self.assertIsNotNone(repository["last_checked_at"])
+            self.assertIn("deployed folder", repository["update_error"])
+
+    def test_repository_update_state_tracks_checking_and_success(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "update-state-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE repositories SET current_commit = ? WHERE id = ?",
+                ("a" * 40, repository_id),
+            )
+            database.commit()
+
+        observed_states = []
+
+        def current_clone(_url, target, _branch, validate_staging):
+            with self.app.app_context():
+                observed_states.append(
+                    get_db().execute(
+                        "SELECT update_state FROM repositories WHERE id = ?",
+                        (repository_id,),
+                    ).fetchone()["update_state"]
+                )
+            target.mkdir(parents=True)
+            (target / "index.html").write_text("hello", encoding="utf-8")
+            validate_staging(target)
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        with (
+            patch(
+                "webmanager.repository_refresh.clone_repository",
+                side_effect=current_clone,
+            ),
+            patch(
+                "webmanager.repository_refresh.repository_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            result = manager.refresh(repository_id)
+
+        self.assertEqual(result.status, "current")
+        self.assertEqual(observed_states, ["checking"])
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+        self.assertEqual(repository["update_state"], "idle")
+        self.assertIsNotNone(repository["last_checked_at"])
+        self.assertIsNone(repository["update_error"])
 
     def test_due_repository_refreshes_are_dispatched(self):
         user_id = self.add_user("alice")
@@ -2800,6 +3112,10 @@ class ServiceUnitTests(unittest.TestCase):
             self.assertIn("auto_refresh_minutes", columns)
             self.assertIn("next_refresh_at", columns)
             self.assertIn("last_refreshed_at", columns)
+            self.assertIn("last_checked_at", columns)
+            self.assertIn("last_update_at", columns)
+            self.assertIn("update_state", columns)
+            self.assertIn("update_error", columns)
             self.assertIn("update_mode", columns)
             self.assertIn("current_commit", columns)
             self.assertIn("pending_path", columns)

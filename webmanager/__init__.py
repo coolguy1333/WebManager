@@ -4,7 +4,7 @@ import secrets
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import admin, auth, db, deployments
@@ -183,6 +183,8 @@ def create_app(test_config=None):
 
     @app.after_request
     def security_headers(response):
+        if request.method == "POST" and response.status_code in {301, 302}:
+            response.status_code = 303
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")

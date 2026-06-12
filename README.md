@@ -411,13 +411,21 @@ A dashboard hostname may also be registered as a deployment domain. WebManager
 reserves only the exact dashboard hostname: subdomain deployments remain
 available, while root hosting at that exact address is blocked.
 
-A site may also use additional domain aliases. Choose one primary domain and
-check any additional domains during deployment or from **Site settings**. The
-same slug and address style apply to every selected domain, so `docs` can serve
-both `docs.example.com` and `docs.example.net`. The site detail page lists every
-public URL, and analytics combine traffic from all of them.
+A site may also use additional domain aliases. Choose one primary domain during
+deployment, then open **Site settings > Connected domains and aliases** to
+configure each additional domain independently:
 
-A site can also be assigned to the domain root, such as `https://mhsit.club`,
+- **Alternate address** uses the site slug on another domain, such as
+  `docs.example.net`.
+- **Custom subdomain** uses a different label, such as
+  `help.example.net`.
+- **Domain root** serves the site directly at `example.net`.
+
+WebManager prevents two sites from claiming the same resulting hostname. Site
+cards group root domains, subdomains, and aliases without hiding any connected
+address. Analytics combine traffic from every address assigned to the site.
+
+A primary address or additional alias can be assigned to the domain root, such as `https://mhsit.club`,
 instead of `https://site.mhsit.club`. Only one site can claim each domain root,
 and the WebManager dashboard hostname cannot be assigned to a site. Root mode
 can use multiple domains, such as both `example.com` and `example.net`, provided
@@ -518,11 +526,11 @@ site/
 
 ### 2. Inspect the repository
 
-From the dashboard:
+Open **Sources** from the sidebar:
 
 1. Enter the Git repository URL.
 2. Optionally enter a branch name.
-3. Select **Clone and inspect**.
+3. Select **Connect source**.
 
 Supported URL examples:
 
@@ -565,11 +573,11 @@ site detail page.
 
 ### Site source updates
 
-Each saved repository has a **Site updates** control on the dashboard.
+Each saved repository has an **Automatic updates** control under **Sources**.
 
 Enter an interval in minutes and select **Save**. WebManager accepts intervals
 from `5` minutes through `43200` minutes (30 days). Leave the field blank and
-save to disable scheduled checks while keeping the manual **Check update**
+save to disable scheduled checks while keeping the manual **Check now**
 button available.
 
 Choose one update mode:
@@ -581,8 +589,10 @@ Choose one update mode:
   manual or scheduled check.
 
 The schedule is stored in SQLite and resumes after WebManager or Debian
-restarts. The dashboard shows the next scheduled run in UTC and the date of the
-last successful pull.
+restarts. Sources shows whether updates are **Enabled**, **Disabled**,
+**Checking**, **Updating**, or **Failed**, plus the next scheduled check, last
+completed check, and last successfully applied update. An update interrupted
+by a WebManager restart is marked failed instead of remaining stuck.
 
 Every check uses a fresh shallow clone in a separate pending directory. A
 failed clone or an update waiting for approval leaves the currently hosted
@@ -594,6 +604,24 @@ same validated revision together.
 Stopping a site removes its hostname route and immediately restarts only the
 internal managed Nginx gateway. This prevents a graceful-reload worker from
 continuing to serve the stopped site through an existing keep-alive connection.
+
+All browser actions use POST/Redirect/GET with a `303 See Other` response.
+Refreshing a result page or navigating back does not repeat start, stop,
+restart, update, settings, or deletion requests.
+
+### Needs attention
+
+The Sites summary counts only conditions WebManager can verify:
+
+- hosting process failures
+- a site marked running without a hosting backend
+- a missing deployed folder or index page
+- a failed manual or automatic source update check
+
+Stopped sites are treated as intentionally stopped and are not counted. Every
+counted site shows its reason. DNS and certificate health are not guessed; the
+site page instead provides exact Cloudflare routing instructions and local
+verification commands.
 
 ## Repository requirements
 

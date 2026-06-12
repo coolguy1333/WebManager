@@ -93,6 +93,16 @@ class RepositoryRefreshManager:
                         "The existing validated update is still waiting for owner approval.",
                     )
 
+                database.execute(
+                    """
+                    UPDATE repositories
+                    SET update_state = 'checking', update_error = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (repository_id,),
+                )
+                database.commit()
                 sites = self._sites(database, repository_id)
                 target = Path(repository["local_path"])
                 pending = target.parent / f".{target.name}.pending"
@@ -140,6 +150,8 @@ class RepositoryRefreshManager:
                         """
                         UPDATE repositories
                         SET status = 'ready', error = NULL,
+                            update_state = 'idle', update_error = NULL,
+                            last_checked_at = CURRENT_TIMESTAMP,
                             current_commit = ?, pending_path = NULL,
                             pending_commit = NULL, pending_at = NULL,
                             next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
@@ -154,6 +166,8 @@ class RepositoryRefreshManager:
                     """
                     UPDATE repositories
                     SET status = 'update_available', error = NULL,
+                        update_state = 'idle', update_error = NULL,
+                        last_checked_at = CURRENT_TIMESTAMP,
                         current_commit = ?, pending_path = ?,
                         pending_commit = ?, pending_at = CURRENT_TIMESTAMP,
                         next_refresh_at = ?,
@@ -202,6 +216,7 @@ class RepositoryRefreshManager:
                     UPDATE repositories
                     SET status = 'ready', pending_path = NULL,
                         pending_commit = NULL, pending_at = NULL, error = NULL,
+                        update_state = 'idle', update_error = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -267,10 +282,12 @@ class RepositoryRefreshManager:
         database.execute(
             """
             UPDATE repositories
-            SET error = ?, next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
+            SET error = ?, update_state = 'failed', update_error = ?,
+                last_checked_at = CURRENT_TIMESTAMP,
+                next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (error, next_run, repository_id),
+            (error, error, next_run, repository_id),
         )
         database.commit()
 
@@ -284,6 +301,16 @@ class RepositoryRefreshManager:
         if not repository["pending_path"] or not repository["pending_commit"]:
             return RefreshResult("missing", "No pending update is available.")
 
+        database.execute(
+            """
+            UPDATE repositories
+            SET update_state = 'updating', update_error = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (repository_id,),
+        )
+        database.commit()
         affected_sites = self._sites(database, repository_id)
         pending = Path(repository["pending_path"])
         target = Path(repository["local_path"])
@@ -315,9 +342,11 @@ class RepositoryRefreshManager:
             """
             UPDATE repositories
             SET status = 'ready', error = NULL,
+                update_state = 'idle', update_error = NULL,
                 current_commit = ?, pending_path = NULL,
                 pending_commit = NULL, pending_at = NULL,
                 last_refreshed_at = CURRENT_TIMESTAMP,
+                last_update_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,

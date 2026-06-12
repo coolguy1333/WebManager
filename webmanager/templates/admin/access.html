@@ -16,9 +16,6 @@
   <span class="head-meta">{{ pools|length }} pools / {{ sites|length }} sites</span>
 </section>
 
-{% set can_manage_access = true %}
-{% include "admin/_nav.html" %}
-
 <nav class="admin-subnav" aria-label="Access sections">
   <a class="{{ 'active' if active_section == 'pools' else '' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}">Pool access</a>
   <a class="{{ 'active' if active_section == 'sites' else '' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}">Direct site access <span class="muted">(advanced)</span></a>

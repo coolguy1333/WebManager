@@ -253,6 +253,81 @@ document.querySelectorAll("[data-permission-profile]").forEach((select) => {
   updateCustomPermissions();
 });
 
+const sidebar = document.querySelector("[data-sidebar]");
+document.querySelector("[data-sidebar-toggle]")?.addEventListener("click", () => {
+  sidebar?.classList.toggle("open");
+});
+document.addEventListener("click", (event) => {
+  if (
+    sidebar?.classList.contains("open")
+    && !sidebar.contains(event.target)
+    && !event.target.closest("[data-sidebar-toggle]")
+  ) {
+    sidebar.classList.remove("open");
+  }
+});
+
+const aliasRows = document.querySelectorAll("[data-alias-row]");
+const aliasPrimaryDomain = document.querySelector(".settings-form [data-hosting-domain]");
+const aliasSiteSlug = document.querySelector('.settings-form input[name="slug"]');
+const updateAliasRows = () => {
+  const primaryId = aliasPrimaryDomain?.value || "";
+  const slug = slugifyPreview(aliasSiteSlug?.value || "site");
+  aliasRows.forEach((row) => {
+    const enabled = row.querySelector("[data-alias-enabled]");
+    const mode = row.querySelector("[data-alias-mode]");
+    const prefix = row.querySelector("[data-alias-prefix]");
+    const prefixWrap = row.querySelector("[data-alias-prefix-wrap]");
+    const result = row.querySelector("[data-alias-result]");
+    const summary = row.querySelector("[data-alias-summary]");
+    const domain = row.querySelector(".alias-enable strong")?.textContent.trim() || "";
+    const isPrimary = row.dataset.domainId === primaryId;
+    row.classList.toggle("is-primary", isPrimary);
+
+    if (isPrimary) {
+      enabled.checked = false;
+      enabled.disabled = true;
+      mode.disabled = true;
+      prefix.disabled = true;
+      prefixWrap.hidden = true;
+      result.textContent = "Main domain";
+      summary.textContent = "Selected as the main domain";
+      return;
+    }
+
+    enabled.disabled = false;
+    const active = enabled.checked;
+    mode.disabled = !active;
+    const customSubdomain = mode.value === "subdomain";
+    prefixWrap.hidden = !customSubdomain;
+    prefix.disabled = !active || !customSubdomain;
+    prefix.required = active && customSubdomain;
+    row.classList.toggle("enabled", active);
+
+    if (!active) {
+      result.textContent = "Not connected";
+      summary.textContent = "Not connected";
+    } else if (mode.value === "root") {
+      result.textContent = domain;
+      summary.textContent = "Hosted at domain root";
+    } else if (customSubdomain) {
+      result.textContent = `${slugifyPreview(prefix.value || "subdomain")}.${domain}`;
+      summary.textContent = "Custom subdomain";
+    } else {
+      result.textContent = `${slug}.${domain}`;
+      summary.textContent = "Alternate address";
+    }
+  });
+};
+aliasRows.forEach((row) => {
+  row.querySelector("[data-alias-enabled]")?.addEventListener("change", updateAliasRows);
+  row.querySelector("[data-alias-mode]")?.addEventListener("change", updateAliasRows);
+  row.querySelector("[data-alias-prefix]")?.addEventListener("input", updateAliasRows);
+});
+aliasPrimaryDomain?.addEventListener("change", updateAliasRows);
+aliasSiteSlug?.addEventListener("input", updateAliasRows);
+updateAliasRows();
+
 const editor = document.querySelector(".code-editor");
 if (editor) {
   const form = editor.closest("[data-editor-form]");

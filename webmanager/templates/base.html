@@ -4,59 +4,127 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#0b0d10">
   <title>{{ title }} | WebManager</title>
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
-<body>
-  <div class="shell">
-    <header class="topbar">
-      <a class="brand" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
-        <img class="brand-mark" src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
-        <span class="brand-copy">
-          <strong>WebManager</strong>
-          <small>Static deployment control</small>
-        </span>
+<body class="{{ 'authenticated' if g.user else 'signed-out' }}">
+  {% if g.user %}
+  <div class="dashboard-shell">
+    <aside class="sidebar" data-sidebar>
+      <a class="sidebar-brand" href="{{ url_for('deployments.dashboard', view='sites') }}">
+        <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
+        <span><strong>WebManager</strong><small>Hosting control</small></span>
       </a>
-      {% if g.user %}
-        <nav class="topnav" aria-label="Main navigation">
-          <a class="{{ 'active' if request.endpoint == 'deployments.dashboard' and request.args.get('view', 'sites') == 'sites' else '' }}" href="{{ url_for('deployments.dashboard', view='sites') }}">Sites</a>
-          <a class="{{ 'active' if request.endpoint == 'deployments.dashboard' and request.args.get('view') == 'sources' else '' }}" href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a>
-          {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") or has_permission("access.manage") %}
-            <a class="{{ 'active' if request.blueprint == 'admin' else '' }}" href="{{ url_for('admin.dashboard') }}">Admin</a>
-          {% endif %}
-          <span class="user-profile" title="{{ g.user.email or g.user.username }}">
-            <span class="user-avatar">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
-            <span class="user-identity">
-              <strong>{{ g.user.display_name or g.user.username }}</strong>
-              <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
-            </span>
-          </span>
-          <form method="post" action="{{ url_for('auth.logout') }}">
-            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-            <button class="button ghost small" type="submit">Sign out</button>
-          </form>
-        </nav>
-      {% endif %}
-    </header>
 
-    <main class="content">
+      <div class="sidebar-account">
+        <span class="user-avatar">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
+        <span>
+          <strong>{{ g.user.display_name or g.user.username }}</strong>
+          <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
+        </span>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Main navigation">
+        <p class="sidebar-label">Hosting</p>
+        <a class="{{ 'active' if (request.endpoint == 'deployments.dashboard' and request.args.get('view', 'sites') == 'sites') or request.endpoint in ['deployments.site_detail', 'deployments.site_settings', 'deployments.edit_config'] else '' }}" href="{{ url_for('deployments.dashboard', view='sites') }}">
+          <span class="nav-icon">S</span><span>Sites</span>
+        </a>
+        <a class="{{ 'active' if (request.endpoint == 'deployments.dashboard' and request.args.get('view') == 'sources') or request.endpoint in ['deployments.select_folder'] else '' }}" href="{{ url_for('deployments.dashboard', view='sources') }}">
+          <span class="nav-icon">G</span><span>Sources</span>
+        </a>
+
+        {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") or has_permission("access.manage") %}
+        <p class="sidebar-label">Manage</p>
+        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section', 'overview') == 'overview' else '' }}" href="{{ url_for('admin.dashboard') }}">
+          <span class="nav-icon">O</span><span>Overview</span>
+        </a>
+        {% if g.user.is_admin or has_permission("users.manage") %}
+        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') in ['people', 'users'] else '' }}" href="{{ url_for('admin.dashboard', section='people') }}">
+          <span class="nav-icon">P</span><span>People</span>
+        </a>
+        {% endif %}
+        {% if g.user.is_admin or has_permission("groups.manage") %}
+        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') in ['teams', 'groups'] else '' }}" href="{{ url_for('admin.dashboard', section='teams') }}">
+          <span class="nav-icon">T</span><span>Teams</span>
+        </a>
+        {% endif %}
+        {% if g.user.is_admin or has_permission("access.manage") %}
+        <a class="{{ 'active' if request.endpoint == 'admin.access_dashboard' else '' }}" href="{{ url_for('admin.access_dashboard') }}">
+          <span class="nav-icon">A</span><span>Access</span>
+        </a>
+        {% endif %}
+        {% if g.user.is_admin %}
+        <a class="{{ 'active' if request.endpoint == 'admin.domains_dashboard' else '' }}" href="{{ url_for('admin.domains_dashboard') }}">
+          <span class="nav-icon">D</span><span>Domains</span>
+        </a>
+        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') == 'updates' else '' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
+          <span class="nav-icon">U</span><span>System</span>
+        </a>
+        {% endif %}
+        {% endif %}
+      </nav>
+
+      <form class="sidebar-signout" method="post" action="{{ url_for('auth.logout') }}">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <button type="submit">Sign out</button>
+      </form>
+    </aside>
+
+    <div class="workspace">
+      <header class="workspace-header">
+        <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-label="Toggle navigation">Menu</button>
+        <div class="workspace-title">
+          <small>WebManager</small>
+          <strong>{{ title }}</strong>
+        </div>
+        <div class="workspace-user">
+          <span class="status-dot running"></span>
+          <span>{{ g.user.display_name or g.user.email or g.user.username }}</span>
+        </div>
+      </header>
+      <main class="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-stack" aria-live="polite">
+              {% for category, message in messages %}
+                <div class="flash {{ category }}">
+                  <span>{{ message }}</span>
+                  <button class="flash-close" type="button" aria-label="Dismiss message">&times;</button>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+  {% else %}
+  <div class="auth-shell">
+    <header class="auth-header">
+      <a class="sidebar-brand" href="{{ url_for('auth.login') }}">
+        <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="">
+        <span><strong>WebManager</strong><small>Hosting control</small></span>
+      </a>
+    </header>
+    <main class="auth-content">
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
           <div class="flash-stack" aria-live="polite">
             {% for category, message in messages %}
-              <div class="flash {{ category }}">
-                <span>{{ message }}</span>
-                <button class="flash-close" type="button" aria-label="Dismiss message">&times;</button>
-              </div>
+              <div class="flash {{ category }}"><span>{{ message }}</span></div>
             {% endfor %}
           </div>
         {% endif %}
       {% endwith %}
+  {% endif %}
       {% block content %}{% endblock %}
+  {% if g.user %}
+      </main>
+    </div>
+  </div>
+  {% else %}
     </main>
   </div>
+  {% endif %}
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
