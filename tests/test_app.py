@@ -2498,6 +2498,17 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn('chmod 0755 "$APP_DIR/.venv"', installer)
+        self.assertIn("UPDATER_WAS_ENABLED=0", installer)
+        self.assertIn("Keeping automatic updater triggers disabled.", installer)
+        self.assertIn(
+            '"$UPDATER_STATE/requests/install.commit"',
+            installer,
+        )
+        self.assertIn('"state": "current"', installer)
+        self.assertIn(
+            "WebManager was installed successfully by manual setup.",
+            installer,
+        )
         self.assertIn(
             "No previous Python environment existed; keeping the validated replacement.",
             installer,

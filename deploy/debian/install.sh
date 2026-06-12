@@ -17,8 +17,18 @@ UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
+UPDATER_STATUS=$UPDATER_STATE/status.json
 DEFAULT_UPDATE_REPOSITORY=https://github.com/coolguy1333/WebManager.git
 SELF_UPDATE=0
+EXISTING_INSTALL=0
+UPDATER_WAS_ENABLED=0
+if [[ -e $SERVICE_FILE || -d $APP_DIR ]]; then
+    EXISTING_INSTALL=1
+fi
+if systemctl is-enabled --quiet webmanager-update.timer 2>/dev/null \
+    || systemctl is-enabled --quiet webmanager-update.path 2>/dev/null; then
+    UPDATER_WAS_ENABLED=1
+fi
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
 UPDATE_CONFIGURATION_EXPLICIT=0
@@ -454,9 +464,15 @@ systemctl reload nginx
 systemctl enable webmanager
 systemctl restart webmanager
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
-    systemctl enable --now webmanager-update.timer
-    systemctl enable --now webmanager-update.path
-    if [[ $SELF_UPDATE -eq 0 ]]; then
+    if [[ $EXISTING_INSTALL -eq 0 || $UPDATER_WAS_ENABLED -eq 1 || $SELF_UPDATE -eq 1 ]]; then
+        systemctl enable --now webmanager-update.timer
+        systemctl enable --now webmanager-update.path
+    else
+        systemctl disable --now webmanager-update.timer 2>/dev/null || true
+        systemctl disable --now webmanager-update.path 2>/dev/null || true
+        echo "Keeping automatic updater triggers disabled."
+    fi
+    if [[ $SELF_UPDATE -eq 0 && ($EXISTING_INSTALL -eq 0 || $UPDATER_WAS_ENABLED -eq 1) ]]; then
         systemctl start webmanager-update.service
     fi
 else
@@ -505,9 +521,40 @@ if [[ $READY -ne 1 ]] || ! systemctl is-active --quiet webmanager; then
     exit 1
 fi
 
+if [[ $SELF_UPDATE -eq 0 ]]; then
+    rm -f \
+        "$UPDATER_STATE/requests/install.commit" \
+        "$UPDATER_STATE/requests/check"
+fi
+
 if [[ -n $SOURCE_COMMIT ]]; then
     printf '%s\n' "$SOURCE_COMMIT" >"$APP_DIR/.installed-commit"
     chmod 0644 "$APP_DIR/.installed-commit"
+    if [[ $SELF_UPDATE -eq 0 ]]; then
+        STATUS_TEMP=$(mktemp "$UPDATER_STATE/status.XXXXXX")
+        python3 - "$STATUS_TEMP" "$SOURCE_COMMIT" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+path, commit = sys.argv[1:]
+payload = {
+    "state": "current",
+    "installed_commit": commit,
+    "available_commit": commit,
+    "update_available": False,
+    "message": "WebManager was installed successfully by manual setup.",
+    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+    handle.write("\n")
+os.chmod(path, 0o640)
+PY
+        chown root:webmanager "$STATUS_TEMP"
+        mv -f "$STATUS_TEMP" "$UPDATER_STATUS"
+    fi
 else
     rm -f "$APP_DIR/.installed-commit"
 fi

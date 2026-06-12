@@ -1399,6 +1399,12 @@ automatically if any later installation step fails.
 Replacement virtual environments are installed with traverse permissions for
 the unprivileged `webmanager` service account while remaining owned by root.
 
+On an existing installation, manual setup preserves an intentionally disabled
+updater timer/path and clears stale update request files after the application
+passes its health check. New installations still enable update checks by
+default when they are configured. A successful manual setup also replaces any
+stale testing or installing status with the exact commit it installed.
+
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.
 
