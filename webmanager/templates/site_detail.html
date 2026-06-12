@@ -47,8 +47,13 @@
 {% if routing and can_manage %}
 <section class="panel program-update-card">
   <div class="program-update-copy">
+    {% if routing.use_domain_root %}
+    <strong>Cloudflare Tunnel must include this exact root hostname.</strong>
+    <small>Add public hostname <code>{{ routing.hostname }}</code> with service <code>{{ routing.origin }}</code>. A wildcard hostname does not cover the domain root.</small>
+    {% else %}
     <strong>Cloudflare Tunnel must include the wildcard hostname.</strong>
     <small>An entry for the dashboard hostname alone does not route this site. Add public hostname <code>{{ routing.wildcard }}</code> with service <code>{{ routing.origin }}</code>, and ensure HTTPS covers the wildcard.</small>
+    {% endif %}
     <small>Local routing test: <code>{{ routing.local_test }}</code></small>
   </div>
 </section>

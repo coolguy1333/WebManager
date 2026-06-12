@@ -556,6 +556,30 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(owner_id)
         settings = self.client.get(f"/sites/{site_id}/settings")
         self.assertIn(b"blocked; move recommended", settings.data)
+        refused_change = self.client.post(
+            f"/sites/{site_id}/settings",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Demo",
+                "slug": "demo-new",
+                "folder": "blocked-domain-repo",
+                "port": "43100",
+                "domain_id": str(site["domain_id"]),
+                "spa_fallback": "on",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(
+            b"Keep the existing public hostname or move the site",
+            refused_change.data,
+        )
+        with self.app.app_context():
+            unchanged = get_db().execute(
+                "SELECT slug, use_domain_root FROM sites WHERE id = ?",
+                (site_id,),
+            ).fetchone()
+        self.assertEqual(unchanged["slug"], "demo")
+        self.assertEqual(unchanged["use_domain_root"], 0)
 
     def test_deleting_default_domain_does_not_promote_blocked_domain(self):
         admin_id = self.add_user("admin", is_admin=True)
@@ -1163,6 +1187,11 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(site["use_domain_root"], 1)
         self.assertIn("server_name mhsit.club", site["nginx_config"])
         self.assertNotIn("server_name main-site.mhsit.club", site["nginx_config"])
+        self.assertIn(
+            b"Cloudflare Tunnel must include this exact root hostname",
+            response.data,
+        )
+        self.assertIn(b"wildcard hostname does not cover the domain root", response.data)
 
         dashboard = self.client.get("/")
         self.assertIn(b">mhsit.club<", dashboard.data)
@@ -2074,12 +2103,18 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn('bash "$SCRIPT_DIR/configure-google.sh"', setup)
         self.assertIn("Initial deployment domain:", setup)
         self.assertIn("Default deployment domain added:", setup)
+        self.assertIn("WEBMANAGER_INITIAL_SITE_BASE_DOMAIN", setup)
         self.assertIn("INSERT INTO domains (name, is_default)", setup)
+        self.assertLess(
+            setup.index("Initial deployment domain:"),
+            setup.index('bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"'),
+        )
         self.assertNotIn("Configure Google sign-in now?", setup)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"',
             installer,
         )
+        self.assertIn("WEBMANAGER_INITIAL_SITE_BASE_DOMAIN", installer)
 
         google_setup = (root / "configure-google.sh").read_text(
             encoding="utf-8"

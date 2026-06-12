@@ -213,6 +213,16 @@ ensure_env WEBMANAGER_SITE_PUBLIC_SCHEME "http"
 ensure_env WEBMANAGER_AUTO_REFRESH_ENABLED "1"
 ensure_env WEBMANAGER_AUTO_REFRESH_POLL_SECONDS "30"
 
+if [[ -n ${WEBMANAGER_INITIAL_SITE_BASE_DOMAIN:-} ]] \
+    && ! grep -Eq '^WEBMANAGER_SITE_BASE_DOMAIN=.+$' "$CONFIG_DIR/webmanager.env"; then
+    TEMP_ENV=$(mktemp)
+    grep -v '^WEBMANAGER_SITE_BASE_DOMAIN=' "$CONFIG_DIR/webmanager.env" >"$TEMP_ENV" || true
+    printf 'WEBMANAGER_SITE_BASE_DOMAIN=%s\n' \
+        "$WEBMANAGER_INITIAL_SITE_BASE_DOMAIN" >>"$TEMP_ENV"
+    install -o root -g webmanager -m 0640 "$TEMP_ENV" "$CONFIG_DIR/webmanager.env"
+    rm -f "$TEMP_ENV"
+fi
+
 chown root:webmanager "$CONFIG_DIR/webmanager.env"
 chmod 0640 "$CONFIG_DIR/webmanager.env"
 

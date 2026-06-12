@@ -52,10 +52,11 @@ if [[ $HAS_UPDATE_REPOSITORY -eq 0 ]] \
         --update-branch "$DEFAULT_UPDATE_BRANCH"
 fi
 
-bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"
-
 ENV_FILE=/etc/webmanager/webmanager.env
-SITE_BASE_DOMAIN=$(sed -n 's/^WEBMANAGER_SITE_BASE_DOMAIN=//p' "$ENV_FILE" | tail -n 1)
+SITE_BASE_DOMAIN=
+if [[ -r $ENV_FILE ]]; then
+    SITE_BASE_DOMAIN=$(sed -n 's/^WEBMANAGER_SITE_BASE_DOMAIN=//p' "$ENV_FILE" | tail -n 1)
+fi
 if [[ -z $SITE_BASE_DOMAIN ]]; then
     if [[ ! -t 0 ]]; then
         echo "An initial deployment domain is required." >&2
@@ -88,28 +89,47 @@ PY
             break
         fi
     done
+    export WEBMANAGER_INITIAL_SITE_BASE_DOMAIN=$SITE_BASE_DOMAIN
 
+    EXISTING_DATA_DIR=/var/lib/webmanager
+    if [[ -r $ENV_FILE ]]; then
+        EXISTING_DATA_DIR=$(sed -n 's/^WEBMANAGER_DATA_DIR=//p' "$ENV_FILE" | tail -n 1)
+        EXISTING_DATA_DIR=${EXISTING_DATA_DIR:-/var/lib/webmanager}
+    fi
+    if [[ -f "$EXISTING_DATA_DIR/webmanager.sqlite3" ]]; then
+        python3 - "$EXISTING_DATA_DIR/webmanager.sqlite3" "$SITE_BASE_DOMAIN" <<'PY'
+import sqlite3
+import sys
+
+database = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    try:
+        blocked = {
+            row[0]
+            for row in database.execute("SELECT name FROM blocked_domains").fetchall()
+        }
+    except sqlite3.OperationalError:
+        blocked = set()
+finally:
+    database.close()
+domain = sys.argv[2]
+if any(domain == denied or domain.endswith(f".{denied}") for denied in blocked):
+    raise SystemExit(f"{domain} is blocked by the deployment-domain blocklist.")
+PY
+    fi
+fi
+
+bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"
+
+if [[ -n ${WEBMANAGER_INITIAL_SITE_BASE_DOMAIN:-} ]]; then
     DATA_DIR=$(sed -n 's/^WEBMANAGER_DATA_DIR=//p' "$ENV_FILE" | tail -n 1)
     DATA_DIR=${DATA_DIR:-/var/lib/webmanager}
-    DOMAIN_READY=0
-    for _ in {1..30}; do
-        if runuser -u webmanager -- python3 - "$DATA_DIR/webmanager.sqlite3" "$SITE_BASE_DOMAIN" <<'PY'
+    runuser -u webmanager -- python3 - "$DATA_DIR/webmanager.sqlite3" "$SITE_BASE_DOMAIN" <<'PY'
 import sqlite3
 import sys
 
 database = sqlite3.connect(sys.argv[1])
 try:
-    blocked = {
-        row[0]
-        for row in database.execute("SELECT name FROM blocked_domains").fetchall()
-    }
-    domain = sys.argv[2]
-    if any(domain == denied or domain.endswith(f".{denied}") for denied in blocked):
-        print(
-            f"{domain} is blocked by the deployment-domain blocklist.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
     database.execute("BEGIN IMMEDIATE")
     database.execute("UPDATE domains SET is_default = 0")
     database.execute(
@@ -118,43 +138,12 @@ try:
         VALUES (?, 1)
         ON CONFLICT(name) DO UPDATE SET is_default = 1
         """,
-        (domain,),
+        (sys.argv[2],),
     )
     database.commit()
-except sqlite3.OperationalError:
-    database.rollback()
-    raise SystemExit(1)
 finally:
     database.close()
 PY
-        then
-            DOMAIN_READY=1
-            break
-        else
-            DOMAIN_STATUS=$?
-            if [[ $DOMAIN_STATUS -eq 2 ]]; then
-                exit 1
-            fi
-        fi
-        sleep 1
-    done
-    if [[ $DOMAIN_READY -ne 1 ]]; then
-        echo "The initial deployment domain was not created in the database." >&2
-        journalctl -u webmanager -n 60 --no-pager >&2
-        exit 1
-    fi
-
-    TEMP_ENV=$(mktemp)
-    grep -v '^WEBMANAGER_SITE_BASE_DOMAIN=' "$ENV_FILE" >"$TEMP_ENV" || true
-    printf 'WEBMANAGER_SITE_BASE_DOMAIN=%s\n' "$SITE_BASE_DOMAIN" >>"$TEMP_ENV"
-    install -o root -g webmanager -m 0640 "$TEMP_ENV" "$ENV_FILE"
-    rm -f "$TEMP_ENV"
-    systemctl restart webmanager
-    if ! systemctl is-active --quiet webmanager; then
-        echo "WebManager failed to restart after adding the deployment domain." >&2
-        journalctl -u webmanager -n 60 --no-pager >&2
-        exit 1
-    fi
     echo "Default deployment domain added: $SITE_BASE_DOMAIN"
 else
     echo "Keeping existing deployment domain: $SITE_BASE_DOMAIN"

@@ -91,6 +91,9 @@ def site_routing_details(site) -> dict[str, str] | None:
     return {
         "hostname": hostname,
         "wildcard": f"*.{domain}",
+        "use_domain_root": bool(
+            "use_domain_root" in site.keys() and site["use_domain_root"]
+        ),
         "origin": "http://localhost:8080",
         "local_test": (
             f"curl -I -H 'Host: {hostname}' http://127.0.0.1:8080/"
@@ -739,6 +742,16 @@ def site_settings(site_id):
                 hostname = domain["name"] if use_domain_root else (
                     f"{slug}.{domain['name']}" if domain else None
                 )
+                if (
+                    current_domain_blocked
+                    and domain
+                    and domain["id"] == site["domain_id"]
+                    and hostname != site_hostname(database, site)
+                ):
+                    raise GitError(
+                        "The current domain is blocked. Keep the existing public "
+                        "hostname or move the site to an allowed domain."
+                    )
                 config = build_site_config(
                     name,
                     selected,
