@@ -1335,9 +1335,11 @@ Setup runs the first check immediately. A super administrator can also select
 to run without granting the web process root access.
 
 When application requirements are unchanged, update validation reuses the
-installed virtual environment instead of downloading the same packages again.
-Failures are reported separately for environment creation, dependency
-installation, and application tests.
+installed virtual environment first. If that test run fails, the updater
+automatically retries in a clean virtual environment before rejecting the
+update. Failures are reported separately for environment creation, dependency
+installation, and application tests, with the final test output shown in the
+admin update status.
 
 Running `bash setup.sh` over an existing installation also reuses a healthy
 virtual environment when requirements are unchanged. The database, repository

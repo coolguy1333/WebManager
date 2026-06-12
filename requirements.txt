@@ -1,3 +1,4 @@
+# Keep update validation isolated when the runtime dependency manifest changes.
 Authlib>=1.6,<2
 Flask>=3.0,<4
 requests>=2.32,<3

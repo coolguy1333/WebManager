@@ -66,6 +66,7 @@ INSTALLED_COMMIT=
 NEW_COMMIT=
 APPROVED_COMMIT=
 UPDATE_STAGE=checking
+TEST_LOG=
 record_failure() {
     local exit_code=$?
     local message
@@ -81,6 +82,9 @@ record_failure() {
                 ;;
             running_tests)
                 message="The approved update failed its application test suite. Review the updater journal."
+                if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
+                    message="$message Last test output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
+                fi
                 ;;
             *)
                 message="The approved update failed validation before installation. Review the updater journal."
@@ -207,13 +211,17 @@ done
 write_status "testing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
     "Testing the super-admin-approved update."
 TEST_PYTHON=
-if [[ -x "$APP_DIR/.venv/bin/python" ]] \
-    && [[ -r "$APP_DIR/requirements.txt" ]] \
-    && cmp -s "$APP_DIR/requirements.txt" "$SOURCE_DIR/requirements.txt"; then
-    TEST_PYTHON="$APP_DIR/.venv/bin/python"
-    echo "Reusing installed Python dependencies because requirements are unchanged."
-else
+TEST_LOG="$WORK_DIR/application-tests.log"
+run_application_tests() {
+    local python=$1
+    "$python" -m unittest discover \
+        -s "$SOURCE_DIR/tests" \
+        -t "$SOURCE_DIR" \
+        -v 2>&1 | tee "$TEST_LOG"
+}
+create_test_environment() {
     UPDATE_STAGE=preparing_test
+    rm -rf "$WORK_DIR/check-venv"
     python3 -m venv "$WORK_DIR/check-venv"
     TEST_PYTHON="$WORK_DIR/check-venv/bin/python"
     UPDATE_STAGE=installing_dependencies
@@ -223,12 +231,25 @@ else
         --timeout 30 \
         -q \
         -r "$SOURCE_DIR/requirements.txt"
+}
+
+if [[ -x "$APP_DIR/.venv/bin/python" ]] \
+    && [[ -r "$APP_DIR/requirements.txt" ]] \
+    && cmp -s "$APP_DIR/requirements.txt" "$SOURCE_DIR/requirements.txt"; then
+    TEST_PYTHON="$APP_DIR/.venv/bin/python"
+    echo "Reusing installed Python dependencies because requirements are unchanged."
+    UPDATE_STAGE=running_tests
+    if ! run_application_tests "$TEST_PYTHON"; then
+        echo "Tests failed with installed dependencies; retrying in a clean environment."
+        create_test_environment
+        UPDATE_STAGE=running_tests
+        run_application_tests "$TEST_PYTHON"
+    fi
+else
+    create_test_environment
+    UPDATE_STAGE=running_tests
+    run_application_tests "$TEST_PYTHON"
 fi
-UPDATE_STAGE=running_tests
-"$TEST_PYTHON" -m unittest discover \
-    -s "$SOURCE_DIR/tests" \
-    -t "$SOURCE_DIR" \
-    -v
 
 UPDATE_STAGE=backing_up
 BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-${INSTALLED_COMMIT:-unknown}"

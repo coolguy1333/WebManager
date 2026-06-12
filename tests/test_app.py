@@ -2019,8 +2019,13 @@ class ServiceUnitTests(unittest.TestCase):
 
         self.assertIn("https://github", updater)
         self.assertIn("merge-base --is-ancestor", updater)
-        self.assertIn('"$TEST_PYTHON" -m unittest discover', updater)
+        self.assertIn('"$python" -m unittest discover', updater)
         self.assertIn("Reusing installed Python dependencies", updater)
+        self.assertIn(
+            "Tests failed with installed dependencies; retrying in a clean environment.",
+            updater,
+        )
+        self.assertIn("Last test output:", updater)
         self.assertIn("UPDATE_STAGE=installing_dependencies", updater)
         self.assertIn("--retries 5", updater)
         self.assertIn("REUSE_VENV=0", installer)
