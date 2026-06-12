@@ -172,6 +172,14 @@ sync_directory(source, destination)
 PY
 }
 
+restore_directory_contents() {
+    local source=$1
+    local destination=$2
+    install -d "$destination"
+    find "$destination" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    cp -a "$source"/. "$destination"/
+}
+
 INSTALLED_COMMIT=
 NEW_COMMIT=
 APPROVED_COMMIT=
@@ -506,19 +514,27 @@ rollback() {
     local exit_code=$?
     local message
     trap - ERR
+    set +e
     echo "Update failed; restoring the previous working state." >&2
     systemctl stop webmanager 2>/dev/null || true
-    rm -rf "$APP_DIR"
-    cp -a "$BACKUP_DIR/app" "$APP_DIR"
+    if ! restore_directory_contents "$BACKUP_DIR/app" "$APP_DIR"; then
+        echo "Could not restore the application directory." >&2
+        message="Update failed and the application directory could not be restored."
+    fi
     if [[ $DATA_BACKUP_COMPLETE -eq 1 ]]; then
-        rm -rf "$DATA_DIR"
-        cp -a "$DATA_BACKUP_DIR" "$DATA_DIR"
-        message="Update failed. Application and persistent data were restored."
+        if restore_directory_contents "$DATA_BACKUP_DIR" "$DATA_DIR"; then
+            message=${message:-"Update failed. Application and persistent data were restored."}
+        else
+            echo "Could not restore the persistent data directory." >&2
+            message="Update failed and persistent data could not be restored automatically."
+        fi
     else
         message="Update stopped before a complete data backup was created. Existing data was left untouched."
     fi
-    rm -rf "$CONFIG_DIR"
-    cp -a "$BACKUP_DIR/config" "$CONFIG_DIR"
+    if ! restore_directory_contents "$BACKUP_DIR/config" "$CONFIG_DIR"; then
+        echo "Could not restore the configuration directory." >&2
+        message="$message Configuration restoration also failed."
+    fi
     if [[ -f "$BACKUP_DIR/webmanager.service" ]]; then
         cp -a "$BACKUP_DIR/webmanager.service" "$SERVICE_FILE"
     fi

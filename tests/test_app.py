@@ -2501,6 +2501,10 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("UPDATER_WAS_ENABLED=0", installer)
         self.assertIn("Keeping automatic updater triggers disabled.", installer)
         self.assertIn(
+            "Leaving updater triggers unchanged during the active self-update.",
+            installer,
+        )
+        self.assertIn(
             '"$UPDATER_STATE/requests/install.commit"',
             installer,
         )
@@ -2547,6 +2551,14 @@ class ServiceUnitTests(unittest.TestCase):
         )
         self.assertIn("rollback()", updater)
         self.assertIn("wait_for_webmanager()", updater)
+        self.assertIn("restore_directory_contents()", updater)
+        self.assertIn(
+            'restore_directory_contents "$BACKUP_DIR/app" "$APP_DIR"',
+            updater,
+        )
+        self.assertNotIn('rm -rf "$APP_DIR"', updater)
+        self.assertNotIn('rm -rf "$DATA_DIR"', updater)
+        self.assertNotIn('rm -rf "$CONFIG_DIR"', updater)
         self.assertIn("SERVICE_WAS_STOPPED=1", updater)
         self.assertIn("UPDATE_STAGE=verifying_install", updater)
         self.assertIn(
@@ -2564,7 +2576,10 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("sync_data_backup()", updater)
         self.assertIn("Preparing the data backup while WebManager remains online.", updater)
         self.assertIn('sync_data_backup "$DATA_BACKUP_DIR"', updater)
-        self.assertIn('cp -a "$DATA_BACKUP_DIR" "$DATA_DIR"', updater)
+        self.assertIn(
+            'restore_directory_contents "$DATA_BACKUP_DIR" "$DATA_DIR"',
+            updater,
+        )
         self.assertNotIn("webmanager-data.tar.gz", updater)
         self.assertIn("waiting for super-admin approval", updater)
         self.assertIn("OnUnitActiveSec=15min", timer)

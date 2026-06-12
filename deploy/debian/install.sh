@@ -464,7 +464,9 @@ systemctl reload nginx
 systemctl enable webmanager
 systemctl restart webmanager
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
-    if [[ $EXISTING_INSTALL -eq 0 || $UPDATER_WAS_ENABLED -eq 1 || $SELF_UPDATE -eq 1 ]]; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "Leaving updater triggers unchanged during the active self-update."
+    elif [[ $EXISTING_INSTALL -eq 0 || $UPDATER_WAS_ENABLED -eq 1 ]]; then
         systemctl enable --now webmanager-update.timer
         systemctl enable --now webmanager-update.path
     else
@@ -475,7 +477,7 @@ if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
     if [[ $SELF_UPDATE -eq 0 && ($EXISTING_INSTALL -eq 0 || $UPDATER_WAS_ENABLED -eq 1) ]]; then
         systemctl start webmanager-update.service
     fi
-else
+elif [[ $SELF_UPDATE -eq 0 ]]; then
     systemctl disable --now webmanager-update.timer 2>/dev/null || true
     systemctl disable --now webmanager-update.path 2>/dev/null || true
 fi

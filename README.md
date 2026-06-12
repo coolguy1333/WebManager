@@ -1382,6 +1382,11 @@ application, configuration, and persistent data, restarts the service, and
 waits for `/healthz` before completing. A failed recovery is recorded in the
 update status and updater journal.
 
+Rollback restores the contents of systemd-protected writable directories in
+place. It never attempts to remove `/opt/webmanager`, `/var/lib/webmanager`, or
+`/etc/webmanager` themselves because systemd may expose those paths as service
+mount points.
+
 The updater also performs a second independent `/healthz` check after the
 installer returns. Its exit handler attempts an emergency service restart if
 the updater is interrupted or exits unexpectedly while WebManager is offline.
@@ -1404,6 +1409,10 @@ updater timer/path and clears stale update request files after the application
 passes its health check. New installations still enable update checks by
 default when they are configured. A successful manual setup also replaces any
 stale testing or installing status with the exact commit it installed.
+
+An updater-driven self-update never enables, disables, or starts its own timer
+and path units while the updater service is active. This prevents the approval
+file from recursively retriggering installation.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.
