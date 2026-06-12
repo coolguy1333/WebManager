@@ -21,20 +21,31 @@
   <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="multi_deploy" value="1">
   {% if site_domains %}
-  <section class="panel domain-picker">
+  <section class="panel domain-picker" data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
     <label>
-      Public domain for selected sites
-      <select name="domain_id" required>
+      Choose domain
+      <select name="domain_id" required data-hosting-domain>
         {% for domain in site_domains %}
-        <option value="{{ domain.id }}">{{ domain.name }}{% if domain.is_default %} (default){% endif %}</option>
+        <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}">{{ domain.name }}{% if domain.is_default %} (default){% endif %}</option>
         {% endfor %}
       </select>
-      <small>Each selected site gets its slug under this domain.</small>
     </label>
-    <label class="check-row">
-      <input type="checkbox" name="use_domain_root">
-      <span><strong>Host at domain root</strong><small>Use the selected domain itself, such as <code>mhsit.club</code>. Exactly one site must be selected.</small></span>
-    </label>
+    <fieldset class="hosting-mode-picker">
+      <legend>Choose public address style</legend>
+      <label class="hosting-mode-option">
+        <input type="radio" name="hosting_mode" value="subdomain" checked>
+        <span><strong>Site subdomain</strong><small>Best for deploying one or several folders.</small><code data-subdomain-preview>site.example.com</code></span>
+      </label>
+      <label class="hosting-mode-option">
+        <input type="radio" name="hosting_mode" value="root">
+        <span><strong>Domain root</strong><small>Serve one selected site directly at the domain.</small><code data-root-preview>example.com</code></span>
+      </label>
+    </fieldset>
+    <div class="hosting-preview" data-hosting-preview>
+      <strong>Public address</strong>
+      <code data-hosting-url></code>
+      <small data-hosting-help>Each selected site receives its own subdomain.</small>
+    </div>
   </section>
   {% endif %}
   <div class="section-heading">
@@ -81,7 +92,7 @@
       <strong>Ready to deploy</strong>
       <small>Settings can be changed later from each site page.</small>
     </div>
-    <button class="button primary" type="submit" data-loading-text="Deploying selected sites...">Deploy selected sites</button>
+    <button class="button primary" type="submit" data-loading-text="Deploying selected sites..." data-deploy-submit>Deploy selected sites</button>
   </div>
 </form>
 {% else %}

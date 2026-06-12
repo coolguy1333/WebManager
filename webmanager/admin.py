@@ -25,10 +25,12 @@ from .db import get_db
 from .domains import (
     blocked_domain_names,
     dashboard_hostname,
+    domain_is_dashboard,
     domain_is_blocked,
     normalize_domain,
 )
 from .security import login_required, validate_csrf
+from .services import RuntimeErrorDetail
 from .update_status import (
     read_update_status,
     request_program_update,
@@ -190,6 +192,12 @@ def domains_dashboard():
         """
     ).fetchall()
     blocked = blocked_domain_names(database)
+    dashboard_domain_rows = database.execute(
+        """
+        SELECT * FROM dashboard_domains
+        ORDER BY is_primary DESC, name COLLATE NOCASE
+        """
+    ).fetchall()
     domains = [
         {**dict(domain), "is_blocked": domain_is_blocked(domain["name"], blocked)}
         for domain in domain_rows
@@ -199,12 +207,139 @@ def domains_dashboard():
         title="Domains",
         active_section="domains",
         domains=domains,
+        dashboard_domains=dashboard_domain_rows,
         blocked_domains=sorted(blocked),
         dashboard_host=dashboard_hostname(),
         can_manage_users=has_permission(USERS_MANAGE),
         can_manage_groups=has_permission(GROUPS_MANAGE),
         can_manage_access=has_permission(ACCESS_MANAGE),
         super_admin=True,
+    )
+
+
+def _apply_dashboard_domain_change(database, success_message):
+    try:
+        current_app.extensions["runtime_manager"].apply_nginx_configs()
+    except RuntimeErrorDetail as exc:
+        database.rollback()
+        try:
+            current_app.extensions["runtime_manager"].apply_nginx_configs()
+        except RuntimeErrorDetail:
+            pass
+        flash(f"Dashboard domain change was not applied: {exc}", "error")
+    else:
+        database.commit()
+        flash(success_message, "success")
+    return redirect(url_for("admin.domains_dashboard"))
+
+
+@bp.post("/domains/dashboard")
+@login_required
+def create_dashboard_domain():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        name = normalize_domain(request.form.get("name", ""))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    database = get_db()
+    if database.execute(
+        "SELECT 1 FROM domains WHERE name = ? COLLATE NOCASE",
+        (name,),
+    ).fetchone():
+        flash("A deployment domain cannot also be a dashboard domain.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    site_hostnames = {
+        (
+            row["domain_name"]
+            if row["use_domain_root"]
+            else f"{row['slug']}.{row['domain_name']}"
+        )
+        for row in database.execute(
+            """
+            SELECT sites.slug, sites.use_domain_root, domains.name AS domain_name
+            FROM sites
+            JOIN domains ON domains.id = sites.domain_id
+            """
+        ).fetchall()
+    }
+    if name in site_hostnames:
+        flash("That hostname is already assigned to a hosted site.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    make_primary = request.form.get("is_primary") == "on"
+    has_primary = database.execute(
+        "SELECT 1 FROM dashboard_domains WHERE is_primary = 1"
+    ).fetchone()
+    if make_primary or has_primary is None:
+        database.execute("UPDATE dashboard_domains SET is_primary = 0")
+        make_primary = True
+    try:
+        database.execute(
+            "INSERT INTO dashboard_domains (name, is_primary) VALUES (?, ?)",
+            (name, int(make_primary)),
+        )
+    except sqlite3.IntegrityError:
+        database.rollback()
+        flash("That dashboard domain already exists.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    return _apply_dashboard_domain_change(
+        database,
+        f"Dashboard domain {name} added.",
+    )
+
+
+@bp.post("/domains/dashboard/<int:domain_id>/primary")
+@login_required
+def set_primary_dashboard_domain(domain_id):
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    domain = database.execute(
+        "SELECT * FROM dashboard_domains WHERE id = ?",
+        (domain_id,),
+    ).fetchone()
+    if domain is None:
+        abort(404)
+    database.execute("UPDATE dashboard_domains SET is_primary = 0")
+    database.execute(
+        "UPDATE dashboard_domains SET is_primary = 1 WHERE id = ?",
+        (domain_id,),
+    )
+    return _apply_dashboard_domain_change(
+        database,
+        f"{domain['name']} is now the primary dashboard domain.",
+    )
+
+
+@bp.post("/domains/dashboard/<int:domain_id>/delete")
+@login_required
+def delete_dashboard_domain(domain_id):
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    domain = database.execute(
+        "SELECT * FROM dashboard_domains WHERE id = ?",
+        (domain_id,),
+    ).fetchone()
+    if domain is None:
+        abort(404)
+    count = database.execute(
+        "SELECT COUNT(*) AS count FROM dashboard_domains"
+    ).fetchone()["count"]
+    if count <= 1:
+        flash("At least one dashboard domain must remain configured.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    if domain["is_primary"]:
+        flash("Make another dashboard domain primary before deleting this one.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
+    database.execute("DELETE FROM dashboard_domains WHERE id = ?", (domain_id,))
+    return _apply_dashboard_domain_change(
+        database,
+        f"Dashboard domain {domain['name']} removed.",
     )
 
 
@@ -227,16 +362,19 @@ def create_domain():
             "error",
         )
         return redirect(url_for("admin.domains_dashboard"))
+    if domain_is_dashboard(database, name):
+        flash("A dashboard domain cannot also be used for deployments.", "error")
+        return redirect(url_for("admin.domains_dashboard"))
     make_default = request.form.get("is_default") == "on"
     try:
+        has_domains = database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
         current_default = database.execute(
             "SELECT name FROM domains WHERE is_default = 1"
         ).fetchone()
-        if (
-            make_default
-            or current_default is None
-            or domain_is_blocked(current_default["name"], blocked)
-        ):
+        should_make_default = make_default or has_domains is None
+        if current_default and domain_is_blocked(current_default["name"], blocked):
+            should_make_default = True
+        if should_make_default:
             database.execute("UPDATE domains SET is_default = 0")
             make_default = True
         database.execute(
@@ -275,6 +413,34 @@ def set_default_domain(domain_id):
     )
     database.commit()
     flash(f"{domain['name']} is now the default deployment domain.", "success")
+    return redirect(url_for("admin.domains_dashboard"))
+
+
+@bp.post("/domains/default/reset")
+@login_required
+def reset_default_domain():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    previous = database.execute(
+        "SELECT name FROM domains WHERE is_default = 1"
+    ).fetchone()
+    database.execute("UPDATE domains SET is_default = 0")
+    database.execute(
+        """
+        INSERT OR REPLACE INTO app_settings (key, value)
+        VALUES ('domain_defaults_initialized', '1')
+        """
+    )
+    database.commit()
+    if previous:
+        flash(
+            f"Default deployment domain cleared. {previous['name']} remains available.",
+            "success",
+        )
+    else:
+        flash("No default deployment domain is currently set.", "warning")
     return redirect(url_for("admin.domains_dashboard"))
 
 

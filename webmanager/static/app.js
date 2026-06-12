@@ -68,6 +68,20 @@ document.querySelectorAll('input[name="folder"]').forEach((radio) => {
 
 const deployOptions = document.querySelectorAll("[data-deploy-option]");
 const selectedCount = document.querySelector("[data-selected-count]");
+const hostingPicker = document.querySelector("[data-hosting-picker]");
+const hostingDomain = document.querySelector("[data-hosting-domain]");
+const hostingModes = document.querySelectorAll('input[name="hosting_mode"]');
+const deploySubmit = document.querySelector("[data-deploy-submit]");
+const hostingUrl = document.querySelector("[data-hosting-url]");
+const hostingHelp = document.querySelector("[data-hosting-help]");
+const subdomainPreview = document.querySelector("[data-subdomain-preview]");
+const rootPreview = document.querySelector("[data-root-preview]");
+const slugifyPreview = (value) => value
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, "-")
+  .replace(/^-+|-+$/g, "")
+  .slice(0, 48) || "site";
+
 const updateDeploySelection = () => {
   let count = 0;
   deployOptions.forEach((option) => {
@@ -82,10 +96,123 @@ const updateDeploySelection = () => {
     selectedCount.textContent = count;
   }
 };
+
+const updateHostingChoice = () => {
+  if (!hostingPicker || !hostingDomain) {
+    return;
+  }
+  const selectedMode = document.querySelector('input[name="hosting_mode"]:checked')?.value || "subdomain";
+  const rootMode = selectedMode === "root";
+  const option = hostingDomain.selectedOptions[0];
+  const domain = option?.dataset.domain || option?.textContent.trim() || "";
+  const rootAvailable = option?.dataset.rootAvailable !== "false";
+  const rootSite = option?.dataset.rootSite || "another site";
+  const scheme = hostingPicker.dataset.publicScheme || "https";
+  let selectedCards = [...deployOptions].filter(
+    (card) => card.querySelector('input[name="selected"]')?.checked,
+  );
+
+  if (rootMode && selectedCards.length === 0 && deployOptions.length) {
+    const firstCheckbox = deployOptions[0].querySelector('input[name="selected"]');
+    if (firstCheckbox) {
+      firstCheckbox.checked = true;
+      selectedCards = [deployOptions[0]];
+    }
+  }
+  if (rootMode && selectedCards.length > 1) {
+    selectedCards.slice(1).forEach((card) => {
+      const checkbox = card.querySelector('input[name="selected"]');
+      if (checkbox) {
+        checkbox.checked = false;
+      }
+    });
+  }
+  deployOptions.forEach((card) => {
+    const checkbox = card.querySelector('input[name="selected"]');
+    if (checkbox) {
+      checkbox.disabled = rootMode && !checkbox.checked;
+    }
+  });
+  updateDeploySelection();
+
+  const activeCard = [...deployOptions].find(
+    (card) => card.querySelector('input[name="selected"]')?.checked,
+  );
+  const siteName = activeCard?.querySelector('input[name^="site_name_"]')?.value || "site";
+  const slug = slugifyPreview(siteName);
+  const previewHost = rootMode ? domain : `${slug}.${domain}`;
+  if (subdomainPreview) {
+    subdomainPreview.textContent = `${slug}.${domain}`;
+  }
+  if (rootPreview) {
+    rootPreview.textContent = domain;
+  }
+  if (hostingUrl) {
+    hostingUrl.textContent = domain ? `${scheme}://${previewHost}` : "Choose a domain";
+  }
+  if (hostingHelp) {
+    hostingHelp.textContent = rootMode
+      ? rootAvailable
+        ? "Root hosting is available. Only the selected folder will be deployed."
+        : `Root hosting is already used by ${rootSite}. Choose another domain or use a subdomain.`
+      : "Each selected folder receives its own subdomain.";
+    hostingHelp.classList.toggle("error-text", rootMode && !rootAvailable);
+  }
+  if (deploySubmit) {
+    deploySubmit.disabled = rootMode && !rootAvailable;
+  }
+};
+
 deployOptions.forEach((option) => {
-  option.querySelector('input[name="selected"]')?.addEventListener("change", updateDeploySelection);
+  option.querySelector('input[name="selected"]')?.addEventListener("change", () => {
+    updateDeploySelection();
+    updateHostingChoice();
+  });
+  option.querySelector('input[name^="site_name_"]')?.addEventListener("input", updateHostingChoice);
 });
+hostingDomain?.addEventListener("change", updateHostingChoice);
+hostingModes.forEach((mode) => mode.addEventListener("change", updateHostingChoice));
 updateDeploySelection();
+updateHostingChoice();
+
+const settingsHostingPreview = document.querySelector("[data-settings-hosting-preview]");
+const settingsHostingUrl = document.querySelector("[data-settings-hosting-url]");
+const settingsHostingHelp = document.querySelector("[data-settings-hosting-help]");
+const settingsDomain = document.querySelector(".settings-form [data-hosting-domain]");
+const settingsSlug = document.querySelector('.settings-form input[name="slug"]');
+const settingsSubmit = document.querySelector('.settings-form button[type="submit"]');
+const updateSettingsHostingChoice = () => {
+  if (!settingsHostingPreview || !settingsDomain) {
+    return;
+  }
+  const mode = document.querySelector('.settings-form input[name="hosting_mode"]:checked')?.value || "subdomain";
+  const option = settingsDomain.selectedOptions[0];
+  const domain = option?.dataset.domain || "";
+  const rootMode = mode === "root";
+  const rootAvailable = option?.dataset.rootAvailable !== "false";
+  const scheme = settingsHostingPreview.dataset.publicScheme || "https";
+  const slug = slugifyPreview(settingsSlug?.value || "site");
+  if (!domain) {
+    settingsHostingUrl.textContent = "Direct port only";
+    settingsHostingHelp.textContent = "Choose a public domain to use root or subdomain hosting.";
+    settingsSubmit.disabled = rootMode;
+    return;
+  }
+  settingsHostingUrl.textContent = `${scheme}://${rootMode ? domain : `${slug}.${domain}`}`;
+  settingsHostingHelp.textContent = rootMode
+    ? rootAvailable
+      ? "This site will own the domain root."
+      : `The domain root is already used by ${option.dataset.rootSite || "another site"}.`
+    : "The URL slug is used as the subdomain.";
+  settingsHostingHelp.classList.toggle("error-text", rootMode && !rootAvailable);
+  settingsSubmit.disabled = rootMode && !rootAvailable;
+};
+settingsDomain?.addEventListener("change", updateSettingsHostingChoice);
+settingsSlug?.addEventListener("input", updateSettingsHostingChoice);
+document.querySelectorAll('.settings-form input[name="hosting_mode"]').forEach(
+  (mode) => mode.addEventListener("change", updateSettingsHostingChoice),
+);
+updateSettingsHostingChoice();
 
 document.querySelectorAll("[data-filter-input]").forEach((input) => {
   input.addEventListener("input", () => {

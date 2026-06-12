@@ -21,7 +21,7 @@ from .db import get_db
 from .domains import (
     available_domains,
     blocked_domain_names,
-    dashboard_hostname,
+    domain_is_dashboard,
     default_domain,
     domain_is_blocked,
     site_domain,
@@ -438,7 +438,11 @@ def deploy_repository(repository_id):
         return redirect(
             url_for("deployments.select_folder", repository_id=repository_id)
         )
-    use_domain_root = request.form.get("use_domain_root") == "on"
+    hosting_mode = request.form.get("hosting_mode", "")
+    use_domain_root = (
+        hosting_mode == "root"
+        or request.form.get("use_domain_root") == "on"
+    )
     deployments = []
     selected_indexes = list(
         dict.fromkeys(
@@ -457,7 +461,7 @@ def deploy_repository(repository_id):
     if (
         use_domain_root
         and domain
-        and domain["name"] == dashboard_hostname()
+        and domain_is_dashboard(database, domain["name"])
     ):
         flash(
             "The WebManager dashboard hostname cannot also host a site.",
@@ -524,6 +528,10 @@ def deploy_repository(repository_id):
             hostname = domain["name"] if use_domain_root else (
                 f"{slug}.{domain['name']}" if domain else None
             )
+            if hostname and domain_is_dashboard(database, hostname):
+                raise ValueError(
+                    "The generated hostname is reserved for the WebManager dashboard."
+                )
             config = build_site_config(
                 item["name"],
                 selected,
@@ -653,7 +661,11 @@ def site_settings(site_id):
         slug = slugify(request.form.get("slug", "").strip() or name)
         folder = request.form.get("folder", "")
         spa_fallback = request.form.get("spa_fallback") == "on"
-        use_domain_root = request.form.get("use_domain_root") == "on"
+        hosting_mode = request.form.get("hosting_mode", "")
+        use_domain_root = (
+            hosting_mode == "root"
+            or request.form.get("use_domain_root") == "on"
+        )
         domain = None
         if "domain_id" in request.form:
             raw_domain_id = request.form.get("domain_id", "").strip()
@@ -713,7 +725,7 @@ def site_settings(site_id):
         elif (
             use_domain_root
             and domain
-            and domain["name"] == dashboard_hostname()
+            and domain_is_dashboard(database, domain["name"])
         ):
             flash(
                 "The WebManager dashboard hostname cannot also host a site.",
@@ -742,6 +754,10 @@ def site_settings(site_id):
                 hostname = domain["name"] if use_domain_root else (
                     f"{slug}.{domain['name']}" if domain else None
                 )
+                if hostname and domain_is_dashboard(database, hostname):
+                    raise GitError(
+                        "The generated hostname is reserved for the WebManager dashboard."
+                    )
                 if (
                     current_domain_blocked
                     and domain

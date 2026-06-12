@@ -71,6 +71,21 @@ CREATE TABLE IF NOT EXISTS blocked_domains (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dashboard_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS dashboard_domains_one_primary_uq
+ON dashboard_domains(is_primary) WHERE is_primary = 1;
+
 CREATE TABLE IF NOT EXISTS repositories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -178,6 +193,7 @@ def init_db():
     _migrate_users(database)
     _migrate_repositories(database)
     _migrate_domains(database)
+    _migrate_dashboard_domains(database)
     _migrate_sites(database)
     _seed_permissions(database)
     _ensure_initial_admin(database)
@@ -307,6 +323,12 @@ def _migrate_sites(database):
 
 
 def _migrate_domains(database):
+    initialized = database.execute(
+        "SELECT value FROM app_settings WHERE key = 'domain_defaults_initialized'"
+    ).fetchone()
+    if initialized is not None:
+        return
+
     configured = current_app.config.get("SITE_BASE_DOMAIN", "")
     has_domains = database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
     if configured and has_domains is None:
@@ -341,6 +363,27 @@ def _migrate_domains(database):
                 "UPDATE domains SET is_default = 1 WHERE id = ?",
                 (first["id"],),
             )
+    database.execute(
+        """
+        INSERT OR REPLACE INTO app_settings (key, value)
+        VALUES ('domain_defaults_initialized', '1')
+        """
+    )
+
+
+def _migrate_dashboard_domains(database):
+    if database.execute("SELECT 1 FROM dashboard_domains LIMIT 1").fetchone():
+        return
+    from urllib.parse import urlsplit
+
+    hostname = (
+        urlsplit(current_app.config.get("GOOGLE_REDIRECT_URI", "")).hostname or ""
+    ).lower()
+    if hostname:
+        database.execute(
+            "INSERT INTO dashboard_domains (name, is_primary) VALUES (?, 1)",
+            (hostname,),
+        )
 
 
 def _ensure_initial_admin(database):

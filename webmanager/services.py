@@ -67,6 +67,16 @@ class RuntimeManager:
                 except RuntimeErrorDetail:
                     continue
 
+    def restore_gateway(self):
+        with self.app.app_context():
+            try:
+                self.apply_nginx_configs()
+            except RuntimeErrorDetail as exc:
+                self.app.logger.error(
+                    "Could not restore the managed Nginx gateway: %s",
+                    exc,
+                )
+
     def migrate_site_configs(self):
         gateway_port = self.app.config["SITE_GATEWAY_PORT"]
         with self.app.app_context():
@@ -261,6 +271,10 @@ class RuntimeManager:
     def sync_nginx_configs(self):
         self._write_all_nginx_configs(get_db())
 
+    def apply_nginx_configs(self):
+        self._write_all_nginx_configs(get_db())
+        self._reload_nginx()
+
     def _set_site_state(self, database, site_id, status, backend, pid, error):
         database.execute(
             """
@@ -360,8 +374,23 @@ class RuntimeManager:
                     root,
                     config_dir,
                     self.app.config["SITE_GATEWAY_PORT"]
-                    if database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
+                    if (
+                        database.execute("SELECT 1 FROM domains LIMIT 1").fetchone()
+                        or database.execute(
+                            "SELECT 1 FROM dashboard_domains LIMIT 1"
+                        ).fetchone()
+                    )
                     else None,
+                    tuple(
+                        row["name"]
+                        for row in database.execute(
+                            """
+                            SELECT name FROM dashboard_domains
+                            ORDER BY is_primary DESC, name COLLATE NOCASE
+                            """
+                        ).fetchall()
+                    ),
+                    self.app.config["PORT"],
                 ),
                 encoding="utf-8",
             )

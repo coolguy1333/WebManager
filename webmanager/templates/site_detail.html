@@ -49,11 +49,12 @@
   <div class="program-update-copy">
     {% if routing.use_domain_root %}
     <strong>Cloudflare Tunnel must include this exact root hostname.</strong>
-    <small>Add public hostname <code>{{ routing.hostname }}</code> with service <code>{{ routing.origin }}</code>. A wildcard hostname does not cover the domain root.</small>
+    <small>Add public hostname <code>{{ routing.hostname }}</code> with service <code>{{ routing.origin }}</code>. For a remote connector use <code>http://WEBMANAGER-LAN-IP:8080</code>. A wildcard hostname does not cover the domain root.</small>
     {% else %}
     <strong>Cloudflare Tunnel must include the wildcard hostname.</strong>
-    <small>An entry for the dashboard hostname alone does not route this site. Add public hostname <code>{{ routing.wildcard }}</code> with service <code>{{ routing.origin }}</code>, and ensure HTTPS covers the wildcard.</small>
+    <small>An entry for the dashboard hostname alone does not route this site. Add public hostname <code>{{ routing.wildcard }}</code> with service <code>{{ routing.origin }}</code>, or <code>http://WEBMANAGER-LAN-IP:8080</code> for a remote connector, and ensure HTTPS covers the wildcard.</small>
     {% endif %}
+    <small>Keep <code>:8080</code> in the service URL; omitting it sends traffic to port 80.</small>
     <small>Local routing test: <code>{{ routing.local_test }}</code></small>
   </div>
 </section>

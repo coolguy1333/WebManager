@@ -11,6 +11,58 @@
 
 {% include "admin/_nav.html" %}
 
+<section class="panel">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">WebManager interface</p>
+      <h2>Dashboard domains</h2>
+      <p>The primary domain is the preferred address. Aliases also open WebManager and use their own Google callback.</p>
+    </div>
+    <span class="count-badge">{{ dashboard_domains|length }} configured</span>
+  </div>
+
+  <form class="admin-record-editor" method="post" action="{{ url_for('admin.create_dashboard_domain') }}" data-loading>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <div class="admin-form-grid">
+      <label>
+        Dashboard domain
+        <input name="name" maxlength="253" placeholder="web.example.com" required>
+        <small>Add this exact hostname to Cloudflare Tunnel and Google OAuth.</small>
+      </label>
+      <label class="check-row domain-default-choice">
+        <input type="checkbox" name="is_primary">
+        <span><strong>Make primary</strong><small>Use this as the preferred WebManager address.</small></span>
+      </label>
+    </div>
+    <div class="admin-record-actions"><span></span><button class="button primary" type="submit" data-loading-text="Adding...">Add dashboard domain</button></div>
+  </form>
+
+  <div class="admin-record-list">
+    {% for domain in dashboard_domains %}
+    <div class="admin-record-editor">
+      <div>
+        <strong>{{ domain.name }}</strong>
+        {% if domain.is_primary %}<span class="pill ready">Primary</span>{% else %}<span class="pill">Alias</span>{% endif %}
+        <p><small>Cloudflare: <code>{{ domain.name }} -> http://localhost:8080</code></small></p>
+        <p><small>Google redirect URI: <code>https://{{ domain.name }}/auth/google/callback</code></small></p>
+      </div>
+      <div class="admin-record-actions">
+        {% if not domain.is_primary %}
+        <form method="post" action="{{ url_for('admin.set_primary_dashboard_domain', domain_id=domain.id) }}">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <button class="button primary small" type="submit">Make primary</button>
+        </form>
+        <form method="post" action="{{ url_for('admin.delete_dashboard_domain', domain_id=domain.id) }}" data-confirm="Remove this dashboard alias?">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <button class="button danger-text small" type="submit">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
 <section class="panel domain-blocklist-panel">
   <div>
     <p class="eyebrow">Restriction policy</p>
@@ -42,6 +94,12 @@
     <div><span>Local verification</span><code>curl -I -H 'Host: SITE.DOMAIN' http://127.0.0.1:8080/</code></div>
   </div>
 </section>
+
+{% if domains and not domains|selectattr("is_default")|list %}
+<div class="flash warning">
+  <span>No default deployment domain is set. Users must choose a domain when deploying a site.</span>
+</div>
+{% endif %}
 
 <details class="panel admin-create-panel">
   <summary>Add domain</summary>
@@ -79,14 +137,28 @@
         {% if domain.is_blocked %}
         <div class="flash warning"><span>This domain is blocked for new deployments and assignments. Existing sites remain online until moved.</span></div>
         {% endif %}
-        <h3>Cloudflare setup</h3>
+        <h3>Host a site at the domain root</h3>
+        <p>This serves one site directly at <code>https://{{ domain.name }}</code>. A wildcard entry does not cover this address.</p>
         <ol>
-          <li>For root hosting, add published hostname <code>{{ domain.name }}</code> and send it to the WebManager origin.</li>
-          <li>In Zero Trust -> Networks -> Tunnels -> your tunnel, add published hostname <code>*.{{ domain.name }}</code>.</li>
-          <li>Set its service to <code>http://localhost:8080</code>, or the WebManager server LAN address when the connector is on another machine.</li>
-          <li>In DNS, confirm proxied Tunnel/CNAME records for the zone apex and wildcard <code>*</code> exist.</li>
-          <li>Test with <code>nslookup test.{{ domain.name }} 1.1.1.1</code>.</li>
+          <li>Open Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> Public Hostnames.</li>
+          <li>Add hostname <code>{{ domain.name }}</code> with no subdomain or path.</li>
+          <li>Set Service type to <code>HTTP</code> and URL to <code>localhost:8080</code>. If cloudflared runs elsewhere, use <code>WEBMANAGER-LAN-IP:8080</code>.</li>
+          <li>Save it and confirm Cloudflare creates a proxied DNS route for the zone apex.</li>
+          <li>In WebManager, choose <strong>Domain root</strong> while deploying exactly one site folder.</li>
+          <li>Test locally with <code>curl -I -H 'Host: {{ domain.name }}' http://127.0.0.1:8080/</code>.</li>
         </ol>
+        <div class="flash warning"><span>HTTPS must cover <code>{{ domain.name }}</code>. Cloudflare normally includes the zone apex when the domain is active and proxied.</span></div>
+
+        <h3>Host sites on subdomains</h3>
+        <p>This serves addresses such as <code>project.{{ domain.name }}</code> and supports multiple sites.</p>
+        <ol>
+          <li>Add a second Tunnel public hostname <code>*.{{ domain.name }}</code>.</li>
+          <li>Use the same service, <code>http://localhost:8080</code>, or <code>http://WEBMANAGER-LAN-IP:8080</code> for a remote connector.</li>
+          <li>Confirm the proxied wildcard DNS record exists.</li>
+          <li>Test DNS with <code>nslookup test.{{ domain.name }} 1.1.1.1</code>.</li>
+          <li>Test routing with <code>curl -I -H 'Host: test.{{ domain.name }}' http://127.0.0.1:8080/</code>.</li>
+        </ol>
+        <div class="flash warning"><span>Always include <code>:8080</code>. A target such as <code>http://192.168.10.20</code> uses port 80 and may reach Debian's default Nginx site instead of WebManager.</span></div>
       </section>
       <div class="admin-record-actions">
         <form method="post" action="{{ url_for('admin.delete_domain', domain_id=domain.id) }}" data-confirm="Remove this domain from WebManager?">
@@ -97,6 +169,11 @@
         <form method="post" action="{{ url_for('admin.set_default_domain', domain_id=domain.id) }}">
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
           <button class="button primary small" type="submit">Make default</button>
+        </form>
+        {% elif domain.is_default %}
+        <form method="post" action="{{ url_for('admin.reset_default_domain') }}" data-confirm="Clear the default deployment domain? Existing sites will not change.">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <button class="button ghost small" type="submit">Reset default</button>
         </form>
         {% endif %}
       </div>

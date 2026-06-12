@@ -136,6 +136,7 @@ def create_app(test_config=None):
     app.extensions["repository_refresh_manager"] = refresh_manager
     if not app.config.get("TESTING"):
         runtime.restore_sites()
+        runtime.restore_gateway()
         if app.config["AUTO_REFRESH_ENABLED"]:
             refresh_manager.start()
 

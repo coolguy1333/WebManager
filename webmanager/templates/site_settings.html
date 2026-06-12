@@ -21,12 +21,12 @@
       <input name="slug" maxlength="48" value="{{ site.slug }}" required>
       <small>Used in the public hostname and Nginx filename.</small>
     </label>
-    <label>
+    <label data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
       Public domain
-      <select name="domain_id">
+      <select name="domain_id" data-hosting-domain>
         <option value="">Direct port only</option>
         {% for domain in site_domains %}
-        <option value="{{ domain.id }}" {% if domain.id == site.domain_id %}selected{% endif %}>{{ domain.name }}{% if domain.is_default %} (default){% endif %}{% if domain.id == site.domain_id and current_domain_blocked %} (blocked; move recommended){% endif %}</option>
+        <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id or domain.root_site_id == site.id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}" {% if domain.id == site.domain_id %}selected{% endif %}>{{ domain.name }}{% if domain.is_default %} (default){% endif %}{% if domain.id == site.domain_id and current_domain_blocked %} (blocked; move recommended){% endif %}</option>
         {% endfor %}
       </select>
       {% if site.domain_name %}<small>{{ site_public_scheme }}://{% if not site.use_domain_root %}{{ site.slug }}.{% endif %}{{ site.domain_name }}</small>{% endif %}
@@ -46,10 +46,22 @@
       <input type="number" name="port" min="{{ port_min }}" max="{{ port_max }}" value="{{ site.port }}" required>
     </label>
   </div>
-  <label class="check-row">
-    <input type="checkbox" name="use_domain_root" {% if site.use_domain_root %}checked{% endif %}>
-    <span><strong>Host at domain root</strong><small>Use the selected domain itself instead of a subdomain. Only one site can use each domain root.</small></span>
-  </label>
+  <fieldset class="hosting-mode-picker" data-settings-hosting-picker>
+    <legend>Public address style</legend>
+    <label class="hosting-mode-option">
+      <input type="radio" name="hosting_mode" value="subdomain" {% if not site.use_domain_root %}checked{% endif %}>
+      <span><strong>Site subdomain</strong><small>Use the URL slug before the selected domain.</small></span>
+    </label>
+    <label class="hosting-mode-option">
+      <input type="radio" name="hosting_mode" value="root" {% if site.use_domain_root %}checked{% endif %}>
+      <span><strong>Domain root</strong><small>Serve this site directly at the selected domain.</small></span>
+    </label>
+  </fieldset>
+  <div class="hosting-preview" data-settings-hosting-preview data-public-scheme="{{ site_public_scheme }}">
+    <strong>Resulting public address</strong>
+    <code data-settings-hosting-url></code>
+    <small data-settings-hosting-help></small>
+  </div>
   <label class="check-row">
     <input type="checkbox" name="spa_fallback" {% if site.spa_fallback %}checked{% endif %}>
     <span><strong>Single-page app fallback</strong><small>Serve the index page for routes that do not match a file.</small></span>

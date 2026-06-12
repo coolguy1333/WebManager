@@ -1,7 +1,7 @@
 import re
 import secrets
 import sqlite3
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import click
 from authlib.integrations.base_client.errors import OAuthError
@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 
 from .access_control import has_permission
 from .db import get_db
+from .domains import dashboard_hostnames
 from .security import csrf_token, validate_csrf
 
 
@@ -221,10 +222,19 @@ def google_login():
     session["post_login_next"] = _safe_next(request.args.get("next"))
     nonce = secrets.token_urlsafe(32)
     session["google_oidc_nonce"] = nonce
-    redirect_uri = current_app.config["GOOGLE_REDIRECT_URI"] or url_for(
-        "auth.google_callback",
-        _external=True,
-    )
+    configured_redirect = current_app.config["GOOGLE_REDIRECT_URI"]
+    request_host = (request.host.split(":", 1)[0] or "").lower().rstrip(".")
+    if request_host in dashboard_hostnames(get_db()):
+        configured = urlsplit(configured_redirect)
+        scheme = configured.scheme or request.scheme
+        redirect_uri = urlunsplit(
+            (scheme, request_host, url_for("auth.google_callback"), "", "")
+        )
+    else:
+        redirect_uri = configured_redirect or url_for(
+            "auth.google_callback",
+            _external=True,
+        )
     return oauth.google.authorize_redirect(redirect_uri, nonce=nonce, prompt="select_account")
 
 

@@ -225,6 +225,20 @@ server must have the exact `server_name web.mhsit.club`. Setup derives that
 name from the Google callback URL so the exact dashboard route takes priority
 over the wildcard site route.
 
+Super admins can add more interface hostnames under **Admin > Domains >
+Dashboard domains**. One is Primary and the others are aliases. For each
+hostname, add an exact Cloudflare Tunnel route to
+`http://localhost:8080` and add this URI to the existing Google OAuth web
+client:
+
+```text
+https://HOSTNAME/auth/google/callback
+```
+
+Google sign-in returns to the same approved dashboard hostname that initiated
+the login. Dashboard hostnames are reserved and cannot also host deployed
+sites.
+
 The internal site ports should not be opened in UFW or a cloud firewall.
 
 Before installation, check for port conflicts:
@@ -393,6 +407,11 @@ A site can also be assigned to the domain root, such as `https://mhsit.club`,
 instead of `https://site.mhsit.club`. Only one site can claim each domain root,
 and the WebManager dashboard hostname cannot be assigned to a site.
 
+The deployment screen presents **Site subdomain** and **Domain root** as
+separate address choices and previews the resulting URL. Root mode
+automatically limits the deployment to one selected folder and reports when
+another site already owns that domain root.
+
 Interactive `setup.sh` requires the first deployment domain and creates it as
 the default. Reinstalling or updating preserves that domain. Setup never
 guesses the deployment domain from the dashboard hostname.
@@ -407,13 +426,18 @@ can move them without an unexpected outage.
 For every added domain, the Domains page displays the required Cloudflare
 configuration:
 
-1. Add Cloudflare Tunnel published application hostnames for `example.com`
-   when root hosting is needed and `*.example.com` for site subdomains.
-2. Send it to `http://localhost:8080`, or to
+1. For root hosting, add the exact published hostname `example.com` with no
+   subdomain or path.
+2. For site subdomains, separately add `*.example.com`.
+3. Send both entries to `http://localhost:8080`, or to
    `http://WEBMANAGER-LAN-IP:8080` when `cloudflared` runs elsewhere.
-3. Confirm Cloudflare DNS has proxied Tunnel/CNAME records for the zone apex
+   Keep `:8080` on both routes. Omitting it uses port 80, where Debian's
+   default Nginx site may intercept the request.
+4. Confirm Cloudflare DNS has proxied Tunnel/CNAME records for the zone apex
    and wildcard `*`.
-4. Verify with `nslookup test.example.com 1.1.1.1`.
+5. Verify root routing with
+   `curl -I -H 'Host: example.com' http://127.0.0.1:8080/`.
+6. Verify subdomain DNS with `nslookup test.example.com 1.1.1.1`.
 
 System Nginx accepts candidate hostnames on port `8080`, but the internal
 loopback gateway serves only exact site hostnames stored by WebManager.
@@ -1350,8 +1374,11 @@ Running `bash setup.sh` over an existing installation also reuses a healthy
 virtual environment when requirements are unchanged. The database, repository
 clones, site logs, and Google configuration remain under `/var/lib/webmanager`
 and `/etc/webmanager` and are not replaced. If the installed virtual
-environment is missing or unhealthy, setup rebuilds only
-`/opt/webmanager/.venv`.
+environment is missing or unhealthy, setup builds and validates a replacement
+beside it, then atomically swaps only `/opt/webmanager/.venv`. A failed package
+installation leaves the active environment untouched. The previous environment
+is retained until the restarted service passes `/healthz` and is restored
+automatically if any later installation step fails.
 
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.

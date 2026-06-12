@@ -11,10 +11,11 @@ from unittest.mock import patch
 
 from flask import redirect
 
-from webmanager import create_app
+from webmanager import create_app, db
 from webmanager.analytics import site_analytics
 from webmanager.auth import oauth
 from webmanager.db import get_db
+from webmanager.domains import default_domain
 from webmanager.git_service import (
     GitError,
     clone_repository,
@@ -228,6 +229,28 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(authorize.call_args.kwargs["prompt"], "select_account")
         self.assertTrue(authorize.call_args.kwargs["nonce"])
 
+    def test_google_login_uses_approved_dashboard_alias_callback(self):
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "INSERT INTO dashboard_domains (name) VALUES ('control.example')"
+            )
+            database.commit()
+        with patch.object(
+            self.google_oauth,
+            "authorize_redirect",
+            return_value=redirect("https://accounts.google.com/o/oauth2/v2/auth"),
+        ) as authorize:
+            response = self.client.get(
+                "/auth/google",
+                base_url="https://control.example",
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            authorize.call_args.args[0],
+            "https://control.example/auth/google/callback",
+        )
+
     def test_google_login_rejects_external_return_url(self):
         with patch.object(
             self.google_oauth,
@@ -438,6 +461,9 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn(b"Domain school-sites.example added", response.data)
         self.assertIn(b"*.school-sites.example", response.data)
         self.assertIn(b"http://localhost:8080", response.data)
+        self.assertIn(b"Host a site at the domain root", response.data)
+        self.assertIn(b"WEBMANAGER-LAN-IP:8080", response.data)
+        self.assertIn(b"Always include <code>:8080</code>", response.data)
 
         with self.app.app_context():
             domain_id = get_db().execute(
@@ -509,6 +535,138 @@ class WebManagerTestCase(unittest.TestCase):
             data={"_csrf_token": self.csrf(), "name": "blocked.example"},
         )
         self.assertEqual(response.status_code, 403)
+        response = self.client.post(
+            "/admin/domains/dashboard",
+            data={"_csrf_token": self.csrf(), "name": "control.example"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_super_admin_can_reset_default_domain_persistently(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+
+        page = self.client.get("/admin/domains")
+        self.assertIn(b"Reset default", page.data)
+
+        response = self.client.post(
+            "/admin/domains/default/reset",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Default deployment domain cleared", response.data)
+        self.assertIn(b"No default deployment domain is set", response.data)
+
+        with self.app.app_context():
+            database = get_db()
+            self.assertIsNone(
+                database.execute(
+                    "SELECT id FROM domains WHERE is_default = 1"
+                ).fetchone()
+            )
+            self.assertIsNone(default_domain(database))
+            db.init_db()
+            self.assertIsNone(
+                database.execute(
+                    "SELECT id FROM domains WHERE is_default = 1"
+                ).fetchone()
+            )
+
+        self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "another.example",
+            },
+        )
+        with self.app.app_context():
+            self.assertIsNone(
+                get_db().execute(
+                    "SELECT id FROM domains WHERE is_default = 1"
+                ).fetchone()
+            )
+
+    def test_non_admin_cannot_reset_default_domain(self):
+        user_id = self.add_user("member")
+        self.login_user(user_id)
+
+        response = self.client.post(
+            "/admin/domains/default/reset",
+            data={"_csrf_token": self.csrf()},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_super_admin_can_manage_multiple_dashboard_domains(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        runtime = self.app.extensions["runtime_manager"]
+
+        with patch.object(runtime, "apply_nginx_configs"):
+            response = self.client.post(
+                "/admin/domains/dashboard",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "name": "control.example",
+                },
+                follow_redirects=True,
+            )
+        self.assertIn(b"Dashboard domain control.example added", response.data)
+        self.assertIn(
+            b"https://control.example/auth/google/callback",
+            response.data,
+        )
+
+        with self.app.app_context():
+            database = get_db()
+            alias = database.execute(
+                "SELECT * FROM dashboard_domains WHERE name = 'control.example'"
+            ).fetchone()
+            original = database.execute(
+                "SELECT * FROM dashboard_domains WHERE name = 'webmanager.example'"
+            ).fetchone()
+        self.assertEqual(alias["is_primary"], 0)
+
+        with patch.object(runtime, "apply_nginx_configs"):
+            response = self.client.post(
+                f"/admin/domains/dashboard/{alias['id']}/primary",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+        self.assertIn(b"primary dashboard domain", response.data)
+
+        refused = self.client.post(
+            f"/admin/domains/dashboard/{alias['id']}/delete",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Make another dashboard domain primary", refused.data)
+
+        with patch.object(runtime, "apply_nginx_configs"):
+            self.client.post(
+                f"/admin/domains/dashboard/{original['id']}/primary",
+                data={"_csrf_token": self.csrf()},
+            )
+            deleted = self.client.post(
+                f"/admin/domains/dashboard/{alias['id']}/delete",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+        self.assertIn(b"Dashboard domain control.example removed", deleted.data)
+
+    def test_dashboard_domain_cannot_be_added_as_deployment_domain(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.post(
+            "/admin/domains",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "webmanager.example",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(
+            b"A dashboard domain cannot also be used for deployments",
+            response.data,
+        )
 
     def test_domain_blocklist_blocks_parent_and_subdomains(self):
         admin_id = self.add_user("admin", is_admin=True)
@@ -1162,6 +1320,14 @@ class WebManagerTestCase(unittest.TestCase):
             database.commit()
         self.login_user(user_id)
 
+        selection = self.client.get(
+            f"/repositories/{repository_id}/select"
+        )
+        self.assertIn(b"Choose public address style", selection.data)
+        self.assertIn(b"Site subdomain", selection.data)
+        self.assertIn(b"Domain root", selection.data)
+        self.assertIn(b'data-root-available="true"', selection.data)
+
         with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
             response = self.client.post(
                 f"/repositories/{repository_id}/deploy",
@@ -1173,7 +1339,7 @@ class WebManagerTestCase(unittest.TestCase):
                     "site_name_0": "Main site",
                     "spa_fallback_0": "on",
                     "domain_id": str(domain_id),
-                    "use_domain_root": "on",
+                    "hosting_mode": "root",
                 },
                 follow_redirects=True,
             )
@@ -1192,6 +1358,7 @@ class WebManagerTestCase(unittest.TestCase):
             response.data,
         )
         self.assertIn(b"wildcard hostname does not cover the domain root", response.data)
+        self.assertIn(b"Keep <code>:8080</code>", response.data)
 
         dashboard = self.client.get("/")
         self.assertIn(b">mhsit.club<", dashboard.data)
@@ -1307,6 +1474,43 @@ class WebManagerTestCase(unittest.TestCase):
                 ],
                 0,
             )
+
+    def test_dashboard_alias_cannot_be_used_as_site_subdomain(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "dashboard-alias-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("dashboard", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                """
+                INSERT INTO dashboard_domains (name)
+                VALUES ('reserved.webmanager.example')
+                """
+            )
+            database.commit()
+            domain_id = database.execute(
+                "SELECT id FROM domains WHERE name = 'webmanager.example'"
+            ).fetchone()["id"]
+        self.login_user(user_id)
+
+        response = self.client.post(
+            f"/repositories/{repository_id}/deploy",
+            data={
+                "_csrf_token": self.csrf(),
+                "multi_deploy": "1",
+                "selected": "0",
+                "folder_0": "dashboard-alias-repo",
+                "site_name_0": "Reserved",
+                "domain_id": str(domain_id),
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(
+            b"The generated hostname is reserved for the WebManager dashboard",
+            response.data,
+        )
 
     def test_site_settings_can_change_folder_slug_port_and_fallback(self):
         user_id = self.add_user("alice")
@@ -2095,10 +2299,37 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn(
-            "Rebuilding the installed Python environment because it is missing or unhealthy.",
+            "Building a replacement Python environment before changing the active one.",
             installer,
         )
+        self.assertIn('mktemp -d "$APP_DIR/.venv.build.XXXXXX"', installer)
+        self.assertIn('mv "$APP_DIR/.venv" "$OLD_VENV"', installer)
+        self.assertIn('mv "$NEW_VENV" "$APP_DIR/.venv"', installer)
+        self.assertIn("The replacement Python environment failed validation.", installer)
         self.assertIn("The installed Python environment failed validation.", installer)
+        self.assertIn(
+            "Restored the previous Python environment after installation failure.",
+            installer,
+        )
+        self.assertIn("set +e", installer)
+        self.assertIn(
+            "if [[ $SELF_UPDATE -eq 0 && $restored -eq 1 ]]; then",
+            installer,
+        )
+        self.assertIn("VENV_SWAPPED=1", installer)
+        self.assertIn("INSTALL_SUCCEEDED=1", installer)
+        self.assertGreater(
+            installer.index('printf \'%s\\n\' "$SOURCE_COMMIT"'),
+            installer.index("if [[ $READY -ne 1 ]]"),
+        )
+        self.assertGreater(
+            installer.index('rm -rf "$OLD_VENV"'),
+            installer.index("if [[ $READY -ne 1 ]]"),
+        )
+        self.assertLess(
+            installer.index("INSTALL_SUCCEEDED=1"),
+            installer.index('rm -rf "$OLD_VENV"'),
+        )
         self.assertIn("rollback()", updater)
         self.assertIn("wait_for_webmanager()", updater)
         self.assertIn("systemctl reset-failed webmanager", updater)
@@ -2131,9 +2362,11 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
-        self.assertIn("managed gateway and receive its default 404", installer)
+        self.assertIn("site gateway the explicit", installer)
         self.assertIn("server_name $DASHBOARD_HOST", installer)
-        self.assertIn("listen 8080", installer)
+        self.assertIn("listen 8080 default_server;", installer)
+        self.assertIn("listen [::]:8080 default_server;", installer)
+        self.assertIn(r"proxy_set_header Host \$host;", installer)
         self.assertIn("webmanager-uninstall", installer)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"',
@@ -2400,6 +2633,26 @@ class ServiceUnitTests(unittest.TestCase):
 
             main_config = build_main_config(root, root / "conf.d")
             self.assertIn(f'{root.as_posix()}/temp/client_body', main_config)
+
+            gateway_config = build_main_config(
+                root,
+                root / "conf.d",
+                8090,
+                ("web.example", "control.example"),
+                5000,
+            )
+            self.assertIn(
+                "server_name web.example control.example;",
+                gateway_config,
+            )
+            self.assertIn(
+                "proxy_pass http://127.0.0.1:5000;",
+                gateway_config,
+            )
+            self.assertIn(
+                "listen 127.0.0.1:8090 default_server;",
+                gateway_config,
+            )
 
 
 if __name__ == "__main__":

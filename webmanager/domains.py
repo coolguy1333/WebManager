@@ -38,8 +38,14 @@ def available_domains(database):
         row
         for row in database.execute(
             """
-            SELECT * FROM domains
-            ORDER BY is_default DESC, name COLLATE NOCASE
+            SELECT domains.*,
+                   root_site.id AS root_site_id,
+                   root_site.name AS root_site_name
+            FROM domains
+            LEFT JOIN sites AS root_site
+              ON root_site.domain_id = domains.id
+             AND root_site.use_domain_root = 1
+            ORDER BY domains.is_default DESC, domains.name COLLATE NOCASE
             """
         ).fetchall()
         if not domain_is_blocked(row["name"], blocked)
@@ -47,13 +53,37 @@ def available_domains(database):
 
 
 def dashboard_hostname() -> str:
+    from .db import get_db
+
+    database = get_db()
+    primary = database.execute(
+        "SELECT name FROM dashboard_domains WHERE is_primary = 1"
+    ).fetchone()
+    if primary:
+        return primary["name"]
     redirect_uri = current_app.config.get("GOOGLE_REDIRECT_URI", "")
     return (urlsplit(redirect_uri).hostname or "").lower()
 
 
+def dashboard_hostnames(database) -> set[str]:
+    return {
+        row["name"]
+        for row in database.execute("SELECT name FROM dashboard_domains").fetchall()
+    }
+
+
+def domain_is_dashboard(database, domain: str) -> bool:
+    return domain.lower().rstrip(".") in dashboard_hostnames(database)
+
+
 def default_domain(database):
-    domains = available_domains(database)
-    return domains[0] if domains else None
+    blocked = blocked_domain_names(database)
+    domain = database.execute(
+        "SELECT * FROM domains WHERE is_default = 1"
+    ).fetchone()
+    if domain and not domain_is_blocked(domain["name"], blocked):
+        return domain
+    return None
 
 
 def site_domain(database, site):

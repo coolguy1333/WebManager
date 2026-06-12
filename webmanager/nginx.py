@@ -89,11 +89,32 @@ def build_main_config(
     prefix: Path,
     config_directory: Path,
     gateway_port: int | None = None,
+    dashboard_hostnames: tuple[str, ...] = (),
+    app_port: int | None = None,
 ) -> str:
     prefix_path = nginx_path(prefix)
     config_path = nginx_path(config_directory / "*.conf")
     gateway_default = ""
     if gateway_port:
+        dashboard_proxy = ""
+        if dashboard_hostnames and app_port:
+            server_names = " ".join(dashboard_hostnames)
+            dashboard_proxy = f"""
+    server {{
+        listen 127.0.0.1:{gateway_port};
+        listen [::1]:{gateway_port};
+        server_name {server_names};
+
+        location / {{
+            proxy_pass http://127.0.0.1:{app_port};
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        }}
+    }}
+"""
         gateway_default = f"""
     server {{
         listen 127.0.0.1:{gateway_port} default_server;
@@ -101,6 +122,7 @@ def build_main_config(
         server_name _;
         return 404;
     }}
+{dashboard_proxy}
 """
     return f"""worker_processes auto;
 pid "{prefix_path}/nginx.pid";

@@ -94,6 +94,38 @@ if [[ "$SOURCE_DIR" == "$APP_DIR" ]]; then
     exit 1
 fi
 
+NEW_VENV=
+OLD_VENV=
+VENV_SWAPPED=0
+INSTALL_SUCCEEDED=0
+cleanup_install() {
+    local exit_code=$?
+    local restored=0
+    trap - EXIT
+    set +e
+    if [[ -n $NEW_VENV && -e $NEW_VENV ]]; then
+        rm -rf "$NEW_VENV"
+    fi
+    if [[ $INSTALL_SUCCEEDED -ne 1 && $VENV_SWAPPED -eq 1 ]]; then
+        systemctl stop webmanager 2>/dev/null || true
+        if rm -rf "$APP_DIR/.venv" \
+            && [[ ! -e "$APP_DIR/.venv" ]] \
+            && [[ -n $OLD_VENV && -e $OLD_VENV ]] \
+            && mv "$OLD_VENV" "$APP_DIR/.venv"; then
+            restored=1
+            echo "Restored the previous Python environment after installation failure." >&2
+        elif [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
+            echo "Could not restore the previous Python environment automatically." >&2
+        fi
+        if [[ $SELF_UPDATE -eq 0 && $restored -eq 1 ]]; then
+            systemctl reset-failed webmanager 2>/dev/null || true
+            systemctl restart webmanager 2>/dev/null || true
+        fi
+    fi
+    exit "$exit_code"
+}
+trap cleanup_install EXIT
+
 if [[ $SELF_UPDATE -eq 0 ]]; then
     echo "[1/8] Installing Debian packages"
     export DEBIAN_FRONTEND=noninteractive
@@ -147,12 +179,6 @@ if git -C "$SOURCE_DIR" diff --quiet 2>/dev/null \
     && [[ -z $(git -C "$SOURCE_DIR" status --porcelain 2>/dev/null) ]]; then
     SOURCE_COMMIT=$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || true)
 fi
-if [[ -n $SOURCE_COMMIT ]]; then
-    printf '%s\n' "$SOURCE_COMMIT" >"$APP_DIR/.installed-commit"
-    chmod 0644 "$APP_DIR/.installed-commit"
-else
-    rm -f "$APP_DIR/.installed-commit"
-fi
 find "$APP_DIR/webmanager" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$APP_DIR/webmanager" -type f -name '*.pyc' -delete
 find "$APP_DIR/webmanager" -type d -exec chmod 0755 {} +
@@ -163,21 +189,37 @@ echo "[4/8] Preparing the Python virtual environment"
 if [[ $REUSE_VENV -eq 1 ]]; then
     echo "Reusing the installed Python environment because requirements are unchanged."
 else
-    if [[ -e "$APP_DIR/.venv" ]]; then
-        echo "Rebuilding the installed Python environment because it is missing or unhealthy."
-        rm -rf "$APP_DIR/.venv"
-    fi
-    python3 -m venv "$APP_DIR/.venv"
-    "$APP_DIR/.venv/bin/python" -m pip install \
+    echo "Building a replacement Python environment before changing the active one."
+    NEW_VENV=$(mktemp -d "$APP_DIR/.venv.build.XXXXXX")
+    python3 -m venv "$NEW_VENV"
+    "$NEW_VENV/bin/python" -m pip install \
         --disable-pip-version-check \
         --retries 5 \
         --timeout 30 \
         --upgrade pip
-    "$APP_DIR/.venv/bin/python" -m pip install \
+    "$NEW_VENV/bin/python" -m pip install \
         --disable-pip-version-check \
         --retries 5 \
         --timeout 30 \
         -r "$APP_DIR/requirements.txt"
+    if ! "$NEW_VENV/bin/python" -c \
+        "import authlib, flask, requests, waitress" 2>/dev/null; then
+        echo "The replacement Python environment failed validation." >&2
+        exit 1
+    fi
+
+    if [[ -e "$APP_DIR/.venv" ]]; then
+        OLD_VENV="$APP_DIR/.venv.previous.$$"
+        mv "$APP_DIR/.venv" "$OLD_VENV"
+    fi
+    if ! mv "$NEW_VENV" "$APP_DIR/.venv"; then
+        if [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
+            mv "$OLD_VENV" "$APP_DIR/.venv"
+        fi
+        exit 1
+    fi
+    NEW_VENV=
+    VENV_SWAPPED=1
 fi
 if [[ ! -x "$APP_DIR/.venv/bin/python" ]] \
     || ! "$APP_DIR/.venv/bin/python" -c \
@@ -359,10 +401,10 @@ map \$http_x_forwarded_proto \$webmanager_site_proto {
 server {
     listen 80;
     listen [::]:80;
-    listen 8080;
-    listen [::]:8080;
-    # The exact dashboard server_name takes priority. Unknown hosts reach the
-    # managed gateway and receive its default 404 response.
+    listen 8080 default_server;
+    listen [::]:8080 default_server;
+    # Cloudflare Tunnel reaches port 8080. Make the site gateway the explicit
+    # fallback there; the exact dashboard server_name still takes priority.
     server_name _;
 
     location / {
@@ -455,6 +497,20 @@ if [[ $READY -ne 1 ]] || ! systemctl is-active --quiet webmanager; then
     echo "WebManager failed to start. Recent logs:" >&2
     journalctl -u webmanager -n 60 --no-pager >&2
     exit 1
+fi
+
+if [[ -n $SOURCE_COMMIT ]]; then
+    printf '%s\n' "$SOURCE_COMMIT" >"$APP_DIR/.installed-commit"
+    chmod 0644 "$APP_DIR/.installed-commit"
+else
+    rm -f "$APP_DIR/.installed-commit"
+fi
+
+INSTALL_SUCCEEDED=1
+trap - EXIT
+if [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
+    rm -rf "$OLD_VENV" \
+        || echo "Warning: could not remove the previous Python environment." >&2
 fi
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
