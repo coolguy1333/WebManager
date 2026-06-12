@@ -1341,6 +1341,11 @@ update. Failures are reported separately for environment creation, dependency
 installation, and application tests, with the final test output shown in the
 admin update status.
 
+If installation fails after WebManager is stopped, rollback restores the
+application, configuration, and persistent data, restarts the service, and
+waits for `/healthz` before completing. A failed recovery is recorded in the
+update status and updater journal.
+
 Running `bash setup.sh` over an existing installation also reuses a healthy
 virtual environment when requirements are unchanged. The database, repository
 clones, site logs, and Google configuration remain under `/var/lib/webmanager`

@@ -14,6 +14,7 @@ SERVICE_FILE=/etc/systemd/system/webmanager.service
 ENV_FILE=/etc/webmanager/updater.env
 NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager
 SITE_NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager-sites
+APP_ENV_FILE=/etc/webmanager/webmanager.env
 
 if [[ $EUID -ne 0 ]]; then
     echo "Run the WebManager updater as root or through systemd." >&2
@@ -60,6 +61,36 @@ os.chmod(path, 0o640)
 PY
     chown root:webmanager "$temporary"
     mv -f "$temporary" "$STATUS_FILE"
+}
+
+wait_for_webmanager() {
+    local app_host app_port health_host
+    app_host=$(sed -n 's/^WEBMANAGER_HOST=//p' "$APP_ENV_FILE" | tail -n 1)
+    app_port=$(sed -n 's/^WEBMANAGER_PORT=//p' "$APP_ENV_FILE" | tail -n 1)
+    app_host=${app_host:-127.0.0.1}
+    app_port=${app_port:-5000}
+    case "$app_host" in
+        0.0.0.0 | "::")
+            health_host=127.0.0.1
+            ;;
+        *:*)
+            health_host="[$app_host]"
+            ;;
+        *)
+            health_host=$app_host
+            ;;
+    esac
+
+    for _ in {1..30}; do
+        if systemctl is-active --quiet webmanager \
+            && "$APP_DIR/.venv/bin/python" -c \
+                "import urllib.request; urllib.request.urlopen('http://${health_host}:${app_port}/healthz', timeout=2).read()" \
+                >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 INSTALLED_COMMIT=
@@ -329,7 +360,13 @@ rollback() {
     if command -v nginx >/dev/null 2>&1 && nginx -t; then
         systemctl reload nginx 2>/dev/null || true
     fi
-    systemctl restart webmanager
+    systemctl reset-failed webmanager 2>/dev/null || true
+    systemctl restart webmanager 2>/dev/null || true
+    if ! wait_for_webmanager; then
+        echo "Rollback restored the files, but WebManager did not become healthy." >&2
+        journalctl -u webmanager -n 80 --no-pager >&2 || true
+        message="$message WebManager did not restart successfully; inspect journalctl -u webmanager."
+    fi
     rm -f "$REQUEST_FILE"
     write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message"
     exit "$exit_code"

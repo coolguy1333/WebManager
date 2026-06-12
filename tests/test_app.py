@@ -2031,6 +2031,12 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn("rollback()", updater)
+        self.assertIn("wait_for_webmanager()", updater)
+        self.assertIn("systemctl reset-failed webmanager", updater)
+        self.assertIn(
+            "Rollback restored the files, but WebManager did not become healthy.",
+            updater,
+        )
         self.assertIn("flock -n", updater)
         self.assertIn("APPROVED_COMMIT", updater)
         self.assertIn("webmanager-data.tar.gz", updater)
