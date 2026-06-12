@@ -2,9 +2,9 @@
 {% block content %}
 <section class="admin-hero">
   <div>
-    <p class="eyebrow">Administration</p>
-    <h1>Admin console</h1>
-    <p>Manage one part of WebManager at a time.</p>
+    <p class="eyebrow">Control center</p>
+    <h1>Administration</h1>
+    <p>Manage accounts, access, domains, and system updates.</p>
   </div>
   <span class="head-meta">{{ counts.active_users }} active accounts</span>
 </section>
@@ -24,49 +24,49 @@
 {% if active_section == "overview" %}
 <section class="admin-overview-grid">
   {% if can_manage_users %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='users') }}">
-    <span class="admin-workspace-icon">U</span>
-    <div><strong>People</strong><small>Activate accounts and assign groups.</small></div>
+  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='people') }}">
+    <span class="admin-workspace-icon">P</span>
+    <div><strong>People</strong><small>Activate accounts and assign teams.</small></div>
     <span class="count-badge">{{ counts.users }}</span>
   </a>
   {% endif %}
   {% if can_manage_groups %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='groups') }}">
-    <span class="admin-workspace-icon">G</span>
-    <div><strong>Groups</strong><small>Bundle global permissions into roles.</small></div>
+  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='teams') }}">
+    <span class="admin-workspace-icon">T</span>
+    <div><strong>Teams</strong><small>Group people and choose a simple access profile.</small></div>
     <span class="count-badge">{{ counts.groups }}</span>
   </a>
   {% endif %}
   {% if can_manage_access %}
   <a class="panel admin-workspace-card" href="{{ url_for('admin.access_dashboard') }}">
     <span class="admin-workspace-icon">A</span>
-    <div><strong>Site access</strong><small>Organize sites into pools and grant access.</small></div>
+    <div><strong>Access</strong><small>Put sites in pools, then share them with teams or people.</small></div>
     <span class="count-badge">{{ counts.pools }} pools</span>
   </a>
   {% endif %}
   {% if super_admin %}
   <a class="panel admin-workspace-card" href="{{ url_for('admin.domains_dashboard') }}">
     <span class="admin-workspace-icon">D</span>
-    <div><strong>Domains</strong><small>Add deployment domains and view Cloudflare setup.</small></div>
+    <div><strong>Domains</strong><small>Manage dashboard and hosted-site domains.</small></div>
     <span class="count-badge">{{ counts.domains }}</span>
   </a>
   <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='updates') }}">
-    <span class="admin-workspace-icon">↑</span>
-    <div><strong>WebManager update</strong><small>Check, review, and approve program updates.</small></div>
+    <span class="admin-workspace-icon">U</span>
+    <div><strong>System</strong><small>Review the installed version and approve updates.</small></div>
     <span class="pill {{ 'ready' if update_status.state == 'current' else 'error' if update_status.state == 'error' else '' }}">{{ update_status.state }}</span>
   </a>
   {% endif %}
 </section>
 
 <section class="panel admin-help-card">
-  <strong>Access model</strong>
-  <p>Groups grant global permissions. Pools grant Viewer or Operator access to sets of sites. Direct site access is for exceptions. Super admins bypass all permission checks.</p>
+  <strong>How access works</strong>
+  <p>People join teams. Teams receive a platform profile or access to site pools. Use direct site grants only for one-off exceptions. Super admins always have full access.</p>
 </section>
 {% endif %}
 
-{% if active_section == "users" and can_manage_users %}
+{% if active_section == "people" and can_manage_users %}
 <section class="admin-workspace-head">
-  <div><h2>People</h2><p>Open an account only when you need to change it.</p></div>
+  <div><h2>People</h2><p>Activate accounts and add each person to the teams they belong to.</p></div>
   <input class="filter-input" type="search" placeholder="Find a person" data-filter-input="users" aria-label="Filter people">
 </section>
 <div class="admin-record-list">
@@ -99,7 +99,7 @@
         {% endif %}
       </div>
       <fieldset class="permission-fieldset">
-        <legend>Group membership</legend>
+        <legend>Teams</legend>
         <div class="admin-choice-grid">
           {% for group in groups %}
           <label class="compact-check">
@@ -107,7 +107,7 @@
             <span>{{ group.name }}</span>
           </label>
           {% else %}
-          <small>No groups exist yet.</small>
+          <small>No teams exist yet.</small>
           {% endfor %}
         </div>
       </fieldset>
@@ -121,22 +121,31 @@
 </div>
 {% endif %}
 
-{% if active_section == "groups" and can_manage_groups %}
+{% if active_section == "teams" and can_manage_groups %}
 <section class="admin-workspace-head">
-  <div><h2>Groups</h2><p>Create reusable permission sets, then assign them from People.</p></div>
-  <input class="filter-input" type="search" placeholder="Find a group" data-filter-input="groups" aria-label="Filter groups">
+  <div><h2>Teams</h2><p>Use teams for pool access. Add platform-wide powers only when necessary.</p></div>
+  <input class="filter-input" type="search" placeholder="Find a team" data-filter-input="groups" aria-label="Filter teams">
 </section>
 
 <details class="panel admin-create-panel">
-  <summary>Create group</summary>
+  <summary>Create team</summary>
   <form class="admin-record-editor" method="post" action="{{ url_for('admin.create_group') }}" data-loading>
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <div class="admin-form-grid">
-      <label>Group name<input name="name" maxlength="60" placeholder="Operations" required></label>
-      <label>Description<textarea name="description" maxlength="300" rows="2" placeholder="What this group can do"></textarea></label>
+      <label>Team name<input name="name" maxlength="60" placeholder="Web team" required></label>
+      <label>Description<textarea name="description" maxlength="300" rows="2" placeholder="Who belongs in this team"></textarea></label>
     </div>
-    <fieldset class="permission-fieldset">
-      <legend>Global permissions</legend>
+    <label>
+      Platform access
+      <select name="permission_profile" data-permission-profile>
+        {% for key, profile in permission_profiles.items() %}
+        <option value="{{ key }}" {% if key == "team" %}selected{% endif %}>{{ profile.name }} - {{ profile.description }}</option>
+        {% endfor %}
+        <option value="custom">Custom permissions</option>
+      </select>
+    </label>
+    <fieldset class="permission-fieldset" data-custom-permissions hidden>
+      <legend>Advanced custom permissions</legend>
       <div class="admin-permission-grid">
         {% for permission in permissions %}
         <label class="permission-option">
@@ -148,7 +157,7 @@
     </fieldset>
     <div class="admin-record-actions">
       <span></span>
-      <button class="button primary" type="submit" data-loading-text="Creating...">Create group</button>
+      <button class="button primary" type="submit" data-loading-text="Creating...">Create team</button>
     </div>
   </form>
 </details>
@@ -157,18 +166,30 @@
   {% for group in groups %}
   <details class="panel admin-record" data-filter-item="groups" data-filter-text="{{ group.name }} {{ group.description or '' }}">
     <summary>
-      <span class="admin-workspace-icon">G</span>
+      <span class="admin-workspace-icon">T</span>
       <span class="admin-record-title"><strong>{{ group.name }}</strong><small>{{ group.description or "No description" }}</small></span>
-      <span class="admin-record-tags"><span class="count-badge">{{ group.member_count }} members</span><span class="pill">{{ group_permissions[group.id]|length }} permissions</span></span>
+      <span class="admin-record-tags">
+        <span class="count-badge">{{ group.member_count }} people</span>
+        <span class="pill">{{ permission_profiles[group_profiles[group.id]].name if group_profiles[group.id] != "custom" else "Custom access" }}</span>
+      </span>
     </summary>
     <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_group', group_id=group.id) }}" data-loading>
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       <div class="admin-form-grid">
-        <label>Group name<input name="name" maxlength="60" value="{{ group.name }}" required></label>
+        <label>Team name<input name="name" maxlength="60" value="{{ group.name }}" required></label>
         <label>Description<textarea name="description" maxlength="300" rows="2">{{ group.description or "" }}</textarea></label>
       </div>
-      <fieldset class="permission-fieldset">
-        <legend>Global permissions</legend>
+      <label>
+        Platform access
+        <select name="permission_profile" data-permission-profile>
+          {% for key, profile in permission_profiles.items() %}
+          <option value="{{ key }}" {% if group_profiles[group.id] == key %}selected{% endif %}>{{ profile.name }} - {{ profile.description }}</option>
+          {% endfor %}
+          <option value="custom" {% if group_profiles[group.id] == "custom" %}selected{% endif %}>Custom permissions</option>
+        </select>
+      </label>
+      <fieldset class="permission-fieldset" data-custom-permissions {% if group_profiles[group.id] != "custom" %}hidden{% endif %}>
+        <legend>Advanced custom permissions</legend>
         <div class="admin-permission-grid">
           {% for permission in permissions %}
           <label class="permission-option">
@@ -179,20 +200,20 @@
         </div>
       </fieldset>
       <div class="admin-record-actions">
-        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_group', group_id=group.id) }}" data-confirm-button="Delete this group? Users will lose its permissions.">Delete</button>
-        <button class="button primary small" type="submit" data-loading-text="Saving...">Save group</button>
+        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_group', group_id=group.id) }}" data-confirm-button="Delete this team? People will lose its access.">Delete</button>
+        <button class="button primary small" type="submit" data-loading-text="Saving...">Save team</button>
       </div>
     </form>
   </details>
   {% else %}
-  <div class="panel empty-state"><h3>No groups</h3><p>Create the first permission group above.</p></div>
+  <div class="panel empty-state"><h3>No teams</h3><p>Create a team, add people, then share site pools with it.</p></div>
   {% endfor %}
 </div>
 {% endif %}
 
 {% if active_section == "updates" and super_admin %}
 <section class="admin-workspace-head">
-  <div><h2>WebManager update</h2><p>Nothing installs until a super admin approves the exact available commit.</p></div>
+  <div><h2>System update</h2><p>Checks are safe. Installation requires approval for the exact available commit.</p></div>
   <span class="pill {{ 'ready' if update_status.state == 'current' else 'cloning' if update_status.state in ['testing', 'backing_up', 'installing'] else 'error' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ') }}</span>
 </section>
 <section class="panel admin-update-panel">

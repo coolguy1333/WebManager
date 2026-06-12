@@ -42,6 +42,44 @@ from .update_status import (
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 GROUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{1,59}$")
 ACCESS_ROLES = {"", "viewer", "operator"}
+PERMISSION_PROFILES = {
+    "team": {
+        "name": "Team only",
+        "description": "No platform-wide access. Use pools to grant site access.",
+        "permissions": set(),
+    },
+    "viewer": {
+        "name": "All-site viewer",
+        "description": "Can inspect every repository and site, but cannot change them.",
+        "permissions": {"resources.view_all"},
+    },
+    "operator": {
+        "name": "All-site manager",
+        "description": "Can inspect and operate every repository and site.",
+        "permissions": {"resources.view_all", "resources.manage_all"},
+    },
+    "access_admin": {
+        "name": "Access administrator",
+        "description": "Can manage pools and grants without managing accounts.",
+        "permissions": {"access.manage"},
+    },
+    "account_admin": {
+        "name": "Account administrator",
+        "description": "Can manage people and teams.",
+        "permissions": {"users.manage", "groups.manage"},
+    },
+    "delegated_admin": {
+        "name": "Delegated administrator",
+        "description": "Can manage all sites, people, teams, pools, and grants.",
+        "permissions": {
+            "resources.view_all",
+            "resources.manage_all",
+            "users.manage",
+            "groups.manage",
+            "access.manage",
+        },
+    },
+}
 
 
 def _permission_codes(database):
@@ -52,12 +90,26 @@ def _permission_codes(database):
 
 
 def _selected_permissions(database):
-    selected = set(request.form.getlist("permissions"))
+    profile = request.form.get("permission_profile", "").strip()
+    if profile and profile != "custom":
+        if profile not in PERMISSION_PROFILES:
+            abort(400, "Unknown access profile.")
+        selected = set(PERMISSION_PROFILES[profile]["permissions"])
+    else:
+        selected = set(request.form.getlist("permissions"))
     if not selected <= _permission_codes(database):
         abort(400, "Unknown permission.")
     if not is_admin() and not selected <= g.permissions:
         abort(403)
     return selected
+
+
+def _permission_profile(permission_codes):
+    codes = set(permission_codes)
+    for key, profile in PERMISSION_PROFILES.items():
+        if codes == profile["permissions"]:
+            return key
+    return "custom"
 
 
 def _replace_acl(database, table, scope_column, scope_id, users, groups):
@@ -97,12 +149,16 @@ def dashboard():
     super_admin = is_admin()
     available_sections = {"overview"}
     if can_manage_users:
-        available_sections.add("users")
+        available_sections.add("people")
     if can_manage_groups:
-        available_sections.add("groups")
+        available_sections.add("teams")
     if super_admin:
         available_sections.add("updates")
-    active_section = request.args.get("section", "overview")
+    requested_section = request.args.get("section", "overview")
+    active_section = {
+        "users": "people",
+        "groups": "teams",
+    }.get(requested_section, requested_section)
     if active_section not in available_sections:
         active_section = "overview"
     users = database.execute(
@@ -138,6 +194,10 @@ def dashboard():
         group_permissions.setdefault(row["group_id"], set()).add(
             row["permission_code"]
         )
+    group_profiles = {
+        group_id: _permission_profile(codes)
+        for group_id, codes in group_permissions.items()
+    }
     permissions = database.execute(
         "SELECT * FROM permissions ORDER BY name"
     ).fetchall()
@@ -164,6 +224,8 @@ def dashboard():
         groups=groups,
         memberships=memberships,
         group_permissions=group_permissions,
+        group_profiles=group_profiles,
+        permission_profiles=PERMISSION_PROFILES,
         permissions=permissions,
         can_manage_users=can_manage_users,
         can_manage_groups=can_manage_groups,
@@ -784,7 +846,7 @@ def update_user(user_id):
     admin = request.form.get("is_admin") == "on" if is_admin() else bool(user["is_admin"])
     if user_id == g.user["id"] and not active:
         flash("You cannot disable your own account.", "error")
-        return redirect(url_for("admin.dashboard", section="users"))
+        return redirect(url_for("admin.dashboard", section="people"))
 
     if user["is_admin"] and (not admin or not active):
         active_admins = database.execute(
@@ -792,7 +854,7 @@ def update_user(user_id):
         ).fetchone()["count"]
         if active_admins <= 1:
             flash("The final active administrator cannot be disabled or demoted.", "error")
-            return redirect(url_for("admin.dashboard", section="users"))
+            return redirect(url_for("admin.dashboard", section="people"))
 
     group_ids = {
         int(value)
@@ -804,7 +866,7 @@ def update_user(user_id):
         for row in database.execute("SELECT id FROM groups").fetchall()
     }
     if not group_ids <= valid_group_ids:
-        abort(400, "Unknown group.")
+        abort(400, "Unknown team.")
     if not is_admin() and group_ids:
         delegated_permissions = {
             row["permission_code"]
@@ -831,7 +893,7 @@ def update_user(user_id):
     )
     database.commit()
     flash(f"Updated {user['display_name'] or user['username']}.", "success")
-    return redirect(url_for("admin.dashboard", section="users"))
+    return redirect(url_for("admin.dashboard", section="people"))
 
 
 @bp.post("/groups")
@@ -843,8 +905,8 @@ def create_group():
     name = request.form.get("name", "").strip()
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
-        flash("Group names must be 2-60 letters, numbers, spaces, dots, dashes, or underscores.", "error")
-        return redirect(url_for("admin.dashboard", section="groups"))
+        flash("Team names must be 2-60 letters, numbers, spaces, dots, dashes, or underscores.", "error")
+        return redirect(url_for("admin.dashboard", section="teams"))
     permissions = _selected_permissions(database)
     try:
         cursor = database.execute(
@@ -858,10 +920,10 @@ def create_group():
         database.commit()
     except sqlite3.IntegrityError:
         database.rollback()
-        flash("A group with that name already exists.", "error")
+        flash("A team with that name already exists.", "error")
     else:
-        flash(f"Group {name} created.", "success")
-    return redirect(url_for("admin.dashboard", section="groups"))
+        flash(f"Team {name} created.", "success")
+    return redirect(url_for("admin.dashboard", section="teams"))
 
 
 @bp.post("/groups/<int:group_id>")
@@ -885,8 +947,8 @@ def update_group(group_id):
     name = request.form.get("name", "").strip()
     description = request.form.get("description", "").strip()
     if not GROUP_NAME_RE.fullmatch(name):
-        flash("Enter a valid group name.", "error")
-        return redirect(url_for("admin.dashboard", section="groups"))
+        flash("Enter a valid team name.", "error")
+        return redirect(url_for("admin.dashboard", section="teams"))
     permissions = _selected_permissions(database)
     try:
         database.execute(
@@ -905,10 +967,10 @@ def update_group(group_id):
         database.commit()
     except sqlite3.IntegrityError:
         database.rollback()
-        flash("A group with that name already exists.", "error")
+        flash("A team with that name already exists.", "error")
     else:
-        flash(f"Group {name} updated.", "success")
-    return redirect(url_for("admin.dashboard", section="groups"))
+        flash(f"Team {name} updated.", "success")
+    return redirect(url_for("admin.dashboard", section="teams"))
 
 
 @bp.post("/groups/<int:group_id>/delete")
@@ -931,5 +993,5 @@ def delete_group(group_id):
         abort(403)
     database.execute("DELETE FROM groups WHERE id = ?", (group_id,))
     database.commit()
-    flash(f"Group {group['name']} deleted.", "success")
-    return redirect(url_for("admin.dashboard", section="groups"))
+    flash(f"Team {group['name']} deleted.", "success")
+    return redirect(url_for("admin.dashboard", section="teams"))

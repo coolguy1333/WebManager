@@ -129,8 +129,26 @@ code {
 }
 
 .topnav > a {
+  position: relative;
+  padding: 8px 2px;
   color: var(--muted);
   font-size: 0.92rem;
+}
+
+.topnav > a:hover,
+.topnav > a.active {
+  color: var(--text);
+}
+
+.topnav > a.active::after {
+  position: absolute;
+  right: 0;
+  bottom: -18px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--primary);
+  content: "";
 }
 
 .topnav form {
@@ -1876,10 +1894,226 @@ pre {
   padding: 0 9px;
 }
 
+.access-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.access-steps > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 10px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.access-steps span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  grid-row: span 2;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--primary);
+  background: rgba(88, 166, 255, 0.12);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.access-steps small {
+  line-height: 1.4;
+}
+
+.advanced-access {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.advanced-access > summary {
+  padding: 13px 15px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.advanced-access[open] {
+  padding: 0 15px 15px;
+}
+
+.advanced-access[open] > summary {
+  margin: 0 -15px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.advanced-access > p {
+  margin: 0 0 12px;
+  font-size: 0.82rem;
+}
+
 .admin-update-panel {
   display: grid;
   gap: 24px;
   padding: 24px;
+}
+
+.source-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.source-card {
+  overflow: hidden;
+}
+
+.source-card-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.source-card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.source-card-summary::after {
+  color: var(--muted);
+  content: "+";
+  font-size: 1.1rem;
+}
+
+.source-card[open] .source-card-summary::after {
+  content: "-";
+}
+
+.source-card[open] .source-card-summary {
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.source-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 9px;
+  color: var(--primary);
+  background: rgba(88, 166, 255, 0.08);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.source-title {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.source-title strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.source-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-summary-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-card-body {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+
+.source-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.source-meta > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.source-meta dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.source-meta dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-update-callout,
+.source-settings,
+.source-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.source-update-callout {
+  padding: 14px;
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  border-radius: 9px;
+  background: rgba(210, 153, 34, 0.08);
+}
+
+.source-update-callout > div:first-child,
+.source-settings > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.source-settings {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(145px, 0.55fr) minmax(210px, 0.8fr) auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.source-settings label {
+  gap: 6px;
+  font-size: 0.72rem;
+}
+
+.source-actions {
+  padding-top: 2px;
 }
 
 .cloudflare-guide {
@@ -2258,6 +2492,14 @@ pre {
   .deploy-settings {
     position: static;
   }
+
+  .source-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .source-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
@@ -2274,10 +2516,21 @@ pre {
     padding-top: 34px;
   }
 
-  .topnav > a:first-child,
   .user-profile,
   .brand-copy small {
     display: none;
+  }
+
+  .topnav {
+    gap: 11px;
+  }
+
+  .topnav > a {
+    font-size: 0.82rem;
+  }
+
+  .topnav > a.active::after {
+    bottom: -17px;
   }
 
   .page-head,
@@ -2315,7 +2568,10 @@ pre {
   .admin-permission-grid,
   .admin-acl-grid,
   .admin-update-commits,
-  .hosting-mode-picker {
+  .hosting-mode-picker,
+  .access-steps,
+  .source-meta,
+  .source-settings {
     grid-template-columns: 1fr;
   }
 
@@ -2357,6 +2613,26 @@ pre {
 
   .admin-acl-grid label {
     grid-template-columns: 1fr;
+  }
+
+  .source-card-summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .source-summary-meta {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .source-card-summary::after {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .source-update-callout,
+  .source-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .program-update-card {

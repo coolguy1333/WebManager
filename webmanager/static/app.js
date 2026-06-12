@@ -240,6 +240,19 @@ document.querySelectorAll("[data-filter-input]").forEach((input) => {
   });
 });
 
+document.querySelectorAll("[data-permission-profile]").forEach((select) => {
+  const form = select.closest("form");
+  const customPermissions = form?.querySelector("[data-custom-permissions]");
+  if (!customPermissions) {
+    return;
+  }
+  const updateCustomPermissions = () => {
+    customPermissions.hidden = select.value !== "custom";
+  };
+  select.addEventListener("change", updateCustomPermissions);
+  updateCustomPermissions();
+});
+
 const editor = document.querySelector(".code-editor");
 if (editor) {
   const form = editor.closest("[data-editor-form]");

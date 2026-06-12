@@ -419,15 +419,15 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(admin_id)
 
         overview = self.client.get("/admin/")
-        self.assertIn(b"Access model", overview.data)
+        self.assertIn(b"How access works", overview.data)
         self.assertNotIn(f"/admin/users/{user_id}".encode(), overview.data)
         self.assertNotIn(f"/admin/groups/{group_id}".encode(), overview.data)
 
-        people = self.client.get("/admin/?section=users")
+        people = self.client.get("/admin/?section=people")
         self.assertIn(f"/admin/users/{user_id}".encode(), people.data)
         self.assertNotIn(b'action="/admin/groups"', people.data)
 
-        groups = self.client.get("/admin/?section=groups")
+        groups = self.client.get("/admin/?section=teams")
         self.assertIn(f"/admin/groups/{group_id}".encode(), groups.data)
         self.assertNotIn(f"/admin/users/{user_id}".encode(), groups.data)
 
@@ -841,7 +841,7 @@ class WebManagerTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
-        self.assertIn(b"Group Operators created", response.data)
+        self.assertIn(b"Team Operators created", response.data)
         with self.app.app_context():
             group = get_db().execute(
                 "SELECT * FROM groups WHERE name = 'Operators'"
@@ -875,6 +875,57 @@ class WebManagerTestCase(unittest.TestCase):
             permissions,
             {"resources.view_all", "resources.manage_all"},
         )
+
+    def test_admin_can_create_team_from_simple_permission_profile(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+
+        response = self.client.post(
+            "/admin/groups",
+            data={
+                "_csrf_token": self.csrf(),
+                "name": "Site managers",
+                "permission_profile": "operator",
+            },
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"Team Site managers created", response.data)
+        self.assertIn(b"All-site manager", response.data)
+        with self.app.app_context():
+            permissions = {
+                row["permission_code"]
+                for row in get_db().execute(
+                    """
+                    SELECT group_permissions.permission_code
+                    FROM groups
+                    JOIN group_permissions
+                      ON group_permissions.group_id = groups.id
+                    WHERE groups.name = 'Site managers'
+                    """
+                ).fetchall()
+            }
+        self.assertEqual(
+            permissions,
+            {"resources.view_all", "resources.manage_all"},
+        )
+
+    def test_dashboard_separates_sites_from_git_sources(self):
+        owner_id = self.add_user("owner")
+        repository_root = Path(self.temp_directory.name) / "source-view-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hello", encoding="utf-8")
+        self.add_repository(owner_id, repository_root)
+        self.login_user(owner_id)
+
+        sites = self.client.get("/?view=sites")
+        self.assertIn(b"Sites at a glance", sites.data)
+        self.assertNotIn(b"Automatic checks", sites.data)
+
+        sources = self.client.get("/?view=sources")
+        self.assertIn(b"Git sources", sources.data)
+        self.assertIn(b"Connect a Git repository", sources.data)
+        self.assertIn(b"Automatic checks", sources.data)
 
     def test_view_all_permission_is_read_only_for_other_users_resources(self):
         owner_id = self.add_user("owner")

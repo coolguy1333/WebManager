@@ -215,6 +215,9 @@ def owned_site(site_id: int, manage=False):
 @login_required
 def dashboard():
     database = get_db()
+    active_view = request.args.get("view", "sites")
+    if active_view not in {"sites", "sources"}:
+        active_view = "sites"
     show_all = has_permission(RESOURCE_VIEW_ALL) or has_permission(RESOURCE_MANAGE_ALL)
     sites = database.execute(
         """
@@ -281,6 +284,7 @@ def dashboard():
         show_all=show_all,
         manage_all=has_permission(RESOURCE_MANAGE_ALL),
         manageable_site_ids=manageable_site_ids,
+        active_view=active_view,
     )
 
 

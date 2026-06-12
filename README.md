@@ -123,7 +123,7 @@ Everything below is optional reference material for custom networking, private r
 - Separate user accounts
 - Per-user repository and site ownership
 - First-account super administrator
-- User activation, permission groups, and delegated administration
+- User activation, teams, simple access profiles, and delegated administration
 - Read-only and full-control access across users' deployments
 - Public HTTP(S) Git repository support
 - SSH Git repository support
@@ -137,7 +137,7 @@ Everything below is optional reference material for custom networking, private r
 - Multi-site deployment from one repository inspection
 - Editable site name, hostname slug, source folder, port, and fallback settings
 - Per-site traffic analytics from structured Nginx logs
-- Proxmox-style pools with user and group ACLs
+- Site pools with team access and optional individual exceptions
 - Immediate start, stop, restart, update, and delete controls
 - Validated site updates with owner approval or automatic application
 - Per-repository Git update-check intervals
@@ -341,26 +341,26 @@ The first successful sign-in automatically creates the WebManager account. WebMa
 
 Each Google account gets separate repositories and deployments.
 
-### Administration, groups, and permissions
+### Administration, teams, and permissions
 
 The first Google account that signs in becomes the initial **super
 administrator**. On an upgraded installation, the oldest existing account is
 promoted automatically if no administrator exists.
 
 Administrators have an **Admin** link in the navigation. The console separates
-tasks into **Overview**, **People**, **Groups**, **Access**, and **Updates** so
-only the controls for the selected task are displayed. Account, group, pool,
+tasks into **Overview**, **People**, **Teams**, **Access**, **Domains**, and
+**System** so only the controls for the selected task are displayed. Account, team, pool,
 and site editors stay collapsed until opened.
 
 The admin console can:
 
 - Enable or disable user accounts
 - Promote additional super administrators
-- Create and delete permission groups
-- Assign users to one or more groups
-- Choose the permissions granted by each group
-- Create Proxmox-style resource pools for sites
-- Grant Viewer or Operator access to a pool or an individual site
+- Create and delete teams
+- Assign people to one or more teams
+- Choose a simple platform access profile for each team
+- Create pools for sites that share the same access
+- Grant View only or Can manage access to a pool or an individual site
 - Add multiple deployment domains and choose the default for new sites
 
 Available permissions:
@@ -369,20 +369,20 @@ Available permissions:
 | --- | --- |
 | `View all resources` | Read-only access to every user's sites and repositories |
 | `Manage all resources` | Start, stop, edit, refresh, schedule, deploy, and delete across users |
-| `Manage users` | Activate accounts and assign group memberships |
-| `Manage groups` | Create and edit permission groups |
-| `Manage pools and access` | Create pools and assign site ACLs to users or groups |
+| `Manage users` | Activate accounts and assign team memberships |
+| `Manage groups` | Create and edit teams |
+| `Manage pools and access` | Create pools and assign site access to people or teams |
 
 Each site can belong to one pool. Pool access and direct site access use two
 roles:
 
 | Site role | Access |
 | --- | --- |
-| `Viewer` | See the site in the dashboard, inspect its details, and open it |
-| `Operator` | Viewer access plus start, stop, restart, edit Nginx configuration, and delete |
+| `View only` | See the site, inspect its details, and open it |
+| `Can manage` | View access plus start, stop, restart, edit Nginx configuration, and delete |
 
-Use **Admin > Access > Pools** to assign normal site access. Use **Direct site
-access** only for exceptions. A direct site
+Use **Admin > Access > Pool access** to assign normal site access. Use
+**Direct site access** only for exceptions. A direct site
 grant is useful for an exception without exposing the whole pool. When several
 grants apply, the strongest role wins. Site ACLs do not grant repository
 control, so source updates and deployment settings remain with the repository
@@ -395,6 +395,10 @@ super administrator.
 
 Disabled users are signed out on their next request and cannot complete Google
 sign-in until an administrator reactivates them.
+
+The main navigation separates **Sites** from **Sources**. Sites is the live
+deployment inventory. Sources contains repository setup, folder deployment,
+manual update checks, approval, and automatic update policy.
 
 ### Admin-managed deployment domains
 

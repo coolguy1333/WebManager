@@ -2,8 +2,8 @@
 {% macro role_select(name, current) %}
 <select name="{{ name }}" aria-label="Access role">
   <option value="" {% if not current %}selected{% endif %}>No access</option>
-  <option value="viewer" {% if current == "viewer" %}selected{% endif %}>Viewer</option>
-  <option value="operator" {% if current == "operator" %}selected{% endif %}>Operator</option>
+  <option value="viewer" {% if current == "viewer" %}selected{% endif %}>View only</option>
+  <option value="operator" {% if current == "operator" %}selected{% endif %}>Can manage</option>
 </select>
 {% endmacro %}
 {% block content %}
@@ -11,7 +11,7 @@
   <div>
     <p class="eyebrow">Administration</p>
     <h1>Pools and access</h1>
-    <p>Use pools for normal access and site exceptions only when necessary.</p>
+    <p>Group sites into pools, then share each pool with teams.</p>
   </div>
   <span class="head-meta">{{ pools|length }} pools / {{ sites|length }} sites</span>
 </section>
@@ -20,13 +20,18 @@
 {% include "admin/_nav.html" %}
 
 <nav class="admin-subnav" aria-label="Access sections">
-  <a class="{{ 'active' if active_section == 'pools' else '' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}">Pools</a>
-  <a class="{{ 'active' if active_section == 'sites' else '' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}">Direct site access</a>
+  <a class="{{ 'active' if active_section == 'pools' else '' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}">Pool access</a>
+  <a class="{{ 'active' if active_section == 'sites' else '' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}">Direct site access <span class="muted">(advanced)</span></a>
 </nav>
 
 {% if active_section == "pools" %}
+<section class="access-steps" aria-label="Access setup">
+  <div><span>1</span><strong>Create a pool</strong><small>Use a pool for sites managed by the same people.</small></div>
+  <div><span>2</span><strong>Add sites</strong><small>A site can belong to one pool.</small></div>
+  <div><span>3</span><strong>Share access</strong><small>Teams are the simplest way to grant access.</small></div>
+</section>
 <section class="admin-workspace-head">
-  <div><h2>Resource pools</h2><p>Each site belongs to at most one pool. Viewer can inspect; Operator can also control the site.</p></div>
+  <div><h2>Site pools</h2><p>View only can inspect a site. Can manage can update settings and control it.</p></div>
   <input class="filter-input" type="search" placeholder="Find a pool" data-filter-input="pools" aria-label="Filter pools">
 </section>
 
@@ -68,16 +73,23 @@
         </div>
       </fieldset>
       <fieldset class="permission-fieldset">
-        <legend>Pool access</legend>
+        <legend>Team access</legend>
         <div class="admin-acl-grid">
           {% for group in groups %}
-          <label><span><strong>{{ group.name }}</strong><small>Group</small></span>{{ role_select("group_role_" ~ group.id, pool_acl.get((pool.id, "group", group.id), "")) }}</label>
+          <label><span><strong>{{ group.name }}</strong><small>Team</small></span>{{ role_select("group_role_" ~ group.id, pool_acl.get((pool.id, "group", group.id), "")) }}</label>
           {% endfor %}
-          {% for user in users %}
-          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>User{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, pool_acl.get((pool.id, "user", user.id), "")) }}</label>
-          {% endfor %}
+          {% if not groups %}<small>Create a team before sharing this pool.</small>{% endif %}
         </div>
       </fieldset>
+      <details class="advanced-access">
+        <summary>Individual exceptions</summary>
+        <p class="muted">Use this only when one person needs access outside their teams.</p>
+        <div class="admin-acl-grid">
+          {% for user in users %}
+          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>Person{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, pool_acl.get((pool.id, "user", user.id), "")) }}</label>
+          {% endfor %}
+        </div>
+      </details>
       <div class="admin-record-actions">
         <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_pool', pool_id=pool.id) }}" data-confirm-button="Delete this pool? Sites remain deployed, but inherited access is removed.">Delete</button>
         <button class="button primary small" type="submit" data-loading-text="Saving...">Save pool</button>
@@ -92,7 +104,7 @@
 
 {% if active_section == "sites" %}
 <section class="admin-workspace-head">
-  <div><h2>Direct site access</h2><p>Exceptions override nothing; the strongest direct or pool role wins.</p></div>
+  <div><h2>Direct site access</h2><p>Advanced exceptions for a single site. Pool and direct access combine, and the stronger role wins.</p></div>
   <input class="filter-input" type="search" placeholder="Find a site" data-filter-input="sites" aria-label="Filter sites">
 </section>
 <div class="admin-record-list">
@@ -106,16 +118,21 @@
     <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_site_access', site_id=site.id) }}" data-loading>
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       <fieldset class="permission-fieldset">
-        <legend>Exception roles</legend>
+        <legend>Team exceptions</legend>
         <div class="admin-acl-grid">
           {% for group in groups %}
-          <label><span><strong>{{ group.name }}</strong><small>Group</small></span>{{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}</label>
-          {% endfor %}
-          {% for user in users %}
-          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>User{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, site_acl.get((site.id, "user", user.id), "")) }}</label>
+          <label><span><strong>{{ group.name }}</strong><small>Team</small></span>{{ role_select("group_role_" ~ group.id, site_acl.get((site.id, "group", group.id), "")) }}</label>
           {% endfor %}
         </div>
       </fieldset>
+      <details class="advanced-access">
+        <summary>Individual exceptions</summary>
+        <div class="admin-acl-grid">
+          {% for user in users %}
+          <label><span><strong>{{ user.display_name or user.email or user.username }}</strong><small>Person{% if not user.is_active %}, disabled{% endif %}</small></span>{{ role_select("user_role_" ~ user.id, site_acl.get((site.id, "user", user.id), "")) }}</label>
+          {% endfor %}
+        </div>
+      </details>
       <div class="admin-record-actions"><small>Pool access still applies.</small><button class="button primary small" type="submit" data-loading-text="Saving...">Save exception</button></div>
     </form>
   </details>

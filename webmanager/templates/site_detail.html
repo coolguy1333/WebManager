@@ -2,7 +2,7 @@
 {% block content %}
 <section class="page-head compact">
   <div>
-    <a class="back-link" href="{{ url_for('deployments.dashboard') }}">&larr; Dashboard</a>
+    <a class="back-link" href="{{ url_for('deployments.dashboard', view='sites') }}">&larr; Sites</a>
     <div class="title-status">
       <h1>{{ site.name }}</h1>
       <span class="pill {{ site.status }}">{{ site.status }}</span>

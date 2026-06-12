@@ -2,7 +2,7 @@
 {% block content %}
 <section class="page-head compact">
   <div>
-    <a class="back-link" href="{{ url_for('deployments.dashboard') }}">&larr; Dashboard</a>
+    <a class="back-link" href="{{ url_for('deployments.dashboard', view='sources') }}">&larr; Sources</a>
     <p class="eyebrow">Repository inspected</p>
     <h1>Select a site folder</h1>
     <p><strong>{{ repository.name }}</strong><span class="separator">/</span>{{ repository.url }}</p>
