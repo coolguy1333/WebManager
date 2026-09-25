@@ -95,6 +95,13 @@ NO_SITE_PAGE = status_page(
     "renamed, or not deployed yet.",
     link=False,
 )
+# A site that exists but is stopped (or failed to start).
+SITE_PAUSED_PAGE = status_page(
+    "503",
+    "Site temporarily unavailable",
+    "This website is paused right now. Please check back a little later.",
+    link=False,
+)
 # The site gateway itself is down (shown by the outer system Nginx).
 OFFLINE_PAGE = status_page(
     "503",
@@ -177,6 +184,33 @@ server {{
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+}}
+"""
+
+
+def build_paused_site_config(hostnames, gateway_port: int) -> str:
+    """Placeholder served for a stopped site's addresses.
+
+    Hostnames come from validated domain names and slugs, never free text.
+    """
+    names = _server_names(hostnames)
+    if not names or not gateway_port:
+        return ""
+    for name in names:
+        if not re.fullmatch(r"[a-z0-9.-]+", name):
+            raise NginxConfigError(f"Invalid hostname {name!r}.")
+    return f"""# Managed by WebManager: stopped site placeholder
+server {{
+    listen 127.0.0.1:{gateway_port};
+    listen [::1]:{gateway_port};
+    server_name {" ".join(names)};
+
+    location / {{
+        default_type text/html;
+        add_header Cache-Control "no-store" always;
+        add_header X-Robots-Tag "noindex" always;
+        return 503 '{SITE_PAUSED_PAGE}';
+    }}
 }}
 """
 
