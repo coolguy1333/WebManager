@@ -3714,6 +3714,27 @@ class SecurityRegressionTests(unittest.TestCase):
         with self.app.app_context():
             self.assertEqual(get_db().execute("SELECT COUNT(*) FROM repositories").fetchone()[0], 0)
 
+    LEGACY_CONFIG = '# Managed by WebManager for Demo\nserver {\n    listen 127.0.0.1:8100;\n    listen [::1]:8100;\n    listen 127.0.0.1:8090;\n    listen [::1]:8090;\n    server_name demo.example;\n\n    root "/srv/site";\n    index index.html;\n    disable_symlinks on;\n\n    location / {\n        try_files $uri $uri/ @webmanager_not_found;\n    }\n\n    location ~ /\\. {\n        deny all;\n    }\n\n    location @webmanager_not_found {\n        default_type text/html;\n        return 404 \'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>404 Not Found</title><style>body{margin:0;background:#0d1117;color:#f0f6fc;font:16px system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:560px;padding:32px;text-align:center}h1{font-size:72px;margin:0;color:#58a6ff}p{color:#8b949e}a{color:#58a6ff}</style><main><h1>404</h1><h2>Page not found</h2><p>The requested file does not exist on this site.</p><a href="/">Return to the home page</a></main></html>\';\n    }\n\n\n    add_header X-Content-Type-Options "nosniff" always;\n    add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n}\n'
+
+    def test_gateway_default_page_is_friendly_and_hides_version(self):
+        from webmanager.nginx import NO_SITE_PAGE
+        config = build_main_config(Path("/tmp/x"), Path("/tmp/x/conf.d"), 8090)
+        self.assertIn("server_tokens off;", config)
+        self.assertIn("No site here", config)
+        self.assertNotIn("return 404;", config)
+        self.assertNotIn("'", NO_SITE_PAGE)
+
+    def test_legacy_generated_configs_get_new_404_pages(self):
+        from webmanager.nginx import upgrade_legacy_site_config
+        upgraded = upgrade_legacy_site_config(self.LEGACY_CONFIG)
+        self.assertIn("error_page 404 /404.html;", upgraded)
+        self.assertIn("Page not found", upgraded)
+        self.assertNotIn("deny all;", upgraded)
+        validate_site_config(upgraded, "/srv/site", 8100, ["demo.example"], 8090)
+        self.assertEqual(upgrade_legacy_site_config(upgraded), upgraded)
+        custom = "# my own config\nserver { }"
+        self.assertEqual(upgrade_legacy_site_config(custom), custom)
+
 
 if __name__ == "__main__":
     unittest.main()

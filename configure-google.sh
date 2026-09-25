@@ -311,6 +311,7 @@ server {
     # The exact dashboard server_name takes priority. WebManager validates
     # configured site hostnames at the loopback gateway.
     server_name _;
+    server_tokens off;
 
     location / {
         proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
@@ -319,6 +320,15 @@ server {
         proxy_set_header X-Real-IP \$webmanager_site_client_ip;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
+        proxy_intercept_errors off;
+    }
+
+    # Friendly page if WebManager's site gateway is down or restarting.
+    error_page 502 503 504 = @webmanager_offline;
+    location @webmanager_offline {
+        default_type text/html;
+        add_header Retry-After 30 always;
+        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Temporarily unavailable</title><style>:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#525b6c;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);border:1px solid var(--line);border-radius:16px}.code{font-size:64px;font-weight:800;letter-spacing:-3px;line-height:1;color:var(--accent);margin:0 0 12px}h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}p:last-child{margin:0}a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}</style><main><p class="code">503</p><h1>Temporarily unavailable</h1><p>This website is offline for a moment. Please try again shortly.</p></main></html>';
     }
 
     add_header X-Content-Type-Options "nosniff" always;

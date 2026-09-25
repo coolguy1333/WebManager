@@ -54,26 +54,53 @@ def safe_comment_text(value: str) -> str:
     return CONTROL_CHARACTERS_RE.sub(" ", str(value)).strip()[:120]
 
 
-# Shown to visitors of hosted sites when a path doesn't exist and the
-# repository has no 404.html of its own. Must not contain single quotes.
-HOSTED_404_PAGE = (
-    '<!doctype html><html lang="en"><meta charset="utf-8">'
-    '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    '<meta name="robots" content="noindex"><title>Page not found</title>'
-    "<style>"
-    ":root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#5b6475;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}"
-    "@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}"
-    "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;"
-    "background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
-    "main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);"
-    "border:1px solid var(--line);border-radius:16px}"
-    ".code{font-size:72px;font-weight:800;letter-spacing:-4px;line-height:1;color:var(--accent);margin:0 0 12px}"
-    "h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}"
-    "a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;"
-    "text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}"
-    "</style><main><p class=\"code\">404</p><h1>Page not found</h1>"
-    "<p>The page you are looking for does not exist or has moved.</p>"
-    "<a href=\"/\">Go to the home page</a></main></html>"
+def status_page(code: str, title: str, message: str, link: bool = True) -> str:
+    """A small self-contained HTML page for visitors of hosted sites.
+
+    Used inside nginx ``return`` strings, so it must never contain single
+    quotes or ``$`` (nginx variables).
+    """
+    page = (
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<meta name="robots" content="noindex"><title>{title}</title>'
+        "<style>"
+        ":root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#525b6c;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}"
+        "@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}"
+        "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;"
+        "background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
+        "main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);"
+        "border:1px solid var(--line);border-radius:16px}"
+        ".code{font-size:64px;font-weight:800;letter-spacing:-3px;line-height:1;color:var(--accent);margin:0 0 12px}"
+        "h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}p:last-child{margin:0}"
+        "a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;"
+        "text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}"
+        f'</style><main><p class="code">{code}</p><h1>{title}</h1><p>{message}</p>'
+        + ('<a href="/">Go to the home page</a>' if link else "")
+        + "</main></html>"
+    )
+    assert "'" not in page and "$" not in page
+    return page
+
+
+# Missing page on a hosted site (when the repository has no 404.html).
+HOSTED_404_PAGE = status_page(
+    "404", "Page not found", "The page you are looking for does not exist or has moved."
+)
+# Hostname that no running site answers for (typo, stopped or deleted site).
+NO_SITE_PAGE = status_page(
+    "404",
+    "No site here",
+    "There is no website at this address right now. It may have been stopped, "
+    "renamed, or not deployed yet.",
+    link=False,
+)
+# The site gateway itself is down (shown by the outer system Nginx).
+OFFLINE_PAGE = status_page(
+    "503",
+    "Temporarily unavailable",
+    "This website is offline for a moment. Please try again shortly.",
+    link=False,
 )
 
 
@@ -103,9 +130,9 @@ def build_site_config(
     gateway_port: int | None = None,
 ) -> str:
     fallback = f"/{index_file}" if spa_fallback else "=404"
-    not_found_location = ""
-    if not spa_fallback:
-        # A site's own 404.html wins; otherwise serve the built-in page.
+    # A site's own 404.html wins; otherwise serve the built-in page. SPA sites
+    # rarely 404 (unknown paths load the index) but hidden files still do.
+    if True:
         not_found_location = f"""
     error_page 404 /404.html;
     location = /404.html {{
@@ -144,7 +171,7 @@ server {{
     }}
 
     location ~ /\\. {{
-        deny all;
+        return 404;
     }}
 {not_found_location}
 
@@ -152,6 +179,52 @@ server {{
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 }}
 """
+
+
+_NOT_FOUND_BLOCK = f"""
+    error_page 404 /404.html;
+    location = /404.html {{
+        internal;
+        try_files /404.html @webmanager_not_found;
+    }}
+
+    location @webmanager_not_found {{
+        default_type text/html;
+        return 404 '{HOSTED_404_PAGE}';
+    }}
+"""
+_LEGACY_NOT_FOUND = re.compile(
+    r"\n    location @webmanager_not_found \{\n        default_type text/html;\n"
+    r"        return 404 '[^']*';\n    \}\n"
+)
+_LEGACY_DOTFILES = "    location ~ /\\. {\n        deny all;\n    }\n"
+
+
+def upgrade_legacy_site_config(config: str) -> str:
+    """Give configs generated by older WebManager versions the new 404 pages.
+
+    Only the exact blocks WebManager used to generate are replaced, so hand
+    edits elsewhere are kept. Returns the config unchanged when it doesn't
+    look like an older generated config.
+    """
+    if (
+        "error_page" in config
+        or not config.startswith("# Managed by WebManager for")
+        or _LEGACY_DOTFILES not in config
+    ):
+        return config
+    upgraded = config.replace(
+        _LEGACY_DOTFILES,
+        "    location ~ /\\. {\n        return 404;\n    }\n",
+        1,
+    )
+    upgraded = _LEGACY_NOT_FOUND.sub("\n", upgraded, count=1)
+    upgraded = upgraded.replace("@webmanager_not_found;", "=404;", 1)
+    marker = "\n    add_header X-Content-Type-Options"
+    if marker not in upgraded:
+        return config
+    upgraded = upgraded.replace(marker, _NOT_FOUND_BLOCK + marker, 1)
+    return re.sub(r"\n{3,}", "\n\n", upgraded)
 
 
 def build_main_config(
@@ -190,7 +263,8 @@ def build_main_config(
         listen 127.0.0.1:{gateway_port} default_server;
         listen [::1]:{gateway_port} default_server;
         server_name _;
-        return 404;
+        default_type text/html;
+        return 404 '{NO_SITE_PAGE}';
     }}
 {dashboard_proxy}
 """
@@ -234,6 +308,7 @@ http {{
     scgi_temp_path "{prefix_path}/temp/scgi";
     sendfile on;
     keepalive_timeout 65;
+    server_tokens off;
 {gateway_default}
     include "{config_path}";
 }}

@@ -13,6 +13,7 @@ from .nginx import (
     NginxConfigError,
     build_main_config,
     route_site_config,
+    upgrade_legacy_site_config,
     validate_site_config,
 )
 
@@ -83,15 +84,33 @@ class RuntimeManager:
             sites = database.execute("SELECT * FROM sites").fetchall()
             for site in sites:
                 hostnames = site_hostnames(database, site)
+                current = site["nginx_config"]
+                upgraded = upgrade_legacy_site_config(current)
+                if upgraded != current:
+                    try:
+                        validate_site_config(
+                            upgraded,
+                            site["document_root"],
+                            site["port"],
+                            hostnames,
+                            gateway_port if hostnames else None,
+                        )
+                    except NginxConfigError:
+                        upgraded = current
+                if upgraded != current:
+                    database.execute(
+                        "UPDATE sites SET nginx_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (upgraded, site["id"]),
+                    )
                 if not hostnames:
                     continue
                 routed = route_site_config(
-                    site["nginx_config"],
+                    upgraded,
                     site["port"],
                     hostnames,
                     gateway_port,
                 )
-                if routed != site["nginx_config"]:
+                if routed != upgraded:
                     database.execute(
                         """
                         UPDATE sites
