@@ -147,7 +147,7 @@ def dashboard():
     can_manage_groups = has_permission(GROUPS_MANAGE)
     can_manage_access = has_permission(ACCESS_MANAGE)
     super_admin = is_admin()
-    available_sections = {"overview"}
+    available_sections = set()
     if can_manage_users:
         available_sections.add("people")
     if can_manage_groups:
@@ -160,7 +160,14 @@ def dashboard():
         "groups": "teams",
     }.get(requested_section, requested_section)
     if active_section not in available_sections:
-        active_section = "overview"
+        # The old overview page is gone; land on the first section this
+        # person can actually manage.
+        for section in ("people", "teams"):
+            if section in available_sections:
+                return redirect(url_for("admin.dashboard", section=section))
+        if can_manage_access:
+            return redirect(url_for("admin.access_dashboard"))
+        return redirect(url_for("admin.dashboard", section="updates"))
     users = database.execute(
         """
         SELECT users.*,
@@ -217,7 +224,7 @@ def dashboard():
     }
     return render_template(
         "admin/dashboard.html",
-        title="Admin console",
+        title="System" if active_section == "updates" else "People & access",
         active_section=active_section,
         counts=counts,
         users=users,
@@ -653,7 +660,7 @@ def access_dashboard():
     }
     return render_template(
         "admin/access.html",
-        title="Access control",
+        title="People & access",
         active_section=active_section,
         users=users,
         groups=groups,

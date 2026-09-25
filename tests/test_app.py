@@ -411,7 +411,7 @@ class WebManagerTestCase(unittest.TestCase):
         admin_id = self.add_user("admin", is_admin=True)
         self.login_user(admin_id)
 
-        response = self.client.get("/admin/")
+        response = self.client.get("/admin/", follow_redirects=True)
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Google sign-in is unrestricted", response.data)
@@ -435,10 +435,10 @@ class WebManagerTestCase(unittest.TestCase):
             database.commit()
         self.login_user(admin_id)
 
+        # The overview page was removed; /admin/ opens the first workspace.
         overview = self.client.get("/admin/")
-        self.assertIn(b"How access works", overview.data)
-        self.assertNotIn(f"/admin/users/{user_id}".encode(), overview.data)
-        self.assertNotIn(f"/admin/groups/{group_id}".encode(), overview.data)
+        self.assertEqual(overview.status_code, 302)
+        self.assertIn("section=people", overview.headers["Location"])
 
         people = self.client.get("/admin/?section=people")
         self.assertIn(f"/admin/users/{user_id}".encode(), people.data)
@@ -937,12 +937,12 @@ class WebManagerTestCase(unittest.TestCase):
 
         sites = self.client.get("/?view=sites")
         self.assertIn(b"<h1>Sites</h1>", sites.data)
-        self.assertNotIn(b"Automatic checks", sites.data)
+        self.assertNotIn(b"Install automatically", sites.data)
 
         sources = self.client.get("/?view=sources")
         self.assertIn(b"Git sources", sources.data)
         self.assertIn(b"Connect a Git repository", sources.data)
-        self.assertIn(b"Automatic checks", sources.data)
+        self.assertIn(b"Install automatically", sources.data)
 
     def test_dashboard_explains_every_site_needing_attention(self):
         owner_id = self.add_user("owner")
@@ -1148,8 +1148,8 @@ class WebManagerTestCase(unittest.TestCase):
 
         access_page = self.client.get("/admin/access")
         self.assertEqual(access_page.status_code, 200)
-        self.assertIn(b"Pools and access", access_page.data)
-        self.assertIn(b"Direct site access", access_page.data)
+        self.assertIn(b"People &amp; access", access_page.data)
+        self.assertIn(b"Site exceptions", access_page.data)
 
         response = self.client.post(
             "/admin/pools",
@@ -1465,7 +1465,7 @@ class WebManagerTestCase(unittest.TestCase):
             f"/repositories/{repository_id}/select"
         )
         self.assertIn(b"Address style", selection.data)
-        self.assertIn(b"Site subdomain", selection.data)
+        self.assertIn(b"Subdomain per site", selection.data)
         self.assertIn(b"Domain root", selection.data)
         self.assertIn(b'data-root-available="true"', selection.data)
 
@@ -2108,7 +2108,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(user_id)
 
         pages = {
-            f"/repositories/{repository_id}/select": b"Pick the folders to publish",
+            f"/repositories/{repository_id}/select": b"Tick each one to publish",
             f"/sites/{site_id}": b"Addresses",
             f"/sites/{site_id}/config": b"Nginx configuration",
         }
@@ -2130,35 +2130,37 @@ class WebManagerTestCase(unittest.TestCase):
             f"/repositories/{repository_id}/schedule",
             data={
                 "_csrf_token": self.csrf(),
-                "auto_refresh_minutes": "45",
+                "update_mode": "auto",
+                "auto_update_every": "3",
+                "auto_update_unit": "hours",
             },
             follow_redirects=True,
         )
-        self.assertIn(b"every 45 minutes", response.data)
+        self.assertIn(b"install automatically every 3 hours", response.data)
         with self.app.app_context():
             repository = get_db().execute(
                 "SELECT * FROM repositories WHERE id = ?",
                 (repository_id,),
             ).fetchone()
-            self.assertEqual(repository["auto_refresh_minutes"], 45)
+            self.assertEqual(repository["auto_refresh_minutes"], 180)
+            self.assertEqual(repository["update_mode"], "auto")
             self.assertIsNotNone(repository["next_refresh_at"])
 
+        # Turning automatic installs off keeps the repository checked.
         response = self.client.post(
             f"/repositories/{repository_id}/schedule",
-            data={
-                "_csrf_token": self.csrf(),
-                "auto_refresh_minutes": "",
-            },
+            data={"_csrf_token": self.csrf(), "update_mode": "approval"},
             follow_redirects=True,
         )
-        self.assertIn(b"Scheduled update checks disabled", response.data)
+        self.assertIn(b"keeps checking every 15 minutes", response.data)
         with self.app.app_context():
             repository = get_db().execute(
                 "SELECT * FROM repositories WHERE id = ?",
                 (repository_id,),
             ).fetchone()
-            self.assertIsNone(repository["auto_refresh_minutes"])
-            self.assertIsNone(repository["next_refresh_at"])
+            self.assertEqual(repository["auto_refresh_minutes"], 15)
+            self.assertEqual(repository["update_mode"], "approval")
+            self.assertIsNotNone(repository["next_refresh_at"])
 
     def test_repository_auto_refresh_schedule_validates_interval(self):
         user_id = self.add_user("alice")
@@ -2172,11 +2174,13 @@ class WebManagerTestCase(unittest.TestCase):
             f"/repositories/{repository_id}/schedule",
             data={
                 "_csrf_token": self.csrf(),
-                "auto_refresh_minutes": str(MAX_REFRESH_MINUTES + 1),
+                "update_mode": "auto",
+                "auto_update_every": "31",
+                "auto_update_unit": "days",
             },
             follow_redirects=True,
         )
-        self.assertIn(b"must be between", response.data)
+        self.assertIn(b"must run between", response.data)
         with self.app.app_context():
             repository = get_db().execute(
                 "SELECT * FROM repositories WHERE id = ?",
@@ -3482,6 +3486,70 @@ class SecurityRegressionTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertIn("Permissions-Policy", response.headers)
+
+    def test_pending_source_update_counts_as_needing_attention(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "pending-repo" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        self.add_site(user_id, repository_id, root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE repositories SET pending_commit = ? WHERE id = ?",
+                ("a" * 40, repository_id),
+            )
+            database.commit()
+        self.login_user(user_id)
+        dashboard = self.client.get("/")
+        self.assertIn(b"data-attention-count>1<", dashboard.data)
+        self.assertIn(b"waiting for approval", dashboard.data)
+
+    def test_analytics_page_scopes_sites_to_viewer(self):
+        owner_id = self.add_user("alice")
+        other_id = self.add_user("bob")
+        admin_id = self.add_user("admin", is_admin=True)
+        root = Path(self.temp_directory.name) / "analytics-repo" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(owner_id, root)
+        self.add_site(owner_id, repository_id, root)
+        log = Path(self.app.config["NGINX_ROOT"]) / "access.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        log.write_text(
+            "".join(
+                json.dumps({"time": now, "host": "demo.webmanager.example", "status": status,
+                            "bytes": 100, "client": f"10.0.0.{i}", "uri": "/about"}) + "\n"
+                for i, status in enumerate([200, 200, 404])
+            ),
+            encoding="utf-8",
+        )
+
+        self.login_user(owner_id)
+        page = self.client.get("/analytics")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Demo", page.data)
+        self.assertIn(b"<svg class=\"chart\"", page.data)
+        self.assertIn(b"/about", page.data)
+
+        self.login_user(other_id)
+        page = self.client.get("/analytics")
+        self.assertNotIn(b"demo.webmanager.example", page.data)
+
+        self.login_user(admin_id)
+        page = self.client.get("/analytics?site=1&days=7")
+        self.assertIn(b"demo.webmanager.example", page.data)
+
+    def test_aggregate_analytics_fills_every_day(self):
+        from webmanager.analytics import aggregate_analytics
+        log = Path(self.temp_directory.name) / "agg.log"
+        log.write_text("", encoding="utf-8")
+        data = aggregate_analytics(log, {1: ["a.example"]}, 7)
+        self.assertEqual(len(data["daily"]), 7)
+        self.assertEqual(data["requests"], 0)
 
 
 if __name__ == "__main__":

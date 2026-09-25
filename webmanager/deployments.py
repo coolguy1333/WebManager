@@ -16,7 +16,7 @@ from .access_control import (
     has_permission,
     site_access_levels,
 )
-from .analytics import site_analytics
+from .analytics import aggregate_analytics
 from .db import get_db
 from .domains import (
     available_domains,
@@ -44,20 +44,35 @@ from .git_service import (
 )
 from .nginx import NginxConfigError, build_site_config, validate_site_config
 from .repository_refresh import (
+    DEFAULT_CHECK_MINUTES,
+    INTERVAL_UNITS,
     MAX_REFRESH_MINUTES,
     MIN_REFRESH_MINUTES,
+    format_interval,
     next_refresh_time,
+    split_interval,
 )
 from .security import login_required, safe_local_path, validate_csrf
 from .services import RuntimeErrorDetail, allocate_port, port_is_available
 
 
 bp = Blueprint("deployments", __name__)
+bp.add_app_template_filter(format_interval, "interval")
+bp.add_app_template_global(split_interval, "split_interval")
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+# Folder names that describe build output rather than the site itself.
+BUILD_FOLDERS = {"dist", "build", "out", "_site", "public", "www", "site", "html"}
+GENERIC_FOLDERS = BUILD_FOLDERS | {"src", "static", "web", "app", "client", "frontend"}
+
+
+def _title_from(value: str) -> str:
+    return value.replace("_", " ").replace("-", " ").replace(".", " ").strip().title() or "Site"
 
 
 def valid_site_name(name: str) -> bool:
@@ -186,21 +201,29 @@ def repository_update_display(repository):
         else "repository_update_error"
     )
     fallback_error_key = "error" if "error" in keys else "repository_error"
+    mode_key = "update_mode" if "update_mode" in keys else "repository_update_mode"
+    pending_key = "pending_commit" if "pending_commit" in keys else "repository_pending_commit"
     state = repository[state_key] or "idle"
+    automatic = repository[mode_key] == "auto" if mode_key in keys else False
+    interval = repository[interval_key]
     if state == "checking":
         label = "Checking"
     elif state == "updating":
         label = "Updating"
     elif state == "failed":
         label = "Failed"
-    elif repository[interval_key]:
-        label = "Enabled"
+    elif pending_key in keys and repository[pending_key]:
+        label = "Update ready"
+    elif automatic:
+        label = f"Auto every {format_interval(interval)}"
     else:
-        label = "Disabled"
+        label = "Notify only"
     return {
         "state": state,
         "label": label,
-        "enabled": bool(repository[interval_key]),
+        "automatic": automatic,
+        "enabled": automatic,
+        "interval": interval,
         "error": repository[error_key] or repository[fallback_error_key],
     }
 
@@ -222,12 +245,17 @@ def site_attention_reasons(site):
     ):
         prefix = (
             "Automatic update failed"
-            if site["repository_auto_refresh_minutes"]
+            if site["repository_update_mode"] == "auto"
             else "Source update check failed"
         )
         reasons.append(
             f"{prefix}: "
             f"{site['repository_update_error'] or site['repository_error'] or 'unknown error'}"
+        )
+    if "repository_pending_commit" in site.keys() and site["repository_pending_commit"]:
+        reasons.append(
+            f"A source update ({site['repository_pending_commit'][:7]}) is ready "
+            "and waiting for approval."
         )
     return list(dict.fromkeys(reasons))
 
@@ -445,6 +473,8 @@ def dashboard():
                repositories.update_state AS repository_update_state,
                repositories.update_error AS repository_update_error,
                repositories.auto_refresh_minutes AS repository_auto_refresh_minutes,
+               repositories.update_mode AS repository_update_mode,
+               repositories.pending_commit AS repository_pending_commit,
                users.display_name AS owner_name, users.email AS owner_email,
                pools.name AS pool_name, domains.name AS domain_name
         FROM sites JOIN repositories ON repositories.id = sites.repository_id
@@ -527,6 +557,77 @@ def dashboard():
     )
 
 
+ANALYTICS_PERIODS = (7, 30, 90)
+
+
+def visible_sites(database):
+    """Sites the signed-in user may view (all of them for view-all roles)."""
+    show_all = has_permission(RESOURCE_VIEW_ALL) or has_permission(RESOURCE_MANAGE_ALL)
+    sites = database.execute(
+        """
+        SELECT sites.*, repositories.name AS repository_name,
+               users.display_name AS owner_name, users.email AS owner_email,
+               pools.name AS pool_name, domains.name AS domain_name
+        FROM sites JOIN repositories ON repositories.id = sites.repository_id
+        JOIN users ON users.id = sites.user_id
+        LEFT JOIN domains ON domains.id = sites.domain_id
+        LEFT JOIN pool_sites ON pool_sites.site_id = sites.id
+        LEFT JOIN pools ON pools.id = pool_sites.pool_id
+        ORDER BY sites.name COLLATE NOCASE
+        """
+    ).fetchall()
+    if show_all:
+        return sites, True
+    access_levels = site_access_levels(database, g.user["id"])
+    return [
+        site
+        for site in sites
+        if site["user_id"] == g.user["id"] or site["id"] in access_levels
+    ], False
+
+
+@bp.get("/analytics")
+@login_required
+def analytics():
+    database = get_db()
+    sites, show_all = visible_sites(database)
+    try:
+        days = int(request.args.get("days", 30))
+    except ValueError:
+        days = 30
+    if days not in ANALYTICS_PERIODS:
+        days = 30
+    requested_site = request.args.get("site", "all")
+    selected = next(
+        (site for site in sites if str(site["id"]) == requested_site),
+        None,
+    )
+    hostnames = {site["id"]: site_hostnames(database, site) for site in sites}
+    scope = {selected["id"]: hostnames[selected["id"]]} if selected else hostnames
+    data = aggregate_analytics(
+        Path(current_app.config["NGINX_ROOT"]) / "access.log",
+        scope,
+        days,
+    )
+    ranked = sorted(
+        (site for site in sites if site["id"] in scope),
+        key=lambda site: data["per_site"][site["id"]]["requests"],
+        reverse=True,
+    )
+    return render_template(
+        "analytics.html",
+        title="Analytics",
+        data=data,
+        sites=sites,
+        ranked_sites=ranked,
+        selected_site=selected,
+        hostnames=hostnames,
+        days=days,
+        periods=ANALYTICS_PERIODS,
+        show_all=show_all,
+    )
+
+
 @bp.post("/repositories/inspect")
 @login_required
 def inspect_repository():
@@ -546,10 +647,16 @@ def inspect_repository():
     name = repo_name_from_url(url)
     cursor = database.execute(
         """
-        INSERT INTO repositories (user_id, name, url, branch, local_path, status)
-        VALUES (?, ?, ?, ?, '', 'cloning')
+        INSERT INTO repositories (
+            user_id, name, url, branch, local_path, status,
+            auto_refresh_minutes, next_refresh_at, update_mode
+        )
+        VALUES (?, ?, ?, ?, '', 'cloning', ?, ?, 'approval')
         """,
-        (g.user["id"], name, display_repo_url(url), branch),
+        (
+            g.user["id"], name, display_repo_url(url), branch,
+            DEFAULT_CHECK_MINUTES, next_refresh_time(DEFAULT_CHECK_MINUTES),
+        ),
     )
     repository_id = cursor.lastrowid
     target = Path(current_app.config["REPOSITORY_ROOT"]) / str(g.user["id"]) / str(repository_id)
@@ -603,19 +710,28 @@ def inspect_repository():
 def select_folder(repository_id):
     repository = owned_repository(repository_id, manage=True)
     candidates = find_index_folders(Path(repository["local_path"]))
-    suggested_name = repository["name"].replace("_", " ").replace("-", " ").title()
+    suggested_name = _title_from(repository["name"])
     for candidate in candidates:
+        parts = [] if candidate["folder"] == "." else candidate["folder"].split("/")
+        meaningful = [part for part in parts if part.lower() not in GENERIC_FOLDERS]
         candidate["suggested_name"] = (
-            suggested_name
-            if candidate["folder"] == "."
-            else Path(candidate["folder"]).name.replace("_", " ").replace("-", " ").title()
+            _title_from(meaningful[-1]) if meaningful else suggested_name
         )
+        candidate["suggested_slug"] = slugify(candidate["suggested_name"])
+        candidate["parent"] = "/".join(parts[:-1])
+        candidate["leaf"] = parts[-1] if parts else ""
+        candidate["is_build_output"] = bool(parts) and parts[-1].lower() in BUILD_FOLDERS
+    recommended = next(
+        (index for index, candidate in enumerate(candidates) if candidate["is_build_output"]),
+        0,
+    )
     return render_template(
         "select_folder.html",
         title="Select site folder",
         repository=repository,
         candidates=candidates,
         suggested_name=suggested_name,
+        recommended_index=recommended,
         port_min=current_app.config["SITE_PORT_MIN"],
         port_max=current_app.config["SITE_PORT_MAX"],
         site_domains=available_domains(get_db()),
@@ -643,28 +759,33 @@ def refresh_repository(repository_id):
 def schedule_repository_refresh(repository_id):
     validate_csrf()
     repository = owned_repository(repository_id, manage=True)
-    raw_minutes = request.form.get("auto_refresh_minutes", "").strip()
     update_mode = request.form.get("update_mode", "approval")
     if update_mode not in {"approval", "auto"}:
         abort(400, "Unknown update mode.")
 
-    if not raw_minutes:
-        minutes = None
-        next_run = None
+    if update_mode == "approval":
+        # Checks never stop; owners are notified and approve each update.
+        minutes = DEFAULT_CHECK_MINUTES
     else:
+        raw_amount = request.form.get(
+            "auto_update_every", request.form.get("auto_refresh_minutes", "")
+        ).strip()
+        unit = request.form.get("auto_update_unit", "minutes")
+        if unit not in INTERVAL_UNITS:
+            abort(400, "Unknown interval unit.")
         try:
-            minutes = int(raw_minutes)
+            minutes = int(raw_amount) * INTERVAL_UNITS[unit]
         except ValueError:
-            flash("Automatic refresh must be a whole number of minutes.", "error")
+            flash("Enter how often to update as a whole number.", "error")
             return action_redirect("deployments.dashboard", view="sources")
         if minutes < MIN_REFRESH_MINUTES or minutes > MAX_REFRESH_MINUTES:
             flash(
-                f"Automatic refresh must be between {MIN_REFRESH_MINUTES} "
-                f"and {MAX_REFRESH_MINUTES} minutes.",
+                f"Automatic updates must run between every {MIN_REFRESH_MINUTES} "
+                f"minutes and every {format_interval(MAX_REFRESH_MINUTES)}.",
                 "error",
             )
             return action_redirect("deployments.dashboard", view="sources")
-        next_run = next_refresh_time(minutes)
+    next_run = next_refresh_time(minutes)
 
     database = get_db()
     database.execute(
@@ -677,14 +798,17 @@ def schedule_repository_refresh(repository_id):
         (minutes, next_run, update_mode, repository_id),
     )
     database.commit()
-    if minutes:
-        action = "apply automatically" if update_mode == "auto" else "wait for owner approval"
+    if update_mode == "auto":
         flash(
-            f"Update checks set to every {minutes} minutes and will {action}.",
+            f"Updates will install automatically every {format_interval(minutes)}.",
             "success",
         )
     else:
-        flash("Scheduled update checks disabled. Manual checks remain available.", "success")
+        flash(
+            "Automatic updates turned off. WebManager keeps checking every "
+            f"{format_interval(minutes)} and will ask you to approve new versions.",
+            "success",
+        )
     if update_mode == "auto":
         result = current_app.extensions[
             "repository_refresh_manager"
@@ -784,6 +908,7 @@ def deploy_repository(repository_id):
                     "name": request.form.get(f"site_name_{index}", "").strip(),
                     "folder": request.form.get(f"folder_{index}", ""),
                     "spa_fallback": request.form.get(f"spa_fallback_{index}") == "on",
+                    "slug": request.form.get(f"slug_{index}", "").strip().lower(),
                     "port": "",
                 }
             )
@@ -827,7 +952,18 @@ def deploy_repository(repository_id):
                 current_app.config["SITE_PORT_MAX"],
                 requested_port,
             )
-            slug = unique_slug(database, item["name"])
+            if item.get("slug") and not use_domain_root:
+                if not HOST_LABEL_RE.fullmatch(item["slug"]):
+                    raise ValueError(
+                        f"{item['slug']} is not a valid subdomain. Use letters, numbers, and dashes."
+                    )
+                if database.execute(
+                    "SELECT 1 FROM sites WHERE slug = ?", (item["slug"],)
+                ).fetchone():
+                    raise ValueError(f"The subdomain {item['slug']} is already taken.")
+                slug = item["slug"]
+            else:
+                slug = unique_slug(database, item["name"])
             hostnames = [
                 selected_domain["name"]
                 if use_domain_root
@@ -947,9 +1083,10 @@ def site_detail(site_id):
         attention_reasons=site_attention_reasons(site),
         update_display=repository_update_display(site),
         site_log=recent_site_log(site_id),
-        analytics=site_analytics(
+        analytics=aggregate_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
-            hostnames,
+            {site["id"]: hostnames},
+            30,
         ),
     )
 

@@ -73,202 +73,265 @@ document.querySelectorAll("[data-copy]").forEach((button) => {
   });
 });
 
-const selectedFolder = document.querySelector("[data-selected-folder]");
-document.querySelectorAll('input[name="folder"]').forEach((radio) => {
-  radio.addEventListener("change", () => {
-    if (selectedFolder && radio.checked) {
-      selectedFolder.textContent = radio.value;
-    }
-  });
-});
-
-const deployOptions = document.querySelectorAll("[data-deploy-option]");
-const selectedCount = document.querySelector("[data-selected-count]");
-const hostingPicker = document.querySelector("[data-hosting-picker]");
-const hostingDomain = document.querySelector("[data-hosting-domain]");
-const hostingModes = document.querySelectorAll('input[name="hosting_mode"]');
-const deploySubmit = document.querySelector("[data-deploy-submit]");
-const hostingUrl = document.querySelector("[data-hosting-url]");
-const hostingHelp = document.querySelector("[data-hosting-help]");
-const subdomainPreview = document.querySelector("[data-subdomain-preview]");
-const rootPreview = document.querySelector("[data-root-preview]");
-const domainAliasInputs = document.querySelectorAll('input[name="additional_domain_ids"]');
 const slugifyPreview = (value) => value
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, "-")
   .replace(/^-+|-+$/g, "")
   .slice(0, 48) || "site";
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-const updateDeploySelection = () => {
-  let count = 0;
-  deployOptions.forEach((option) => {
-    const checkbox = option.querySelector('input[name="selected"]');
-    const selected = Boolean(checkbox?.checked);
-    option.classList.toggle("selected", selected);
-    if (selected) {
-      count += 1;
-    }
-  });
-  if (selectedCount) {
-    selectedCount.textContent = count;
-  }
-  const deployLabel = document.querySelector("[data-deploy-label]");
-  if (deployLabel) {
-    deployLabel.textContent = count === 1 ? "1 site" : `${count} sites`;
-  }
-  if (deploySubmit && !document.querySelector('input[name="hosting_mode"][value="root"]:checked')) {
-    deploySubmit.disabled = count === 0;
-  }
-};
-
-const updateHostingChoice = () => {
-  if (!hostingPicker || !hostingDomain) {
-    return;
-  }
-  const selectedMode = document.querySelector('input[name="hosting_mode"]:checked')?.value || "subdomain";
-  const rootMode = selectedMode === "root";
-  const option = hostingDomain.selectedOptions[0];
-  domainAliasInputs.forEach((input) => {
-    const isPrimary = input.value === hostingDomain.value;
-    input.disabled = isPrimary;
-    if (isPrimary) {
-      input.checked = false;
-    }
-  });
-  const domain = option?.dataset.domain || option?.textContent.trim() || "";
-  const rootAvailable = option?.dataset.rootAvailable !== "false";
-  const rootSite = option?.dataset.rootSite || "another site";
-  const scheme = hostingPicker.dataset.publicScheme || "https";
-  let selectedCards = [...deployOptions].filter(
-    (card) => card.querySelector('input[name="selected"]')?.checked,
-  );
-
-  if (rootMode && selectedCards.length === 0 && deployOptions.length) {
-    const firstCheckbox = deployOptions[0].querySelector('input[name="selected"]');
-    if (firstCheckbox) {
-      firstCheckbox.checked = true;
-      selectedCards = [deployOptions[0]];
-    }
-  }
-  if (rootMode && selectedCards.length > 1) {
-    selectedCards.slice(1).forEach((card) => {
-      const checkbox = card.querySelector('input[name="selected"]');
-      if (checkbox) {
-        checkbox.checked = false;
-      }
-    });
-  }
-  deployOptions.forEach((card) => {
-    const checkbox = card.querySelector('input[name="selected"]');
-    if (checkbox) {
-      checkbox.disabled = rootMode && !checkbox.checked;
-    }
-  });
-  updateDeploySelection();
-
-  const activeCard = [...deployOptions].find(
-    (card) => card.querySelector('input[name="selected"]')?.checked,
-  );
-  const siteName = activeCard?.querySelector('input[name^="site_name_"]')?.value || "site";
-  const slug = slugifyPreview(siteName);
-  const previewHost = rootMode ? domain : `${slug}.${domain}`;
-  if (subdomainPreview) {
-    subdomainPreview.textContent = `${slug}.${domain}`;
-  }
-  if (rootPreview) {
-    rootPreview.textContent = domain;
-  }
-  if (hostingUrl) {
-    hostingUrl.textContent = domain ? `${scheme}://${previewHost}` : "Choose a domain";
-  }
-  if (hostingHelp) {
-    hostingHelp.textContent = rootMode
-      ? rootAvailable
-        ? "Root hosting is available. Only the selected folder will be deployed."
-        : `Root hosting is already used by ${rootSite}. Choose another domain or use a subdomain.`
-      : "Each selected folder receives its own subdomain.";
-    hostingHelp.classList.toggle("error-text", rootMode && !rootAvailable);
-  }
-  if (deploySubmit) {
-    deploySubmit.disabled = (rootMode && !rootAvailable) || selectedCards.length === 0;
-  }
-};
-
-deployOptions.forEach((option) => {
-  option.querySelector('input[name="selected"]')?.addEventListener("change", () => {
-    updateDeploySelection();
-    updateHostingChoice();
-  });
-  option.querySelector('input[name^="site_name_"]')?.addEventListener("input", updateHostingChoice);
-});
-hostingDomain?.addEventListener("change", updateHostingChoice);
-hostingModes.forEach((mode) => mode.addEventListener("change", updateHostingChoice));
-updateDeploySelection();
-updateHostingChoice();
-
-const settingsHostingPreview = document.querySelector("[data-settings-hosting-preview]");
-const settingsHostingUrl = document.querySelector("[data-settings-hosting-url]");
-const settingsHostingHelp = document.querySelector("[data-settings-hosting-help]");
-const settingsDomain = document.querySelector(".settings-form [data-hosting-domain]");
-const settingsSlug = document.querySelector('.settings-form input[name="slug"]');
-const settingsSubmit = document.querySelector('.settings-form button[type="submit"]');
-const updateSettingsHostingChoice = () => {
-  if (!settingsHostingPreview || !settingsDomain) {
-    return;
-  }
-  const mode = document.querySelector('.settings-form input[name="hosting_mode"]:checked')?.value || "subdomain";
-  const option = settingsDomain.selectedOptions[0];
-  document.querySelectorAll('.settings-form input[name="additional_domain_ids"]').forEach((input) => {
-    const isPrimary = input.value === settingsDomain.value;
-    input.disabled = isPrimary;
-    if (isPrimary) {
-      input.checked = false;
-    }
-  });
-  const domain = option?.dataset.domain || "";
-  const rootMode = mode === "root";
-  const rootAvailable = option?.dataset.rootAvailable !== "false";
-  const scheme = settingsHostingPreview.dataset.publicScheme || "https";
-  const slug = slugifyPreview(settingsSlug?.value || "site");
-  if (!domain) {
-    settingsHostingUrl.textContent = "Direct port only";
-    settingsHostingHelp.textContent = "Choose a public domain to use root or subdomain hosting.";
-    settingsSubmit.disabled = rootMode;
-    return;
-  }
-  settingsHostingUrl.textContent = `${scheme}://${rootMode ? domain : `${slug}.${domain}`}`;
-  settingsHostingHelp.textContent = rootMode
-    ? rootAvailable
-      ? "This site will own the domain root."
-      : `The domain root is already used by ${option.dataset.rootSite || "another site"}.`
-    : "The URL slug is used as the subdomain.";
-  settingsHostingHelp.classList.toggle("error-text", rootMode && !rootAvailable);
-  settingsSubmit.disabled = rootMode && !rootAvailable;
-};
-settingsDomain?.addEventListener("change", updateSettingsHostingChoice);
-settingsSlug?.addEventListener("input", updateSettingsHostingChoice);
-document.querySelectorAll('.settings-form input[name="hosting_mode"]').forEach(
-  (mode) => mode.addEventListener("change", updateSettingsHostingChoice),
-);
-updateSettingsHostingChoice();
-
-document.querySelectorAll("[data-filter-input]").forEach((input) => {
+// Filter rows in a folder list.
+document.querySelectorAll("[data-folder-filter]").forEach((input) => {
+  const scope = input.closest("section") || document;
   input.addEventListener("input", () => {
-    const group = input.dataset.filterInput;
     const query = input.value.trim().toLowerCase();
     let visible = 0;
-    document.querySelectorAll(`[data-filter-item="${group}"]`).forEach((item) => {
-      const text = (item.dataset.filterText || item.textContent).toLowerCase();
-      item.hidden = Boolean(query) && !text.includes(query);
-      if (!item.hidden) {
-        visible += 1;
-      }
+    scope.querySelectorAll("[data-folder-text]").forEach((row) => {
+      row.hidden = Boolean(query) && !row.dataset.folderText.toLowerCase().includes(query);
+      visible += row.hidden ? 0 : 1;
     });
-    const empty = document.querySelector(`[data-filter-empty="${group}"]`);
+    const empty = scope.querySelector("[data-folder-empty]");
     if (empty) {
       empty.hidden = visible > 0;
     }
   });
+});
+
+// Settings page: single-choice folder list.
+document.querySelectorAll("[data-folder-option] input[type=radio]").forEach((radio) => {
+  radio.addEventListener("change", () => {
+    document.querySelectorAll("[data-folder-option]").forEach((row) => {
+      row.classList.toggle("selected", row.querySelector("input").checked);
+    });
+  });
+});
+
+// ---------- Deploy page ----------
+const deployForm = document.querySelector("[data-deploy-form]");
+if (deployForm) {
+  const rows = [...deployForm.querySelectorAll("[data-deploy-option]")];
+  const domainSelect = deployForm.querySelector("[data-hosting-domain]");
+  const submit = deployForm.querySelector("[data-deploy-submit]");
+  const label = deployForm.querySelector("[data-deploy-label]");
+  const summary = deployForm.querySelector("[data-deploy-summary]");
+  const detail = deployForm.querySelector("[data-deploy-detail]");
+  const help = deployForm.querySelector("[data-hosting-help]");
+  const scheme = deployForm.dataset.publicScheme || "https";
+
+  rows.forEach((row) => {
+    const name = row.querySelector("[data-site-name]");
+    const slug = row.querySelector("[data-slug-input]");
+    // The subdomain follows the site name until the user edits it directly.
+    if (slug) {
+      slug.dataset.auto = String(slug.value === slugifyPreview(name.value));
+      slug.addEventListener("input", () => {
+        slug.dataset.auto = String(slug.value === "");
+        update();
+      });
+      slug.addEventListener("blur", () => {
+        if (!slug.value.trim()) {
+          slug.dataset.auto = "true";
+        }
+        update();
+      });
+    }
+    name.addEventListener("input", update);
+    row.querySelector('input[name="selected"]').addEventListener("change", (event) => {
+      if (rootMode() && event.target.checked) {
+        rows.forEach((other) => {
+          if (other !== row) {
+            other.querySelector('input[name="selected"]').checked = false;
+          }
+        });
+      }
+      update();
+      if (event.target.checked) {
+        name.focus();
+        name.select();
+      }
+    });
+  });
+
+  function rootMode() {
+    return deployForm.querySelector('input[name="hosting_mode"]:checked')?.value === "root";
+  }
+
+  function update() {
+    const option = domainSelect?.selectedOptions[0];
+    const domain = option?.dataset.domain || "";
+    const root = rootMode();
+    const rootAvailable = option?.dataset.rootAvailable !== "false";
+    const selected = rows.filter((row) => row.querySelector('input[name="selected"]').checked);
+    const seen = new Map();
+    let invalid = false;
+
+    if (root && selected.length > 1) {
+      selected.slice(1).forEach((row) => { row.querySelector('input[name="selected"]').checked = false; });
+      selected.length = 1;
+    }
+
+    rows.forEach((row) => {
+      const isSelected = selected.includes(row);
+      const name = row.querySelector("[data-site-name]");
+      const slug = row.querySelector("[data-slug-input]");
+      const error = row.querySelector("[data-slug-error]");
+      const suffix = row.querySelector("[data-domain-suffix]");
+      const host = row.querySelector("[data-row-host]");
+      const url = row.querySelector("[data-row-url]");
+      row.classList.toggle("selected", isSelected);
+      row.classList.toggle("root-mode", root);
+      if (suffix) {
+        suffix.textContent = `.${domain}`;
+      }
+      if (!domain) {
+        return;
+      }
+      if (slug && slug.dataset.auto === "true") {
+        slug.value = slugifyPreview(name.value || "site");
+      }
+      const label = slug ? slug.value.trim().toLowerCase() : "";
+      let message = "";
+      if (isSelected && !root) {
+        if (!HOST_LABEL.test(label)) {
+          message = "Use lowercase letters, numbers, and dashes.";
+        } else if (seen.has(label)) {
+          message = "Another selected folder uses this subdomain.";
+        }
+        seen.set(label, row);
+      }
+      if (slug) {
+        slug.classList.toggle("invalid", Boolean(message));
+        slug.setCustomValidity(message);
+        slug.disabled = !isSelected || root;
+      }
+      if (error) {
+        error.textContent = message;
+      }
+      invalid = invalid || Boolean(message);
+      const hostname = root ? domain : `${label || "…"}.${domain}`;
+      if (host) {
+        host.textContent = hostname;
+      }
+      if (url) {
+        url.textContent = `${scheme}://${hostname}`;
+      }
+    });
+
+    deployForm.querySelectorAll("[data-domain-alias]").forEach((input) => {
+      const isPrimary = input.value === domainSelect?.value;
+      input.disabled = isPrimary;
+      if (isPrimary) {
+        input.checked = false;
+      }
+      input.closest("label").hidden = isPrimary;
+      const note = input.closest("label").querySelector("[data-alias-note]");
+      if (note) {
+        note.textContent = root ? `Served at ${input.dataset.domainName}` : "Same subdomain";
+      }
+    });
+
+    if (help) {
+      help.textContent = root
+        ? rootAvailable
+          ? `Publishes exactly one folder at ${domain}.`
+          : `${domain} is already used by ${option.dataset.rootSite || "another site"}. Pick another domain or use subdomains.`
+        : "Each site gets its own subdomain, which you can edit below.";
+      help.classList.toggle("error-text", root && !rootAvailable);
+    }
+    deployForm.querySelectorAll("[data-select-all]").forEach((button) => { button.disabled = root; });
+
+    const count = selected.length;
+    if (label) {
+      label.textContent = count === 1 ? "1 site" : `${count} sites`;
+    }
+    if (summary) {
+      summary.textContent = count ? `${count} folder${count === 1 ? "" : "s"} selected` : "No folders selected";
+    }
+    if (detail) {
+      const hosts = selected.map((row) => row.querySelector("[data-row-host]")?.textContent).filter(Boolean);
+      detail.textContent = hosts.length ? hosts.join(" · ") : count ? "Internal ports assigned automatically." : "Tick at least one folder above.";
+    }
+    submit.disabled = count === 0 || invalid || (root && !rootAvailable);
+  }
+
+  deployForm.querySelector("[data-select-all]")?.addEventListener("click", () => {
+    rows.filter((row) => !row.hidden).forEach((row) => { row.querySelector('input[name="selected"]').checked = true; });
+    update();
+  });
+  deployForm.querySelector("[data-select-none]")?.addEventListener("click", () => {
+    rows.forEach((row) => { row.querySelector('input[name="selected"]').checked = false; });
+    update();
+  });
+  domainSelect?.addEventListener("change", update);
+  deployForm.querySelectorAll('input[name="hosting_mode"]').forEach((input) => input.addEventListener("change", update));
+  update();
+}
+
+// ---------- Settings page: main address ----------
+const settingsHosting = document.querySelector("[data-settings-hosting-preview]");
+if (settingsHosting) {
+  const domainSelect = settingsHosting.querySelector("[data-hosting-domain]");
+  const slug = settingsHosting.querySelector("[data-settings-slug]");
+  const rootToggle = settingsHosting.querySelector("[data-root-toggle]");
+  const url = settingsHosting.querySelector("[data-settings-hosting-url]");
+  const help = settingsHosting.querySelector("[data-settings-hosting-help]");
+  const row = settingsHosting.querySelector(".hostname-row");
+  const submit = document.querySelector('.settings-form button[type="submit"]');
+  const scheme = settingsHosting.dataset.publicScheme || "https";
+  const updateSettingsHosting = () => {
+    const option = domainSelect.selectedOptions[0];
+    const domain = option?.dataset.domain || "";
+    const root = rootToggle.checked;
+    const rootAvailable = option?.dataset.rootAvailable !== "false";
+    const label = slugifyPreview(slug.value || "site");
+    row.classList.toggle("root-mode", root && Boolean(domain));
+    rootToggle.disabled = !domain;
+    let blocked = false;
+    if (!domain) {
+      url.textContent = "Internal port only";
+      help.textContent = "Choose a domain to give this site a public address.";
+    } else if (root) {
+      url.textContent = `${scheme}://${domain}`;
+      blocked = !rootAvailable;
+      help.textContent = blocked
+        ? `${domain} is already used by ${option.dataset.rootSite || "another site"}.`
+        : "This site will own the bare domain. The subdomain is still used for alternate addresses.";
+    } else {
+      url.textContent = `${scheme}://${label}.${domain}`;
+      help.textContent = slug.value && slug.value.toLowerCase() !== label ? `Saved as “${label}”.` : "";
+    }
+    help.classList.toggle("error-text", blocked);
+    if (submit) {
+      submit.disabled = blocked;
+    }
+  };
+  [domainSelect, rootToggle].forEach((el) => el.addEventListener("change", updateSettingsHosting));
+  slug.addEventListener("input", updateSettingsHosting);
+  updateSettingsHosting();
+}
+
+// Generic list filtering: a search box plus optional tag radios per group.
+const runFilter = (group) => {
+  const input = document.querySelector(`[data-filter-input="${group}"]`);
+  const query = (input?.value || "").trim().toLowerCase();
+  const tag = document.querySelector(`input[data-filter-kind="${group}"]:checked`)?.value || "";
+  let visible = 0;
+  document.querySelectorAll(`[data-filter-item="${group}"]`).forEach((item) => {
+    const text = (item.dataset.filterText || item.textContent).toLowerCase();
+    const tags = (item.dataset.filterTags || "").split(" ");
+    item.hidden = (Boolean(query) && !text.includes(query)) || (Boolean(tag) && !tags.includes(tag));
+    visible += item.hidden ? 0 : 1;
+  });
+  const empty = document.querySelector(`[data-filter-empty="${group}"]`);
+  if (empty) {
+    empty.hidden = visible > 0;
+  }
+};
+document.querySelectorAll("[data-filter-input]").forEach((input) => {
+  input.addEventListener("input", () => runFilter(input.dataset.filterInput));
+});
+document.querySelectorAll("input[data-filter-kind]").forEach((input) => {
+  input.addEventListener("change", () => runFilter(input.dataset.filterKind));
 });
 
 document.querySelectorAll("[data-permission-profile]").forEach((select) => {
@@ -407,4 +470,98 @@ if (editor) {
     }
     releaseTab = false;
   });
+}
+
+// Sources: only show the auto-update interval when "Install automatically" is chosen.
+document.querySelectorAll("[data-update-form]").forEach((form) => {
+  const interval = form.querySelector("[data-auto-interval]");
+  const sync = () => {
+    const auto = form.querySelector('input[name="update_mode"]:checked')?.value === "auto";
+    interval?.classList.toggle("is-hidden", !auto);
+    interval?.querySelectorAll("input, select").forEach((input) => { input.disabled = !auto; });
+  };
+  form.querySelectorAll('input[name="update_mode"]').forEach((input) => input.addEventListener("change", sync));
+  sync();
+});
+
+// Filter forms that apply as soon as a choice changes (analytics site/period).
+document.querySelectorAll("form[data-autosubmit]").forEach((form) => {
+  form.addEventListener("change", () => form.requestSubmit());
+});
+
+// ---------- Sites: search, status filter, and grouping ----------
+const siteToolbar = document.querySelector("[data-site-toolbar]");
+if (siteToolbar) {
+  const list = document.querySelector(".sites-list");
+  const rows = [...list.querySelectorAll("[data-site-row]")];
+  const search = siteToolbar.querySelector("[data-site-search]");
+  const groupSelect = siteToolbar.querySelector("[data-site-group]");
+  const empty = list.querySelector("[data-site-empty]");
+  const storageKey = "webmanager.sites.groupBy";
+  try {
+    const saved = window.localStorage.getItem(storageKey);
+    if (saved !== null && groupSelect.querySelector(`option[value="${CSS.escape(saved)}"]`)) {
+      groupSelect.value = saved;
+    }
+  } catch { /* storage unavailable */ }
+
+  const apply = () => {
+    const query = search.value.trim().toLowerCase();
+    const terms = query.split(/\s+/).filter(Boolean);
+    const status = siteToolbar.querySelector('input[name="site_status"]:checked')?.value || "all";
+    const group = groupSelect.value;
+    list.querySelectorAll(".list-group-head").forEach((head) => head.remove());
+
+    const visible = rows.filter((row) => {
+      const matches = terms.every((term) => row.dataset.search.includes(term))
+        && (status === "all" || row.dataset.status === status);
+      row.hidden = !matches;
+      return matches;
+    });
+
+    let ordered = rows;
+    if (group) {
+      const key = `group${group[0].toUpperCase()}${group.slice(1)}`;
+      ordered = [...rows].sort((a, b) => a.dataset[key].localeCompare(b.dataset[key], undefined, { sensitivity: "base" }));
+      const counts = new Map();
+      visible.forEach((row) => counts.set(row.dataset[key], (counts.get(row.dataset[key]) || 0) + 1));
+      let current = null;
+      ordered.forEach((row) => {
+        list.insertBefore(row, empty);
+        if (!row.hidden && row.dataset[key] !== current) {
+          current = row.dataset[key];
+          const head = document.createElement("div");
+          head.className = "list-group-head";
+          head.setAttribute("role", "row");
+          const name = document.createElement("span");
+          name.textContent = current;
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = counts.get(current);
+          head.append(name, badge);
+          list.insertBefore(head, row);
+        }
+      });
+    } else {
+      ordered.forEach((row) => list.insertBefore(row, empty));
+    }
+    empty.hidden = visible.length > 0;
+    try { window.localStorage.setItem(storageKey, group); } catch { /* ignore */ }
+  };
+
+  search.addEventListener("input", apply);
+  groupSelect.addEventListener("change", apply);
+  siteToolbar.querySelectorAll('input[name="site_status"]').forEach((input) => input.addEventListener("change", apply));
+  list.querySelector("[data-site-reset]")?.addEventListener("click", () => {
+    search.value = "";
+    siteToolbar.querySelector('input[name="site_status"][value="all"]').checked = true;
+    apply();
+  });
+  // The "Needs attention" stat jumps straight to the filtered list.
+  document.querySelector(".stat.danger")?.addEventListener("click", () => {
+    siteToolbar.querySelector('input[name="site_status"][value="attention"]').checked = true;
+    apply();
+    list.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  apply();
 }

@@ -482,6 +482,16 @@ def _migrate_repositories(database):
         WHERE auto_refresh_minutes IS NOT NULL
         """
     )
+    # Update checks are always on. Repositories that previously had checks
+    # turned off get the default notify-only interval.
+    database.execute(
+        """
+        UPDATE repositories
+        SET auto_refresh_minutes = 15, update_mode = 'approval',
+            next_refresh_at = COALESCE(next_refresh_at, CURRENT_TIMESTAMP)
+        WHERE auto_refresh_minutes IS NULL
+        """
+    )
     database.execute(
         """
         UPDATE repositories

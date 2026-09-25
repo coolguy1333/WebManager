@@ -1,22 +1,14 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
 {% block content %}
-{% set headings = {
-  "overview": ("Administration", "Accounts, access, domains, and system updates."),
-  "people": ("People", "Activate accounts and add people to teams."),
-  "teams": ("Teams", "Group people and choose what each team may do."),
-  "updates": ("System", "Check for and install WebManager updates."),
-} %}
-{% set heading = headings.get(active_section, headings["overview"]) %}
+{% if active_section == "updates" %}
 <header class="page-header">
-  <div>
-    <h1>{{ heading[0] }}</h1>
-    <p>{{ heading[1] }}</p>
-  </div>
-  <div class="actions"><span class="badge">{{ counts.active_users }} active account{{ "" if counts.active_users == 1 else "s" }}</span></div>
+  <div><h1>System</h1><p>Check for and install WebManager updates.</p></div>
 </header>
-
-{% if google_access_unrestricted %}
+{% else %}
+{% set current_tab = active_section %}
+{% include "admin/_access_header.html" %}
+{% if google_access_unrestricted and active_section == "people" %}
 <div class="alert warning mb-24" role="alert">
   {{ ui.icon('alert') }}
   <div class="alert-body">
@@ -25,67 +17,30 @@
   </div>
 </div>
 {% endif %}
-
-{% if active_section == "overview" %}
-<section class="tile-grid mb-24">
-  {% if can_manage_users %}
-  <a class="tile" href="{{ url_for('admin.dashboard', section='people') }}">
-    <span class="record-icon">{{ ui.icon('user', 18) }}</span>
-    <span class="tile-text"><strong>People</strong><small>Activate accounts and assign teams.</small></span>
-    <span class="badge">{{ counts.users }}</span>
-  </a>
-  {% endif %}
-  {% if can_manage_groups %}
-  <a class="tile" href="{{ url_for('admin.dashboard', section='teams') }}">
-    <span class="record-icon">{{ ui.icon('users', 18) }}</span>
-    <span class="tile-text"><strong>Teams</strong><small>Group people and pick an access profile.</small></span>
-    <span class="badge">{{ counts.groups }}</span>
-  </a>
-  {% endif %}
-  {% if can_manage_access %}
-  <a class="tile" href="{{ url_for('admin.access_dashboard') }}">
-    <span class="record-icon">{{ ui.icon('shield', 18) }}</span>
-    <span class="tile-text"><strong>Access</strong><small>Put sites in pools and share them.</small></span>
-    <span class="badge">{{ counts.pools }} pool{{ "" if counts.pools == 1 else "s" }}</span>
-  </a>
-  {% endif %}
-  {% if super_admin %}
-  <a class="tile" href="{{ url_for('admin.domains_dashboard') }}">
-    <span class="record-icon">{{ ui.icon('link', 18) }}</span>
-    <span class="tile-text"><strong>Domains</strong><small>Dashboard and hosted-site domains.</small></span>
-    <span class="badge">{{ counts.domains }}</span>
-  </a>
-  <a class="tile" href="{{ url_for('admin.dashboard', section='updates') }}">
-    <span class="record-icon">{{ ui.icon('cpu', 18) }}</span>
-    <span class="tile-text"><strong>System</strong><small>Installed version and updates.</small></span>
-    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ')|capitalize }}</span>
-  </a>
-  {% endif %}
-</section>
-
-<div class="alert info">
-  {{ ui.icon('info') }}
-  <div class="alert-body"><strong>How access works</strong>People join teams. Teams get a platform profile and/or access to site pools. Use direct site grants only for one-off exceptions. Super admins always have full access.</div>
-</div>
 {% endif %}
 
 {% if active_section == "people" and can_manage_users %}
-<div class="section-title">
-  <div><h2>{{ users|length }} {{ "person" if users|length == 1 else "people" }}</h2></div>
-  <label class="search"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Find a person" data-filter-input="users"></label>
+<div class="toolbar">
+  <label class="search grow"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search name, email, or team" data-filter-input="users"></label>
+  <div class="segmented" role="radiogroup" aria-label="Show">
+    <label><input type="radio" name="people_filter" value="" checked data-filter-kind="users"><span>Everyone <b>{{ users|length }}</b></span></label>
+    <label><input type="radio" name="people_filter" value="active" data-filter-kind="users"><span>Active <b>{{ counts.active_users }}</b></span></label>
+    <label><input type="radio" name="people_filter" value="disabled" data-filter-kind="users"><span>Disabled <b>{{ users|length - counts.active_users }}</b></span></label>
+    <label><input type="radio" name="people_filter" value="admin" data-filter-kind="users"><span>Admins <b>{{ users|selectattr("is_admin")|list|length }}</b></span></label>
+  </div>
 </div>
 <div class="records">
   {% for user in users %}
-  <details class="record" data-filter-item="users" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ user.group_names or '' }}">
+  <details class="record" data-filter-item="users" data-filter-tags="{{ 'active' if user.is_active else 'disabled' }}{{ ' admin' if user.is_admin }}" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ user.group_names or '' }}">
     <summary>
       <span class="avatar" aria-hidden="true">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
       <span class="record-title">
         <strong>{{ user.display_name or user.username }}</strong>
-        <small>{{ user.email or user.username }}</small>
+        <small>{{ user.email or user.username }} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
       </span>
       <span class="record-tags">
         {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% endif %}
-        {% if user.group_names %}<span class="badge">{{ user.group_names }}</span>{% endif %}
+        {% for name in (user.group_names or "").split(", ") if name %}<span class="badge">{{ name }}</span>{% endfor %}
         <span class="badge {{ 'badge-success' if user.is_active else 'badge-danger' }}">{{ "Active" if user.is_active else "Disabled" }}</span>
       </span>
       <span class="chev">{{ ui.icon('chevron') }}</span>

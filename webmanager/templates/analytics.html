@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Analytics</h1>
+    <p>
+      {% if selected_site %}Traffic for <strong>{{ selected_site.name }}</strong>{% if hostnames[selected_site.id] %} ({{ hostnames[selected_site.id]|join(", ") }}){% endif %}.
+      {% else %}Traffic across {{ "all" if show_all else "your" }} {{ sites|length }} site{{ "" if sites|length == 1 else "s" }}.{% endif %}
+      From the Nginx access log · no tracking scripts.
+    </p>
+  </div>
+  {% if selected_site %}<div class="actions"><a class="btn" href="{{ url_for('deployments.site_detail', site_id=selected_site.id) }}">Open site {{ ui.icon('arrow-right', 14) }}</a></div>{% endif %}
+</header>
+
+<form class="toolbar" method="get" data-autosubmit>
+  <label class="field">
+    <span class="visually-hidden">Site</span>
+    <select name="site" aria-label="Site">
+      <option value="all">All sites ({{ sites|length }})</option>
+      {% for site in sites %}<option value="{{ site.id }}" {% if selected_site and selected_site.id == site.id %}selected{% endif %}>{{ site.name }}{% if show_all and site.owner_name %} — {{ site.owner_name }}{% endif %}</option>{% endfor %}
+    </select>
+  </label>
+  <div class="segmented" role="radiogroup" aria-label="Period">
+    {% for period in periods %}<label><input type="radio" name="days" value="{{ period }}" {% if period == days %}checked{% endif %}><span>{{ period }} days</span></label>{% endfor %}
+  </div>
+  <noscript><button class="btn" type="submit">Apply</button></noscript>
+</form>
+
+<section class="stats">
+  <div class="stat"><span>Requests</span><strong>{{ "{:,}".format(data.requests) }}</strong><small>last {{ days }} days</small></div>
+  <div class="stat"><span>Unique visitors</span><strong>{{ "{:,}".format(data.visitors) }}</strong><small>by client IP</small></div>
+  <div class="stat"><span>Data served</span><strong>{{ "%.1f"|format(data.bytes / 1048576) }} MB</strong><small>response bodies</small></div>
+  <div class="stat {% if data.requests and data.errors / data.requests > 0.05 %}danger{% endif %}"><span>Error responses</span><strong>{{ "{:,}".format(data.errors) }}</strong><small>{% if data.requests %}{{ "%.1f"|format(100 * data.errors / data.requests) }}% of requests (4xx/5xx){% else %}4xx and 5xx{% endif %}</small></div>
+</section>
+
+<section class="card mb-16">
+  <div class="card-header"><div><h2>Requests per day</h2><p>Hover the chart for daily totals.</p></div></div>
+  <div class="card-body">
+    {% if data.requests %}{{ ui.area_chart(data.daily) }}
+    {% else %}<p class="muted">No requests recorded in this period. Traffic appears once sites receive visits through their public addresses (sites reachable only by internal port aren't logged).</p>{% endif %}
+  </div>
+  {% if data.requests %}
+  <div class="card-footer"><div class="grow-block"><span class="hint">HTTP responses</span>{{ ui.status_bar(data.status_groups) }}</div></div>
+  {% endif %}
+</section>
+
+<div class="grid-2 mb-16">
+  {% if not selected_site %}
+  <section class="card">
+    <div class="card-header"><div><h2>Top sites</h2><p>Select a site to see its own graphs.</p></div></div>
+    <div class="card-body rank-list">
+      {% set top = data.per_site[ranked_sites[0].id].requests if ranked_sites else 0 %}
+      {% for site in ranked_sites[:8] %}
+      {% set stats = data.per_site[site.id] %}
+      <a href="{{ url_for('deployments.analytics', site=site.id, days=days) }}"><span class="truncate">{{ site.name }}</span>{{ ui.bar(stats.requests, top) }}<strong>{{ "{:,}".format(stats.requests) }}</strong></a>
+      {% else %}<p class="muted">No sites yet.</p>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+  <section class="card">
+    <div class="card-header"><div><h2>Top pages</h2><p>Most requested paths.</p></div></div>
+    <div class="card-body rank-list">
+      {% set top_path = data.top_paths[0][1] if data.top_paths else 0 %}
+      {% for path, count in data.top_paths %}
+      <div><code title="{{ path }}">{{ path }}</code>{{ ui.bar(count, top_path) }}<strong>{{ "{:,}".format(count) }}</strong></div>
+      {% else %}<p class="muted">No page views yet.</p>{% endfor %}
+    </div>
+  </section>
+</div>
+
+{% if not selected_site and sites %}
+<div class="section-title"><div><h2>Every site</h2></div></div>
+<div class="list analytics-table">
+  <div class="list-head"><span>Site</span><span>Last {{ days }} days</span><span class="num">Requests</span><span class="num">Visitors</span><span class="num">Data</span><span class="num">Errors</span></div>
+  {% for site in ranked_sites %}
+  {% set stats = data.per_site[site.id] %}
+  <div class="list-row">
+    <div class="site-name"><a href="{{ url_for('deployments.analytics', site=site.id, days=days) }}">{{ site.name }}</a><small>{{ hostnames[site.id][0] if hostnames[site.id] else "Internal port only (not tracked)" }}</small></div>
+    <div class="spark">{{ ui.sparkline(data.daily_by_site[site.id]) }}</div>
+    <div class="num">{{ "{:,}".format(stats.requests) }}</div>
+    <div class="num hide-sm">{{ "{:,}".format(stats.visitors) }}</div>
+    <div class="num hide-sm">{{ "%.1f"|format(stats.bytes / 1048576) }} MB</div>
+    <div class="num hide-sm">{{ "{:,}".format(stats.errors) }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

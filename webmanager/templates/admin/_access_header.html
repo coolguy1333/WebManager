@@ -1,0 +1,22 @@
+{% import "_ui.html" as ui with context %}
+{#- Shared header + tabs for the combined People & access area. Set `current_tab` before including. -#}
+{% set tab_info = {
+  "people": "Who can sign in, and which teams they belong to.",
+  "teams": "Group people and decide what each team is allowed to do.",
+  "pools": "Group sites into pools and share each pool with teams.",
+  "sites": "One-off access to a single site. Pool and direct access combine; the stronger role wins.",
+} %}
+<header class="page-header">
+  <div>
+    <h1>People &amp; access</h1>
+    <p>{{ tab_info[current_tab] }}</p>
+  </div>
+</header>
+<nav class="tabs" aria-label="People and access sections">
+  {% if g.user.is_admin or has_permission("users.manage") %}<a class="{{ 'active' if current_tab == 'people' }}" href="{{ url_for('admin.dashboard', section='people') }}" {% if current_tab == 'people' %}aria-current="page"{% endif %}>{{ ui.icon('user', 14) }} People</a>{% endif %}
+  {% if g.user.is_admin or has_permission("groups.manage") %}<a class="{{ 'active' if current_tab == 'teams' }}" href="{{ url_for('admin.dashboard', section='teams') }}" {% if current_tab == 'teams' %}aria-current="page"{% endif %}>{{ ui.icon('users', 14) }} Teams</a>{% endif %}
+  {% if g.user.is_admin or has_permission("access.manage") %}
+  <a class="{{ 'active' if current_tab == 'pools' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}" {% if current_tab == 'pools' %}aria-current="page"{% endif %}>{{ ui.icon('grid', 14) }} Site pools</a>
+  <a class="{{ 'active' if current_tab == 'sites' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}" {% if current_tab == 'sites' %}aria-current="page"{% endif %}>{{ ui.icon('shield', 14) }} Site exceptions</a>
+  {% endif %}
+</nav>

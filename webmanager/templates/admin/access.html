@@ -29,18 +29,8 @@
 </details>
 {% endmacro %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Pools and access</h1>
-    <p>Group sites into pools, then share each pool with teams. <strong>View only</strong> can inspect a site; <strong>Can manage</strong> can change settings and start or stop it.</p>
-  </div>
-  <div class="actions"><span class="badge">{{ pools|length }} pool{{ "" if pools|length == 1 else "s" }} · {{ sites|length }} site{{ "" if sites|length == 1 else "s" }}</span></div>
-</header>
-
-<nav class="tabs" aria-label="Access sections">
-  <a class="{{ 'active' if active_section == 'pools' }}" href="{{ url_for('admin.access_dashboard', section='pools') }}" {% if active_section == 'pools' %}aria-current="page"{% endif %}>Pool access</a>
-  <a class="{{ 'active' if active_section == 'sites' }}" href="{{ url_for('admin.access_dashboard', section='sites') }}" {% if active_section == 'sites' %}aria-current="page"{% endif %}>Direct site access <span class="faint">(advanced)</span></a>
-</nav>
+{% set current_tab = active_section %}
+{% include "admin/_access_header.html" %}
 
 {% if active_section == "pools" %}
 {% if not pools %}
@@ -65,7 +55,7 @@
 
 {% if pools %}
 <div class="section-title">
-  <div><h2>Site pools</h2></div>
+  <div><h2>{{ pools|length }} pool{{ "" if pools|length == 1 else "s" }}</h2><p><strong>View only</strong> can inspect a site; <strong>Can manage</strong> can change settings and start or stop it.</p></div>
   <label class="search"><span class="visually-hidden">Filter pools</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Find a pool" data-filter-input="pools"></label>
 </div>
 {% endif %}
@@ -109,7 +99,6 @@
 {% endif %}
 
 {% if active_section == "sites" %}
-<div class="alert info mb-16">{{ ui.icon('info') }}<div class="alert-body">Direct grants are exceptions for a single site. They combine with pool access and the stronger role wins.</div></div>
 {% if sites %}
 <div class="section-title">
   <div><h2>Direct site access</h2></div>

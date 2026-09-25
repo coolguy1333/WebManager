@@ -18,6 +18,28 @@ from .git_service import (
 
 MIN_REFRESH_MINUTES = 5
 MAX_REFRESH_MINUTES = 30 * 24 * 60
+# Every repository is checked at least this often. Automatic installs use the
+# owner's chosen interval instead.
+DEFAULT_CHECK_MINUTES = 15
+INTERVAL_UNITS = {"minutes": 1, "hours": 60, "days": 24 * 60}
+
+
+def format_interval(minutes) -> str:
+    minutes = int(minutes or DEFAULT_CHECK_MINUTES)
+    for unit, size in (("day", 1440), ("hour", 60)):
+        if minutes % size == 0:
+            amount = minutes // size
+            return f"{amount} {unit}{'' if amount == 1 else 's'}"
+    return f"{minutes} minute{'' if minutes == 1 else 's'}"
+
+
+def split_interval(minutes):
+    """Return (amount, unit) for showing a stored interval in the form."""
+    minutes = int(minutes or 60)
+    for unit, size in (("days", 1440), ("hours", 60)):
+        if minutes % size == 0:
+            return minutes // size, unit
+    return minutes, "minutes"
 
 
 @dataclass(frozen=True)
