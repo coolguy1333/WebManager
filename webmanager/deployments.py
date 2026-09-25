@@ -33,6 +33,7 @@ from .domains import (
 )
 from .git_service import (
     GitError,
+    check_repository_host,
     clone_repository,
     display_repo_url,
     find_index_folders,
@@ -571,6 +572,7 @@ def dashboard():
 
 
 ANALYTICS_PERIODS = (7, 30, 90)
+REFRESH_COOLDOWN_SECONDS = 15
 
 
 def visible_sites(database):
@@ -653,6 +655,8 @@ def inspect_repository():
         if branch and len(branch) > 200:
             raise GitError("Branch name must be 200 characters or fewer.")
         url = validate_repo_url(raw_url)
+        if not g.user["is_admin"]:
+            check_repository_host(url)
     except GitError as exc:
         flash(str(exc), "error")
         return action_redirect("deployments.dashboard", view="sources")
@@ -762,7 +766,21 @@ def select_folder(repository_id):
 @login_required
 def refresh_repository(repository_id):
     validate_csrf()
-    owned_repository(repository_id, manage=True)
+    repository = owned_repository(repository_id, manage=True)
+    recent = get_db().execute(
+        """
+        SELECT (julianday('now') - julianday(last_checked_at)) * 86400 AS age
+        FROM repositories WHERE id = ?
+        """,
+        (repository_id,),
+    ).fetchone()
+    if (
+        recent["age"] is not None
+        and recent["age"] < REFRESH_COOLDOWN_SECONDS
+        and repository["update_state"] != "failed"
+    ):
+        flash("Checked a moment ago; nothing new yet. Try again in a few seconds.", "info")
+        return action_redirect("deployments.dashboard", view="sources")
     result = current_app.extensions["repository_refresh_manager"].refresh(repository_id)
     if result.status in {"applied", "current"}:
         flash(result.message, "success")
@@ -1281,6 +1299,13 @@ def site_settings(site_id):
                 index_file = index_files.get("index.html") or index_files.get("index.htm")
                 if not index_file:
                     raise GitError("The selected folder does not contain an index page.")
+                if slug != site["slug"] and database.execute(
+                    "SELECT 1 FROM sites WHERE slug = ? AND id != ?",
+                    (slug, site_id),
+                ).fetchone():
+                    raise ValueError(
+                        f"The subdomain {slug} is already used by another site. Pick a different one."
+                    )
                 slug = unique_slug(database, slug, exclude_site_id=site_id)
                 site_stub = {"slug": slug}
                 hostnames = [
@@ -1384,15 +1409,27 @@ def site_settings(site_id):
                     else:
                         flash("Site settings saved.", "success")
                 return redirect(url_for("deployments.site_detail", site_id=site_id))
-        return redirect(
-            url_for("deployments.site_settings", site_id=site_id),
-            code=303,
+        # Validation failed: show the form again with what was typed rather
+        # than throwing the edits away.
+        form_site = dict(site)
+        form_site.update(
+            name=name or site["name"],
+            slug=request.form.get("slug", "").strip() or site["slug"],
+            folder=folder or site["folder"],
+            port=port if port > 0 else site["port"],
+            spa_fallback=int(spa_fallback),
+            use_domain_root=int(use_domain_root),
+            domain_id=domain["id"] if domain else None,
         )
+        status_code = 422
+    else:
+        form_site = site
+        status_code = 200
 
     return render_template(
         "site_settings.html",
         title=f"Settings for {site['name']}",
-        site=site,
+        site=form_site,
         candidates=candidates,
         port_min=current_app.config["SITE_PORT_MIN"],
         port_max=current_app.config["SITE_PORT_MAX"],
@@ -1401,7 +1438,7 @@ def site_settings(site_id):
         alias_domain_ids=alias_domain_ids,
         alias_bindings_by_id=alias_bindings_by_id,
         site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
-    )
+    ), status_code
 
 
 @bp.post("/sites/<int:site_id>/start")

@@ -425,6 +425,14 @@ class RuntimeManager:
                         (f"{message}. Open Settings and save to regenerate a safe config.", site["id"]),
                     )
                     database.commit()
+                    try:
+                        placeholder = build_paused_site_config(hostnames, gateway_port)
+                    except NginxConfigError:
+                        placeholder = ""
+                    if placeholder:
+                        (config_dir / f"{site['id']}-{site['slug']}.paused.conf").write_text(
+                            placeholder, encoding="utf-8"
+                        )
                     continue
                 path = config_dir / f"{site['id']}-{site['slug']}.conf"
                 path.write_text(site["nginx_config"], encoding="utf-8")
