@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at TEXT,
     max_sites INTEGER,
     max_sources INTEGER,
+    max_apps INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -133,6 +134,9 @@ CREATE TABLE IF NOT EXISTS sites (
     runtime_backend TEXT,
     runtime_pid INTEGER,
     last_error TEXT,
+    kind TEXT NOT NULL DEFAULT 'static',
+    app_env TEXT,
+    app_memory_mb INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, slug)
@@ -235,6 +239,7 @@ def _migrate_users(database):
         "last_login_at": "TEXT",
         "max_sites": "INTEGER",
         "max_sources": "INTEGER",
+        "max_apps": "INTEGER",
     }
     for column, definition in additions.items():
         if column not in columns:
@@ -281,6 +286,11 @@ def _seed_permissions(database):
             "Manage pools and access",
             "Create resource pools and grant users or groups access to sites.",
         ),
+        (
+            "apps.host",
+            "Host apps",
+            "Deploy apps that run their own server code in containers on this server.",
+        ),
     )
     database.executemany(
         """
@@ -307,6 +317,13 @@ def _migrate_sites(database):
         database.execute(
             "ALTER TABLE sites ADD COLUMN use_domain_root INTEGER NOT NULL DEFAULT 0"
         )
+    for column, definition in {
+        "kind": "TEXT NOT NULL DEFAULT 'static'",
+        "app_env": "TEXT",
+        "app_memory_mb": "INTEGER",
+    }.items():
+        if column not in columns:
+            database.execute(f"ALTER TABLE sites ADD COLUMN {column} {definition}")
     database.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS sites_domain_root_uq

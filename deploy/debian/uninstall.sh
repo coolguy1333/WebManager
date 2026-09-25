@@ -42,6 +42,16 @@ if [[ -r "$DATA_DIR/nginx/nginx.pid" ]]; then
     fi
 fi
 
+systemctl disable --now webmanager-app-firewall.service 2>/dev/null || true
+rm -f /etc/systemd/system/webmanager-app-firewall.service
+rm -rf /etc/systemd/system/webmanager.service.d
+if [[ $PURGE_DATA -eq 1 ]] && command -v docker >/dev/null 2>&1; then
+    # App containers, images and data volumes created by WebManager.
+    docker ps -aq --filter label=webmanager.app | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker images -q --filter label=webmanager.app | xargs -r docker rmi -f >/dev/null 2>&1 || true
+    docker volume ls -q --filter name=webmanager-app- | xargs -r docker volume rm >/dev/null 2>&1 || true
+fi
+
 rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT" "$UNINSTALL_COMMAND" "$LOGROTATE_FILE"
 systemctl daemon-reload
 systemctl reset-failed webmanager webmanager-update.service 2>/dev/null || true

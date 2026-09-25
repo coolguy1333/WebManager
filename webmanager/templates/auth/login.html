@@ -4,7 +4,7 @@
 <section class="card auth-card">
   <div class="brand">
     <img src="{{ static_asset('logo-mark.svg') }}" alt="">
-    <span><strong>WebManager</strong><small>Static site hosting</small></span>
+    <span><strong>WebManager</strong><small>{{ "Site & app hosting" if config.APPS_ENABLED else "Static site hosting" }}</small></span>
   </div>
   <h1>Sign in</h1>
   <p>Use your Google account to manage your sites.</p>

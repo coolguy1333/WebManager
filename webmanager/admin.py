@@ -62,6 +62,11 @@ PERMISSION_PROFILES = {
         "description": "Can inspect and operate every repository and site.",
         "permissions": {"resources.view_all", "resources.manage_all"},
     },
+    "app_host": {
+        "name": "App hosts",
+        "description": "No platform-wide access, but can deploy apps (containers) when app hosting is on.",
+        "permissions": {"apps.host"},
+    },
     "access_admin": {
         "name": "Access administrator",
         "description": "Can manage pools and grants without managing accounts.",
@@ -228,11 +233,12 @@ def dashboard():
     }
     quota_defaults = quotas.get_defaults(database)
     usage = {
-        row["id"]: {"sites": row["site_count"], "sources": row["source_count"]}
+        row["id"]: {"sites": row["site_count"], "sources": row["source_count"], "apps": row["app_count"]}
         for row in database.execute(
             """
             SELECT users.id,
                    (SELECT COUNT(*) FROM sites WHERE sites.user_id = users.id) AS site_count,
+                   (SELECT COUNT(*) FROM sites WHERE sites.user_id = users.id AND sites.kind = 'app') AS app_count,
                    (SELECT COUNT(*) FROM repositories WHERE repositories.user_id = users.id) AS source_count
             FROM users
             """
@@ -266,6 +272,11 @@ def dashboard():
         usage=usage,
         source_updates=source_updates,
         metrics=system_metrics.collect(current_app) if active_section == "updates" else None,
+        app_hosting=(
+            current_app.extensions["runtime_manager"].apps_status()
+            if active_section == "updates"
+            else None
+        ),
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -905,15 +916,23 @@ def update_default_limits():
     try:
         sites = quotas.parse_limit(request.form.get("max_sites"))
         sources = quotas.parse_limit(request.form.get("max_sources"))
+        apps = (
+            quotas.parse_limit(request.form.get("max_apps"))
+            if "max_apps" in request.form
+            else None
+        )
     except ValueError as exc:
         flash(str(exc) if "between" in str(exc) or "Enter" in str(exc) else "Limits must be whole numbers.", "error")
         return redirect(url_for("admin.dashboard", section="people"))
     database = get_db()
-    quotas.set_defaults(database, sites, sources)
+    quotas.set_defaults(database, sites, sources, apps)
     database.commit()
     describe = lambda n, noun: "unlimited " + noun + "s" if n == 0 else f"{n} {noun}{'' if n == 1 else 's'}"
+    parts = [describe(sites, "site"), describe(sources, "source")]
+    if apps is not None:
+        parts.append(describe(apps, "app"))
     flash(
-        f"Default limits saved: {describe(sites, 'site')} and {describe(sources, 'source')} per person.",
+        f"Default limits saved: {', '.join(parts[:-1])} and {parts[-1]} per person.",
         "success",
     )
     return redirect(url_for("admin.dashboard", section="people"))
@@ -1031,17 +1050,19 @@ def update_user(user_id):
         if not delegated_permissions <= g.permissions:
             abort(403)
 
-    max_sites, max_sources = user["max_sites"], user["max_sources"]
+    max_sites, max_sources, max_apps = user["max_sites"], user["max_sources"], user["max_apps"]
     if is_admin() and "max_sites" in request.form:
         try:
             max_sites = quotas.parse_limit(request.form.get("max_sites"), allow_blank=True)
             max_sources = quotas.parse_limit(request.form.get("max_sources"), allow_blank=True)
+            if "max_apps" in request.form:
+                max_apps = quotas.parse_limit(request.form.get("max_apps"), allow_blank=True)
         except ValueError as exc:
             flash(str(exc) if "between" in str(exc) else "Limits must be whole numbers.", "error")
             return redirect(url_for("admin.dashboard", section="people"))
     database.execute(
-        "UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ? WHERE id = ?",
-        (int(active), int(admin), max_sites, max_sources, user_id),
+        "UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ?, max_apps = ? WHERE id = ?",
+        (int(active), int(admin), max_sites, max_sources, max_apps, user_id),
     )
     database.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
     database.executemany(

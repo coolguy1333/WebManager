@@ -633,3 +633,9 @@ if (metricsPanel) {
   };
   window.setInterval(refresh, 5000);
 }
+
+// Reload while an app is building/starting so the page reflects the result.
+const autoRefresh = document.querySelector("[data-auto-refresh]");
+if (autoRefresh) {
+  window.setTimeout(() => window.location.reload(), Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+}

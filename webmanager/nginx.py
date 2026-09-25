@@ -215,6 +215,48 @@ server {{
 """
 
 
+def build_app_config(site_name: str, port: int, hostnames, gateway_port: int) -> str:
+    """Reverse-proxy config for a container app. Generated, never user-edited."""
+    names = _server_names(hostnames)
+    if not names or not gateway_port:
+        raise NginxConfigError("Apps need a public domain.")
+    for name in names:
+        if not re.fullmatch(r"[a-z0-9.-]+", name):
+            raise NginxConfigError(f"Invalid hostname {name!r}.")
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise NginxConfigError("Invalid app port.")
+    return f"""# Managed by WebManager for {safe_comment_text(site_name)} (app)
+server {{
+    listen 127.0.0.1:{gateway_port};
+    listen [::1]:{gateway_port};
+    server_name {" ".join(names)};
+
+    client_max_body_size 25m;
+
+    location / {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header X-Real-IP $http_x_real_ip;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $webmanager_connection_upgrade;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }}
+
+    error_page 502 503 504 = @webmanager_app_down;
+    location @webmanager_app_down {{
+        default_type text/html;
+        add_header Cache-Control "no-store" always;
+        return 503 '{SITE_PAUSED_PAGE}';
+    }}
+}}
+"""
+
+
 _NOT_FOUND_BLOCK = f"""
     error_page 404 /404.html;
     location = /404.html {{
@@ -335,6 +377,10 @@ http {{
         font/woff2 woff2;
     }}
     access_log "{prefix_path}/access.log" webmanager;
+    map $http_upgrade $webmanager_connection_upgrade {{
+        default upgrade;
+        "" "";
+    }}
     client_body_temp_path "{prefix_path}/temp/client_body";
     proxy_temp_path "{prefix_path}/temp/proxy";
     fastcgi_temp_path "{prefix_path}/temp/fastcgi";

@@ -42,7 +42,7 @@ from .git_service import (
     resolve_folder,
     validate_repo_url,
 )
-from .nginx import NginxConfigError, build_site_config, validate_site_config
+from .nginx import NginxConfigError, build_app_config, build_site_config, validate_site_config
 from .repository_refresh import (
     DEFAULT_CHECK_MINUTES,
     INTERVAL_UNITS,
@@ -52,6 +52,7 @@ from .repository_refresh import (
     next_refresh_time,
     split_interval,
 )
+from . import apps as app_support
 from . import quotas
 from .security import login_required, safe_local_path, validate_csrf
 from .services import RuntimeErrorDetail, allocate_port, port_is_available
@@ -78,6 +79,25 @@ def _title_from(value: str) -> str:
 
 def valid_site_name(name: str) -> bool:
     return bool(name) and len(name) <= 80 and not CONTROL_CHARACTERS_RE.search(name)
+
+
+APP_HOST_PERMISSION = "apps.host"
+
+
+def can_host_apps() -> bool:
+    """Apps are opt-in per server and per person."""
+    return bool(current_app.config.get("APPS_ENABLED")) and (
+        bool(g.user and g.user["is_admin"]) or has_permission(APP_HOST_PERMISSION)
+    )
+
+
+def app_manifest(site):
+    try:
+        return app_support.load_manifest(
+            Path(site["document_root"]), current_app.config["APP_DEFAULT_MEMORY_MB"]
+        ), None
+    except app_support.AppError as exc:
+        return None, str(exc)
 
 
 def slugify(value: str) -> str:
@@ -231,13 +251,26 @@ def repository_update_display(repository):
 
 def site_attention_reasons(site):
     reasons = []
-    if site["status"] == "error":
+    is_app = "kind" in site.keys() and site["kind"] == "app"
+    if is_app and site["last_error"] and site["status"] in ("error", "running"):
+        # App errors carry container logs after the first line; the logs are
+        # shown in full on the app page.
+        summary = site["last_error"].strip().splitlines()[0]
+        if site["status"] == "running":
+            summary += " The previous version is still running."
+        reasons.append(summary)
+    elif site["status"] == "error":
         reasons.append(site["last_error"] or "The hosting process failed.")
-    elif site["status"] == "running" and not site["runtime_backend"]:
+    elif site["status"] == "running" and not site["runtime_backend"] and not (
+        "kind" in site.keys() and site["kind"] == "app"
+    ):
         reasons.append("The site is marked running but has no active hosting backend.")
     document_root = Path(site["document_root"])
     if not document_root.is_dir():
         reasons.append("The selected repository folder is missing.")
+    elif is_app:
+        if not (document_root / app_support.DOCKERFILE_NAME).is_file():
+            reasons.append("The app's Dockerfile is missing.")
     elif not (document_root / site["index_file"]).is_file():
         reasons.append(f"The required index page {site['index_file']} is missing.")
     if (
@@ -747,12 +780,17 @@ def select_folder(repository_id):
         (index for index, candidate in enumerate(candidates) if candidate["is_build_output"]),
         0,
     )
+    app_candidates = app_support.find_app_folders(Path(repository["local_path"]))
     return render_template(
         "select_folder.html",
         title="Select site folder",
+        app_candidates=app_candidates,
+        can_host_apps=can_host_apps(),
+        apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
         repository=repository,
         candidates=candidates,
         suggested_name=suggested_name,
+        suggested_slug=slugify(suggested_name),
         recommended_index=recommended,
         quota=quotas.summary(get_db(), repository["user_id"]),
         port_min=current_app.config["SITE_PORT_MIN"],
@@ -1103,6 +1141,170 @@ def deploy_repository(repository_id):
     return action_redirect("deployments.dashboard", view="sites")
 
 
+@bp.post("/repositories/<int:repository_id>/deploy-app")
+@login_required
+def deploy_app(repository_id):
+    validate_csrf()
+    repository = owned_repository(repository_id, manage=True)
+    back = redirect(url_for("deployments.select_folder", repository_id=repository_id))
+    if not can_host_apps():
+        abort(403)
+    runtime = current_app.extensions["runtime_manager"]
+    ready, message = runtime.apps_status()
+    if not ready:
+        flash(message, "error")
+        return back
+    database = get_db()
+    owner_id = repository["user_id"]
+    if not g.user["is_admin"]:
+        for kind in ("sites", "apps"):
+            limit_error = quotas.check(database, owner_id, kind)
+            if limit_error:
+                flash(limit_error, "error")
+                return back
+
+    name = request.form.get("site_name", "").strip()
+    slug = request.form.get("slug", "").strip().lower() or slugify(name)
+    if not valid_site_name(name):
+        flash("Give the app a name of 80 characters or fewer.", "error")
+        return back
+    if not HOST_LABEL_RE.fullmatch(slug):
+        flash("Use lowercase letters, numbers, and dashes for the subdomain.", "error")
+        return back
+    if database.execute("SELECT 1 FROM sites WHERE slug = ?", (slug,)).fetchone():
+        flash(f"The subdomain {slug} is already taken.", "error")
+        return back
+    raw_domain = request.form.get("domain_id", "").strip()
+    domain = (
+        database.execute("SELECT * FROM domains WHERE id = ?", (int(raw_domain),)).fetchone()
+        if raw_domain.isdigit()
+        else default_domain(database)
+    )
+    if domain is None:
+        flash("Apps need a public domain. Ask an administrator to add one under Domains.", "error")
+        return back
+    try:
+        validate_site_domains(database, [domain], False)
+        hostname = f"{slug}.{domain['name']}"
+        if domain_is_dashboard(database, hostname):
+            raise ValueError("That hostname is reserved for the WebManager dashboard.")
+        owner = hostname_owner(database, hostname)
+        if owner:
+            raise ValueError(f"{hostname} is already used by {owner['name']}.")
+        folder = request.form.get("folder", ".")
+        selected = resolve_folder(Path(repository["local_path"]), folder)
+        manifest = app_support.load_manifest(selected, current_app.config["APP_DEFAULT_MEMORY_MB"])
+        port = allocate_port(
+            database,
+            current_app.config["SITE_PORT_MIN"],
+            current_app.config["SITE_PORT_MAX"],
+        )
+        cursor = database.execute(
+            """
+            INSERT INTO sites (
+                user_id, repository_id, domain_id, use_domain_root, name, slug,
+                folder, document_root, index_file, port, spa_fallback,
+                nginx_config, status, kind, app_memory_mb
+            ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, '', ?, 0, '', 'stopped', 'app', ?)
+            """,
+            (owner_id, repository_id, domain["id"], name, slug, folder, str(selected), port, manifest["memory_mb"]),
+        )
+        database.commit()
+    except (GitError, ValueError, RuntimeErrorDetail, sqlite3.IntegrityError) as exc:
+        database.rollback()
+        flash(f"Could not deploy the app: {exc}", "error")
+        return back
+
+    site_id = cursor.lastrowid
+    missing = [v["name"] for v in manifest["env"] if v["required"] and v["default"] is None]
+    if missing:
+        flash(
+            f"{name} was created. Fill in the required settings ({', '.join(missing)}), then save to start it.",
+            "warning",
+        )
+        return redirect(url_for("deployments.app_variables", site_id=site_id))
+    runtime.start_app_async(site_id)
+    flash(f"Building and starting {name}. This page updates when it's ready.", "success")
+    return redirect(url_for("deployments.site_detail", site_id=site_id))
+
+
+@bp.route("/sites/<int:site_id>/variables", methods=("GET", "POST"))
+@login_required
+def app_variables(site_id):
+    site = owned_site(site_id, manage=True)
+    if site["kind"] != "app":
+        abort(404)
+    manifest, manifest_error = app_manifest(site)
+    secret_key = current_app.config["SECRET_KEY"]
+    try:
+        stored = app_support.decrypt_env(site["app_env"], secret_key)
+        decrypt_error = None
+    except app_support.AppError as exc:
+        stored, decrypt_error = {}, str(exc)
+    errors = []
+    if request.method == "POST" and manifest:
+        validate_csrf()
+        updated = {}
+        for variable in manifest["env"]:
+            name = variable["name"]
+            raw = request.form.get(f"var_{name}", "")
+            if variable["secret"]:
+                if request.form.get(f"clear_{name}") == "on":
+                    continue
+                value = raw if raw != "" else stored.get(name, "")
+            else:
+                value = raw.strip()
+            if value == "":
+                continue
+            problem = app_support.validate_value(name, value, variable)
+            if problem:
+                errors.append(problem)
+            updated[name] = value
+        missing = [
+            v["name"]
+            for v in manifest["env"]
+            if v["required"] and not updated.get(v["name"]) and v["default"] is None
+        ]
+        if missing:
+            errors.append(f"Required: {', '.join(missing)}.")
+        if not errors:
+            database = get_db()
+            database.execute(
+                "UPDATE sites SET app_env = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (app_support.encrypt_env(updated, secret_key), site_id),
+            )
+            database.commit()
+            runtime = current_app.extensions["runtime_manager"]
+            container_runtime = runtime.container_runtime
+            never_started = container_runtime is not None and container_runtime.inspect(
+                container_runtime.container_name(site_id)
+            ) is None
+            # Restart running/failed apps; start brand-new ones. A deliberately
+            # stopped app stays stopped.
+            if site["status"] in ("running", "error", "starting") or (
+                site["status"] == "stopped" and never_started
+            ):
+                if runtime.start_app_async(site_id, force=True):
+                    flash("Settings saved. Restarting the app with the new values.", "success")
+                else:
+                    flash("Settings saved. The app is busy; restart it when the current operation finishes.", "warning")
+            else:
+                flash("Settings saved.", "success")
+            return redirect(url_for("deployments.site_detail", site_id=site_id))
+        for problem in errors:
+            flash(problem, "error")
+        stored = {**stored, **{k: v for k, v in updated.items()}}
+    return render_template(
+        "app_variables.html",
+        title=f"Variables for {site['name']}",
+        site=site,
+        manifest=manifest,
+        manifest_error=manifest_error,
+        decrypt_error=decrypt_error,
+        stored=stored,
+    ), (422 if errors else 200)
+
+
 @bp.get("/sites/<int:site_id>")
 @login_required
 def site_detail(site_id):
@@ -1126,6 +1328,12 @@ def site_detail(site_id):
         attention_reasons=site_attention_reasons(site),
         update_display=repository_update_display(site),
         site_log=recent_site_log(site_id),
+        app=(
+            current_app.extensions["runtime_manager"].app_details(site)
+            if site["kind"] == "app"
+            else None
+        ),
+        app_manifest=app_manifest(site)[0] if site["kind"] == "app" else None,
         analytics=aggregate_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
             {site["id"]: hostnames},
@@ -1257,6 +1465,15 @@ def site_settings(site_id):
             port = int(request.form.get("port", ""))
         except ValueError:
             port = -1
+        is_app = site["kind"] == "app"
+        if is_app:
+            # Apps keep their folder and internal port; only name/address change.
+            port = site["port"]
+            folder = site["folder"]
+            spa_fallback = False
+            if domain is None:
+                flash("Apps need a public domain.", "error")
+                return redirect(url_for("deployments.site_settings", site_id=site_id), code=303)
 
         if not valid_site_name(name):
             flash("Site name is required and must be 80 characters or fewer.", "error")
@@ -1291,14 +1508,17 @@ def site_settings(site_id):
                     allowed_blocked_domain_ids=current_bindings,
                 )
                 selected = resolve_folder(Path(repository["local_path"]), folder)
-                index_files = {
-                    path.name.lower(): path.name
-                    for path in selected.iterdir()
-                    if path.is_file()
-                }
-                index_file = index_files.get("index.html") or index_files.get("index.htm")
-                if not index_file:
-                    raise GitError("The selected folder does not contain an index page.")
+                if is_app:
+                    index_file = ""
+                else:
+                    index_files = {
+                        path.name.lower(): path.name
+                        for path in selected.iterdir()
+                        if path.is_file()
+                    }
+                    index_file = index_files.get("index.html") or index_files.get("index.htm")
+                    if not index_file:
+                        raise GitError("The selected folder does not contain an index page.")
                 if slug != site["slug"] and database.execute(
                     "SELECT 1 FROM sites WHERE slug = ? AND id != ?",
                     (slug, site_id),
@@ -1333,15 +1553,20 @@ def site_settings(site_id):
                                 "The current domain is blocked. Keep the existing "
                                 "public hostname or move the site to an allowed domain."
                             )
-                config = build_site_config(
-                    name,
-                    selected,
-                    index_file,
-                    port,
-                    spa_fallback,
-                    hostnames,
-                    current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
-                )
+                if is_app:
+                    config = build_app_config(
+                        name, port, hostnames, current_app.config["SITE_GATEWAY_PORT"]
+                    )
+                else:
+                    config = build_site_config(
+                        name,
+                        selected,
+                        index_file,
+                        port,
+                        spa_fallback,
+                        hostnames,
+                        current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
+                    )
                 database.execute(
                     """
                     UPDATE sites
@@ -1391,6 +1616,10 @@ def site_settings(site_id):
                 flash(f"Could not save site settings: {exc}", "error")
             else:
                 runtime = current_app.extensions["runtime_manager"]
+                if is_app and site["status"] == "running":
+                    runtime.start_app_async(site_id, force=True)
+                    flash("Settings saved. Restarting the app with its new address.", "success")
+                    return redirect(url_for("deployments.site_detail", site_id=site_id))
                 if site["status"] == "running":
                     try:
                         runtime.restart_site(site_id)
@@ -1445,9 +1674,16 @@ def site_settings(site_id):
 @login_required
 def start_site(site_id):
     validate_csrf()
-    owned_site(site_id, manage=True)
+    site = owned_site(site_id, manage=True)
+    runtime = current_app.extensions["runtime_manager"]
+    if site["kind"] == "app":
+        if runtime.start_app_async(site_id):
+            flash("Starting the app. This page updates when it's ready.", "success")
+        else:
+            flash("The app is already starting or updating.", "warning")
+        return action_redirect("deployments.site_detail", site_id=site_id)
     try:
-        backend = current_app.extensions["runtime_manager"].start_site(site_id)
+        backend = runtime.start_site(site_id)
     except RuntimeErrorDetail as exc:
         flash(f"Could not start site: {exc}", "error")
     else:
@@ -1473,9 +1709,16 @@ def stop_site(site_id):
 @login_required
 def restart_site(site_id):
     validate_csrf()
-    owned_site(site_id, manage=True)
+    site = owned_site(site_id, manage=True)
+    runtime = current_app.extensions["runtime_manager"]
+    if site["kind"] == "app":
+        if runtime.start_app_async(site_id, force=True):
+            flash("Restarting the app. This page updates when it's ready.", "success")
+        else:
+            flash("The app is already starting or updating.", "warning")
+        return action_redirect("deployments.site_detail", site_id=site_id)
     try:
-        current_app.extensions["runtime_manager"].restart_site(site_id)
+        runtime.restart_site(site_id)
     except RuntimeErrorDetail as exc:
         flash(f"Could not restart site: {exc}", "error")
     else:
@@ -1487,6 +1730,9 @@ def restart_site(site_id):
 @login_required
 def edit_config(site_id):
     site = owned_site(site_id, manage=True)
+    if site["kind"] == "app":
+        flash("Apps use a managed proxy configuration that can't be edited.", "info")
+        return redirect(url_for("deployments.site_detail", site_id=site_id))
     if request.method == "POST":
         validate_csrf()
         config = request.form.get("nginx_config", "")
@@ -1559,6 +1805,13 @@ def delete_site(site_id):
     except RuntimeErrorDetail as exc:
         flash(f"Site was not deleted because it could not be stopped: {exc}", "error")
         return action_redirect("deployments.site_detail", site_id=site_id)
+    if site["kind"] == "app":
+        try:
+            current_app.extensions["runtime_manager"].remove_app(
+                site, delete_data=request.form.get("delete_data") == "on"
+            )
+        except app_support.AppError as exc:
+            flash(f"The app's container could not be fully removed: {exc}", "warning")
     database = get_db()
     database.execute("DELETE FROM sites WHERE id = ?", (site_id,))
     database.commit()
@@ -1576,7 +1829,7 @@ def delete_repository(repository_id):
     with refresh_manager.repository_lock(repository_id):
         database = get_db()
         sites = database.execute(
-            "SELECT id FROM sites WHERE repository_id = ?",
+            "SELECT * FROM sites WHERE repository_id = ?",
             (repository_id,),
         ).fetchall()
         for site in sites:
@@ -1588,6 +1841,13 @@ def delete_repository(repository_id):
                     "error",
                 )
                 return action_redirect("deployments.dashboard", view="sources")
+        for site in sites:
+            if site["kind"] == "app":
+                try:
+                    # Keep app data volumes; they can be removed by an admin.
+                    current_app.extensions["runtime_manager"].remove_app(site, delete_data=False)
+                except app_support.AppError:
+                    pass
         database.execute(
             "DELETE FROM repositories WHERE id = ?",
             (repository_id,),

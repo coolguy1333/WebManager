@@ -7,18 +7,22 @@ admins are never limited.
 
 DEFAULT_MAX_SITES = 3
 DEFAULT_MAX_SOURCES = 2
+DEFAULT_MAX_APPS = 1
 MAX_LIMIT = 10_000
 KINDS = {
     "sites": ("quota_max_sites", DEFAULT_MAX_SITES, "max_sites", "sites", "site"),
     "sources": ("quota_max_sources", DEFAULT_MAX_SOURCES, "max_sources", "repositories", "source"),
+    "apps": ("quota_max_apps", DEFAULT_MAX_APPS, "max_apps", "sites", "app"),
 }
+# Extra filter per kind (apps are sites with kind = 'app').
+KIND_FILTERS = {"apps": " AND kind = 'app'"}
 
 
 def get_defaults(database):
     rows = {
         row["key"]: row["value"]
         for row in database.execute(
-            "SELECT key, value FROM app_settings WHERE key IN ('quota_max_sites', 'quota_max_sources')"
+            "SELECT key, value FROM app_settings WHERE key IN ('quota_max_sites', 'quota_max_sources', 'quota_max_apps')"
         ).fetchall()
     }
     defaults = {}
@@ -30,8 +34,11 @@ def get_defaults(database):
     return defaults
 
 
-def set_defaults(database, sites, sources):
-    for key, value in (("quota_max_sites", sites), ("quota_max_sources", sources)):
+def set_defaults(database, sites, sources, apps=None):
+    pairs = [("quota_max_sites", sites), ("quota_max_sources", sources)]
+    if apps is not None:
+        pairs.append(("quota_max_apps", apps))
+    for key, value in pairs:
         database.execute(
             """
             INSERT INTO app_settings (key, value) VALUES (?, ?)
@@ -56,7 +63,7 @@ def parse_limit(raw, allow_blank=False):
 
 def _user_row(database, user_id):
     return database.execute(
-        "SELECT id, is_admin, max_sites, max_sources FROM users WHERE id = ?",
+        "SELECT id, is_admin, max_sites, max_sources, max_apps FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
 
@@ -75,8 +82,9 @@ def limit_for(database, user_id, kind, defaults=None):
 
 def used(database, user_id, kind):
     table = KINDS[kind][3]
+    extra = KIND_FILTERS.get(kind, "")
     return database.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE user_id = ?", (user_id,)
+        f"SELECT COUNT(*) FROM {table} WHERE user_id = ?{extra}", (user_id,)
     ).fetchone()[0]
 
 

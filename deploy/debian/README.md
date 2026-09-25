@@ -46,7 +46,7 @@ hostname such as `*.webmanager.example.com` to `http://localhost:8080`.
 WebManager routes the shared tunnel traffic by hostname.
 
 After installation, super administrators can add more deployment domains from
-**Admin > Domains**. The page shows the Cloudflare Tunnel hostname, origin,
+**Domains** (under Administration). The page shows the Cloudflare Tunnel hostname, origin,
 wildcard DNS record, and verification command required for each domain. No
 additional root-owned Nginx edit is needed. Super administrators can also keep
 an exact-and-subdomain blocklist there to prevent selected domains from being
@@ -58,5 +58,10 @@ zone apex; the wildcard record alone does not match it.
 
 Interactive `setup.sh` asks for the initial deployment domain and stores it as
 the default. Reinstalls preserve the configured value.
+
+App hosting (running apps in containers) is optional and off by default.
+Turn it on with `sudo bash deploy/debian/enable-apps.sh` (off again with
+`--disable`). Read `docs/APP_HOSTING.md` first: it gives WebManager
+root-equivalent access to Docker.
 
 Read the root `README.md` before exposing the service to the Internet. It includes firewall, HTTPS, private repository, backup, upgrade, and troubleshooting instructions.
