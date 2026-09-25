@@ -38,6 +38,28 @@ class StaticSiteHandler(SimpleHTTPRequestHandler):
             self.path = f"/{self.index_file}"
         return super().send_head()
 
+    def send_error(self, code, message=None, explain=None):
+        if code != 404:
+            return super().send_error(code, message, explain)
+        # Match the Nginx behaviour: the site's own 404.html, else a clean page.
+        custom = self.site_root / "404.html"
+        try:
+            body = custom.read_bytes() if custom.is_file() and not custom.is_symlink() else None
+        except OSError:
+            body = None
+        if body is None:
+            from .nginx import HOSTED_404_PAGE
+
+            body = HOSTED_404_PAGE.encode("utf-8")
+        self.send_response(404, message)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        return None
+
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}", flush=True)
 

@@ -63,6 +63,7 @@ def clone_repository(
     target: Path,
     branch: str | None = None,
     validate_staging=None,
+    max_bytes: int | None = None,
 ):
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.clone-{uuid.uuid4().hex}"
@@ -110,6 +111,15 @@ def clone_repository(
         raise GitError(detail[-1200:] or "Git clone failed.")
 
     _scrub_remote_credentials(staging, url)
+    if max_bytes:
+        size = _tree_size(staging, max_bytes)
+        if size > max_bytes:
+            _remove_path(staging)
+            raise GitError(
+                f"The repository is larger than the {max_bytes // 1048576} MB limit "
+                "for this server. Publish only the built site, or ask an administrator "
+                "to raise WEBMANAGER_MAX_REPOSITORY_MB."
+            )
 
     if validate_staging is not None:
         try:
@@ -122,6 +132,20 @@ def clone_repository(
             raise GitError(f"Repository validation failed: {exc}") from exc
 
     activate_repository(staging, target, backup=backup)
+
+
+def _tree_size(path: Path, stop_after: int) -> int:
+    """Sum file sizes under path, stopping early once stop_after is exceeded."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+            if total > stop_after:
+                return total
+    return total
 
 
 def _git_environment():

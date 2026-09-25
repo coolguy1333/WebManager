@@ -1,15 +1,33 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
 {% block content %}
+{% set code = error_code or 500 %}
 <section class="error-page {% if not g.user %}card auth-card{% endif %}">
-  <div class="error-code">{{ error_code or "!" }}</div>
+  <div class="error-art" aria-hidden="true">
+    <svg viewBox="0 0 220 120">
+      <rect class="ea-window" x="20" y="14" width="180" height="96" rx="10"/>
+      <rect class="ea-bar" x="20" y="14" width="180" height="20" rx="10"/>
+      <rect class="ea-bar" x="20" y="24" width="180" height="10"/>
+      <circle class="ea-dot" cx="34" cy="24" r="3"/><circle class="ea-dot" cx="44" cy="24" r="3"/><circle class="ea-dot" cx="54" cy="24" r="3"/>
+      <text class="ea-code" x="110" y="86" text-anchor="middle">{{ code }}</text>
+    </svg>
+  </div>
+  <p class="eyebrow">{{ {404: "Not found", 403: "No access", 401: "Signed out", 400: "Bad request", 405: "Not allowed", 413: "Too large", 500: "Server error"}.get(code, "Error") }}</p>
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
+  {% if code == 404 %}<p class="error-path"><code>{{ request.path }}</code></p>{% endif %}
   <div class="actions">
     {% if g.user %}<button class="btn" type="button" data-history-back>{{ ui.icon('arrow-left', 14) }}Go back</button>{% endif %}
-    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
-      {{ "Return to dashboard" if g.user else "Return to sign in" }}
+    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login', next=request.path if code == 401 else None) }}">
+      {{ "Go to your sites" if g.user else "Sign in" }}
     </a>
   </div>
+  {% if g.user and code in [403, 404] %}
+  <nav class="error-links" aria-label="Helpful links">
+    <a href="{{ url_for('deployments.dashboard', view='sites') }}">{{ ui.icon('globe', 14) }}Sites</a>
+    <a href="{{ url_for('deployments.dashboard', view='sources') }}">{{ ui.icon('git', 14) }}Sources</a>
+    <a href="{{ url_for('deployments.analytics') }}">{{ ui.icon('activity', 14) }}Analytics</a>
+  </nav>
+  {% endif %}
 </section>
 {% endblock %}

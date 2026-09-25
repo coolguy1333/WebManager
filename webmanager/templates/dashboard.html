@@ -8,7 +8,12 @@
     <p>Everything you host, at a glance. Select a site to manage its addresses, updates, and runtime.</p>
   </div>
   <div class="actions">
+    {% if quota.sites.limit %}<span class="badge {{ 'badge-warning' if quota.sites.full else '' }}" title="Your site limit">{{ quota.sites.used }} of {{ quota.sites.limit }} sites used</span>{% endif %}
+    {% if quota.sites.full %}
+    <span class="btn btn-primary" aria-disabled="true" title="You've reached your site limit">{{ ui.icon('plus') }}New site</span>
+    {% else %}
     <a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}New site</a>
+    {% endif %}
   </div>
 </header>
 
@@ -104,7 +109,7 @@
     <h1>Git sources</h1>
     <p>Repositories that sites are deployed from, and how updates reach them.</p>
   </div>
-  <div class="actions"><span class="badge">{{ summary.repositories }} source{{ "" if summary.repositories == 1 else "s" }}</span></div>
+  <div class="actions"><span class="badge {{ 'badge-warning' if quota.sources.full else '' }}">{% if quota.sources.limit %}{{ quota.sources.used }} of {{ quota.sources.limit }} sources used{% else %}{{ summary.repositories }} source{{ "" if summary.repositories == 1 else "s" }}{% endif %}</span></div>
 </header>
 
 {% if not auto_refresh_service_enabled %}
@@ -114,6 +119,9 @@
 </div>
 {% endif %}
 
+{% if quota.sources.full %}
+<div class="alert warning mb-24" id="connect">{{ ui.icon('info') }}<div class="alert-body"><strong>You've reached your limit of {{ quota.sources.limit }} Git source{{ "" if quota.sources.limit == 1 else "s" }}</strong>You can still deploy more folders from the sources below{% if quota.sites.limit %} (up to {{ quota.sites.limit }} sites){% endif %}. To connect another repository, delete one or ask an administrator to raise your limit.</div></div>
+{% else %}
 <details class="card disclosure mb-24" id="connect" {% if not repositories or request.args.get('connect') %}open{% endif %}>
   <summary>{{ ui.icon('plus') }}Connect a Git repository<span class="chev">{{ ui.icon('chevron') }}</span></summary>
   <div class="card-body">
@@ -128,6 +136,7 @@
     </form>
   </div>
 </details>
+{% endif %}
 
 {% if repositories %}
 <div class="records">

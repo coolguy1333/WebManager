@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     last_login_at TEXT,
+    max_sites INTEGER,
+    max_sources INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -231,6 +233,8 @@ def _migrate_users(database):
         "is_admin": "INTEGER NOT NULL DEFAULT 0",
         "is_active": "INTEGER NOT NULL DEFAULT 1",
         "last_login_at": "TEXT",
+        "max_sites": "INTEGER",
+        "max_sources": "INTEGER",
     }
     for column, definition in additions.items():
         if column not in columns:
@@ -468,6 +472,7 @@ def _migrate_repositories(database):
         "pending_path": "TEXT",
         "pending_commit": "TEXT",
         "pending_at": "TEXT",
+        "dismissed_commit": "TEXT",
     }
     for column, definition in additions.items():
         if column not in columns:

@@ -251,7 +251,15 @@ if (deployForm) {
       const hosts = selected.map((row) => row.querySelector("[data-row-host]")?.textContent).filter(Boolean);
       detail.textContent = hosts.length ? hosts.join(" · ") : count ? "Internal ports assigned automatically." : "Tick at least one folder above.";
     }
-    submit.disabled = count === 0 || invalid || (root && !rootAvailable);
+    const maxSites = deployForm.dataset.maxSites === undefined ? Infinity : Number(deployForm.dataset.maxSites);
+    const overLimit = count > maxSites;
+    if (overLimit && detail) {
+      detail.textContent = `Your limit allows ${maxSites} more site${maxSites === 1 ? "" : "s"}. Untick ${count - maxSites}.`;
+      detail.classList.add("error-text");
+    } else {
+      detail?.classList.remove("error-text");
+    }
+    submit.disabled = count === 0 || invalid || overLimit || (root && !rootAvailable);
   }
 
   deployForm.querySelector("[data-select-all]")?.addEventListener("click", () => {
@@ -564,4 +572,64 @@ if (siteToolbar) {
     list.scrollIntoView({ behavior: "smooth", block: "start" });
   });
   apply();
+}
+
+// ---------- System: live resource usage ----------
+const metricsPanel = document.querySelector("[data-metrics]");
+if (metricsPanel) {
+  const formatBytes = (value) => {
+    if (value === null || value === undefined) return "n/a";
+    const units = [["TB", 1099511627776], ["GB", 1073741824], ["MB", 1048576]];
+    for (const [unit, size] of units) {
+      if (value >= size) return `${(value / size).toFixed(1)} ${unit}`;
+    }
+    return `${Math.round(value / 1024)} KB`;
+  };
+  const set = (name, value) => {
+    const el = metricsPanel.querySelector(`[data-metric="${name}"]`);
+    if (el && value !== null && value !== undefined) el.textContent = value;
+  };
+  const setMeter = (resource, percent) => {
+    const fill = metricsPanel.querySelector(`[data-resource="${resource}"] [data-meter-fill]`);
+    if (!fill || percent === null || percent === undefined) return;
+    fill.setAttribute("width", String(Math.min(100, percent)));
+    fill.classList.toggle("warm", percent >= 75 && percent < 90);
+    fill.classList.toggle("hot", percent >= 90);
+  };
+  const live = metricsPanel.querySelector("[data-metrics-live]");
+  const refresh = async () => {
+    if (document.hidden) return;
+    try {
+      const response = await fetch(metricsPanel.dataset.metricsUrl, { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(String(response.status));
+      const m = await response.json();
+      set("cpu_percent", m.cpu_percent);
+      setMeter("cpu", m.cpu_percent);
+      if (m.load) set("load", m.load.join(" / "));
+      if (m.memory) {
+        set("memory_percent", m.memory.percent);
+        set("memory_used", formatBytes(m.memory.used));
+        setMeter("memory", m.memory.percent);
+      }
+      if (m.disk) {
+        set("disk_percent", m.disk.percent);
+        set("disk_free", formatBytes(m.disk.free));
+        setMeter("disk", m.disk.percent);
+      }
+      set("process_memory", formatBytes(m.process_memory));
+      if (m.network) {
+        set("net_rx", formatBytes(m.network.received));
+        set("net_tx", formatBytes(m.network.sent));
+      }
+      if (m.uptime) {
+        set("uptime", m.uptime >= 86400
+          ? `${Math.floor(m.uptime / 86400)}d ${Math.floor((m.uptime % 86400) / 3600)}h`
+          : `${Math.floor(m.uptime / 3600)}h ${Math.floor((m.uptime % 3600) / 60)}m`);
+      }
+      live?.classList.remove("stale");
+    } catch {
+      live?.classList.add("stale");
+    }
+  };
+  window.setInterval(refresh, 5000);
 }

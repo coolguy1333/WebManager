@@ -28,7 +28,6 @@ from .domains import (
     default_domain,
     domain_is_blocked,
     site_domain_bindings,
-    site_domain,
     site_hostname,
     site_hostnames,
 )
@@ -52,6 +51,7 @@ from .repository_refresh import (
     next_refresh_time,
     split_interval,
 )
+from . import quotas
 from .security import login_required, safe_local_path, validate_csrf
 from .services import RuntimeErrorDetail, allocate_port, port_is_available
 
@@ -554,6 +554,7 @@ def dashboard():
         repository_update_states=repository_update_states,
         auto_refresh_service_enabled=current_app.config["AUTO_REFRESH_ENABLED"],
         active_view=active_view,
+        quota=quotas.summary(database, g.user["id"]),
     )
 
 
@@ -644,6 +645,11 @@ def inspect_repository():
         flash(str(exc), "error")
         return action_redirect("deployments.dashboard", view="sources")
 
+    limit_error = quotas.check(database, g.user["id"], "sources")
+    if limit_error:
+        flash(limit_error, "error")
+        return action_redirect("deployments.dashboard", view="sources")
+
     name = repo_name_from_url(url)
     cursor = database.execute(
         """
@@ -667,7 +673,10 @@ def inspect_repository():
     database.commit()
 
     try:
-        clone_repository(url, target, branch)
+        clone_repository(
+            url, target, branch,
+            max_bytes=current_app.config.get("MAX_REPOSITORY_BYTES") or None,
+        )
         current_commit = repository_commit(target)
         candidates = find_index_folders(target)
         database.execute(
@@ -685,20 +694,17 @@ def inspect_repository():
         )
         database.commit()
     except GitError as exc:
-        database.execute(
-            """
-            UPDATE repositories
-            SET status = 'error', error = ?,
-                update_state = 'failed', update_error = ?,
-                last_checked_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (str(exc), str(exc), repository_id),
-        )
+        # Don't leave a broken source behind (it would also use up one of the
+        # person's source slots); just explain what went wrong.
+        database.execute("DELETE FROM repositories WHERE id = ?", (repository_id,))
         database.commit()
-        flash(f"Could not clone repository: {exc}", "error")
-        return action_redirect("deployments.dashboard", view="sources")
+        if repository_path_is_managed(target):
+            shutil.rmtree(target, ignore_errors=True)
+        flash(f"Could not clone {display_repo_url(url)}: {exc}", "error")
+        return redirect(
+            url_for("deployments.dashboard", view="sources", connect=1) + "#connect",
+            code=303,
+        )
 
     if not candidates:
         flash("Repository cloned, but no index.html or index.htm file was found.", "warning")
@@ -732,6 +738,7 @@ def select_folder(repository_id):
         candidates=candidates,
         suggested_name=suggested_name,
         recommended_index=recommended,
+        quota=quotas.summary(get_db(), repository["user_id"]),
         port_min=current_app.config["SITE_PORT_MIN"],
         port_max=current_app.config["SITE_PORT_MAX"],
         site_domains=available_domains(get_db()),
@@ -927,6 +934,12 @@ def deploy_repository(repository_id):
     ):
         flash("Every selected site needs a name of 80 characters or fewer.", "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
+
+    if not g.user["is_admin"]:
+        limit_error = quotas.check(database, owner_id, "sites", adding=len(deployments))
+        if limit_error:
+            flash(limit_error, "error")
+            return redirect(url_for("deployments.select_folder", repository_id=repository_id))
 
     created = []
     for item in deployments:

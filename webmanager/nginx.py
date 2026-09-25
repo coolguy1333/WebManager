@@ -54,6 +54,29 @@ def safe_comment_text(value: str) -> str:
     return CONTROL_CHARACTERS_RE.sub(" ", str(value)).strip()[:120]
 
 
+# Shown to visitors of hosted sites when a path doesn't exist and the
+# repository has no 404.html of its own. Must not contain single quotes.
+HOSTED_404_PAGE = (
+    '<!doctype html><html lang="en"><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<meta name="robots" content="noindex"><title>Page not found</title>'
+    "<style>"
+    ":root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#5b6475;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}"
+    "@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}"
+    "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;"
+    "background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
+    "main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);"
+    "border:1px solid var(--line);border-radius:16px}"
+    ".code{font-size:72px;font-weight:800;letter-spacing:-4px;line-height:1;color:var(--accent);margin:0 0 12px}"
+    "h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}"
+    "a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;"
+    "text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}"
+    "</style><main><p class=\"code\">404</p><h1>Page not found</h1>"
+    "<p>The page you are looking for does not exist or has moved.</p>"
+    "<a href=\"/\">Go to the home page</a></main></html>"
+)
+
+
 class NginxConfigError(ValueError):
     pass
 
@@ -79,14 +102,21 @@ def build_site_config(
     hostname: str | list[str] | tuple[str, ...] | None = None,
     gateway_port: int | None = None,
 ) -> str:
-    fallback = f"/{index_file}" if spa_fallback else "@webmanager_not_found"
+    fallback = f"/{index_file}" if spa_fallback else "=404"
     not_found_location = ""
     if not spa_fallback:
-        not_found_location = """
-    location @webmanager_not_found {
+        # A site's own 404.html wins; otherwise serve the built-in page.
+        not_found_location = f"""
+    error_page 404 /404.html;
+    location = /404.html {{
+        internal;
+        try_files /404.html @webmanager_not_found;
+    }}
+
+    location @webmanager_not_found {{
         default_type text/html;
-        return 404 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>404 Not Found</title><style>body{margin:0;background:#0d1117;color:#f0f6fc;font:16px system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:560px;padding:32px;text-align:center}h1{font-size:72px;margin:0;color:#58a6ff}p{color:#8b949e}a{color:#58a6ff}</style><main><h1>404</h1><h2>Page not found</h2><p>The requested file does not exist on this site.</p><a href="/">Return to the home page</a></main></html>';
-    }
+        return 404 '{HOSTED_404_PAGE}';
+    }}
 """
     hostnames = _server_names(hostname)
     if hostnames and gateway_port:
@@ -148,6 +178,7 @@ def build_main_config(
             proxy_pass http://127.0.0.1:{app_port};
             proxy_http_version 1.1;
             proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Host $host;
             proxy_set_header X-Real-IP $http_x_forwarded_for;
             proxy_set_header X-Forwarded-For $http_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;

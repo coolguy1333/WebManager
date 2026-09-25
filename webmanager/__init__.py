@@ -76,6 +76,7 @@ def create_app(test_config=None):
         GOOGLE_ALLOWED_DOMAINS=os.environ.get("WEBMANAGER_GOOGLE_ALLOWED_DOMAINS", "").strip(),
         GOOGLE_ALLOWED_EMAILS=os.environ.get("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", "").strip(),
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+        MAX_REPOSITORY_BYTES=int(os.environ.get("WEBMANAGER_MAX_REPOSITORY_MB", "1024")) * 1024 * 1024,
         AUTO_REFRESH_ENABLED=_env_flag("WEBMANAGER_AUTO_REFRESH_ENABLED", "1"),
         AUTO_REFRESH_POLL_SECONDS=int(
             os.environ.get("WEBMANAGER_AUTO_REFRESH_POLL_SECONDS", "30")
@@ -158,6 +159,31 @@ def create_app(test_config=None):
         return f"in {label}" if future else f"{label} ago"
 
     @app.context_processor
+    def navigation_badges():
+        from flask import g
+
+        from .update_status import read_update_status
+
+        user = getattr(g, "user", None)
+        if user is None:
+            return {"nav_badges": {}}
+        try:
+            database = db.get_db()
+            if user["is_admin"]:
+                pending = database.execute(
+                    "SELECT COUNT(*) FROM repositories WHERE pending_commit IS NOT NULL"
+                ).fetchone()[0]
+            else:
+                pending = database.execute(
+                    "SELECT COUNT(*) FROM repositories WHERE pending_commit IS NOT NULL AND user_id = ?",
+                    (user["id"],),
+                ).fetchone()[0]
+            system = bool(user["is_admin"]) and read_update_status().get("state") == "available"
+        except Exception:  # never break page rendering over a badge
+            return {"nav_badges": {}}
+        return {"nav_badges": {"sources": pending, "system": system}}
+
+    @app.context_processor
     def versioned_static_assets():
         def static_asset(filename):
             asset_path = Path(app.static_folder) / filename
@@ -210,6 +236,33 @@ def create_app(test_config=None):
             message="You do not have permission to open that page.",
             error_code=403,
         ), 403
+
+    @app.errorhandler(401)
+    def unauthorized(_error):
+        return render_template(
+            "error.html",
+            title="Please sign in",
+            message="Your session has ended or you are not signed in.",
+            error_code=401,
+        ), 401
+
+    @app.errorhandler(405)
+    def method_not_allowed(_error):
+        return render_template(
+            "error.html",
+            title="That action isn't available here",
+            message="The page was opened in a way it doesn't support. Go back and try again from the dashboard.",
+            error_code=405,
+        ), 405
+
+    @app.errorhandler(500)
+    def server_error(_error):
+        return render_template(
+            "error.html",
+            title="Something went wrong",
+            message="WebManager hit an unexpected error. It has been logged; try again in a moment.",
+            error_code=500,
+        ), 500
 
     @app.errorhandler(413)
     def too_large(_error):

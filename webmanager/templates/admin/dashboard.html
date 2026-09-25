@@ -3,7 +3,7 @@
 {% block content %}
 {% if active_section == "updates" %}
 <header class="page-header">
-  <div><h1>System</h1><p>Check for and install WebManager updates.</p></div>
+  <div><h1>System</h1><p>Server health, WebManager updates, and hosted site updates.</p></div>
 </header>
 {% else %}
 {% set current_tab = active_section %}
@@ -20,6 +20,21 @@
 {% endif %}
 
 {% if active_section == "people" and can_manage_users %}
+{% macro limit_text(n) %}{{ "unlimited" if not n else n }}{% endmacro %}
+{% if super_admin %}
+<details class="card disclosure mb-16">
+  <summary>{{ ui.icon('settings') }}Default limits<small>· {{ limit_text(quota_defaults.sites) }} site{{ "" if quota_defaults.sites == 1 else "s" }} and {{ limit_text(quota_defaults.sources) }} source{{ "" if quota_defaults.sources == 1 else "s" }} per person</small><span class="chev">{{ ui.icon('chevron') }}</span></summary>
+  <form class="card-body stack" method="post" action="{{ url_for('admin.update_default_limits') }}" data-loading>
+    {{ ui.csrf() }}
+    <p class="muted">Applies to everyone without a personal limit. Super admins are never limited. Use 0 for unlimited. Existing sites are never removed; people over a new limit just can't add more.</p>
+    <div class="form-row">
+      <label class="field"><span>Max sites per person</span><input type="number" name="max_sites" min="0" max="10000" value="{{ quota_defaults.sites }}" required></label>
+      <label class="field"><span>Max Git sources per person</span><input type="number" name="max_sources" min="0" max="10000" value="{{ quota_defaults.sources }}" required></label>
+      <button class="btn btn-primary" type="submit">Save defaults</button>
+    </div>
+  </form>
+</details>
+{% endif %}
 <div class="toolbar">
   <label class="search grow"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search name, email, or team" data-filter-input="users"></label>
   <div class="segmented" role="radiogroup" aria-label="Show">
@@ -36,7 +51,9 @@
       <span class="avatar" aria-hidden="true">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
       <span class="record-title">
         <strong>{{ user.display_name or user.username }}</strong>
-        <small>{{ user.email or user.username }} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
+        {% set site_limit = none if user.is_admin else (user.max_sites if user.max_sites is not none else quota_defaults.sites) %}
+        {% set source_limit = none if user.is_admin else (user.max_sources if user.max_sources is not none else quota_defaults.sources) %}
+        <small>{{ user.email or user.username }} · {{ usage[user.id].sites }}{% if site_limit %}/{{ site_limit }}{% endif %} sites · {{ usage[user.id].sources }}{% if source_limit %}/{{ source_limit }}{% endif %} sources · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
       </span>
       <span class="record-tags">
         {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% endif %}
@@ -59,6 +76,15 @@
         </label>
         {% endif %}
       </div>
+      {% if super_admin and not user.is_admin %}
+      <fieldset>
+        <legend>Limits <span class="hint">leave blank to use the default · 0 = unlimited</span></legend>
+        <div class="form-row">
+          <label class="field"><span>Max sites</span><input type="number" name="max_sites" min="0" max="10000" value="{{ user.max_sites if user.max_sites is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sites) }})"></label>
+          <label class="field"><span>Max Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="{{ user.max_sources if user.max_sources is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sources) }})"></label>
+        </div>
+      </fieldset>
+      {% endif %}
       <fieldset>
         <legend>Teams</legend>
         <div class="choice-list">
@@ -166,31 +192,131 @@
 {% endif %}
 
 {% if active_section == "updates" and super_admin %}
-<section class="card">
+{% macro meter(percent, label) -%}
+<svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="{{ label }} {{ percent }}%"><rect class="meter-track" width="100" height="8" rx="4"/><rect class="meter-fill {{ 'hot' if percent is not none and percent >= 90 else 'warm' if percent is not none and percent >= 75 else '' }}" width="{{ percent or 0 }}" height="8" rx="4" data-meter-fill/></svg>
+{%- endmacro %}
+{% macro bytes(value) -%}
+{%- if value is none -%}n/a
+{%- elif value >= 1099511627776 -%}{{ "%.1f"|format(value / 1099511627776) }} TB
+{%- elif value >= 1073741824 -%}{{ "%.1f"|format(value / 1073741824) }} GB
+{%- elif value >= 1048576 -%}{{ "%.1f"|format(value / 1048576) }} MB
+{%- else -%}{{ "%.0f"|format(value / 1024) }} KB{%- endif -%}
+{%- endmacro %}
+
+{# ---------- Resource usage ---------- #}
+<section class="mb-24" data-metrics data-metrics-url="{{ url_for('admin.system_metrics_json') }}">
+  <div class="section-title">
+    <div><h2>Resource usage</h2><p>{{ metrics.hostname }} · {{ metrics.platform }} · Python {{ metrics.python }}{% if metrics.uptime %} · up <span data-metric="uptime">{% if metrics.uptime >= 86400 %}{{ metrics.uptime // 86400 }}d {{ (metrics.uptime % 86400) // 3600 }}h{% else %}{{ metrics.uptime // 3600 }}h {{ (metrics.uptime % 3600) // 60 }}m{% endif %}</span>{% endif %}</p></div>
+    <span class="badge" data-metrics-live>{{ ui.icon('activity', 12) }} Live</span>
+  </div>
+  <div class="resource-grid">
+    <div class="stat resource" data-resource="cpu">
+      <span>CPU</span>
+      <strong><span data-metric="cpu_percent">{{ metrics.cpu_percent if metrics.cpu_percent is not none else "n/a" }}</span>{% if metrics.cpu_percent is not none %}%{% endif %}</strong>
+      {{ meter(metrics.cpu_percent, "CPU") }}
+      <small>{{ metrics.cpu_count }} core{{ "" if metrics.cpu_count == 1 else "s" }}{% if metrics.load %} · load <span data-metric="load">{{ metrics.load|join(" / ") }}</span>{% endif %}</small>
+    </div>
+    <div class="stat resource" data-resource="memory">
+      <span>Memory</span>
+      {% if metrics.memory %}
+      <strong><span data-metric="memory_percent">{{ metrics.memory.percent }}</span>%</strong>
+      {{ meter(metrics.memory.percent, "Memory") }}
+      <small><span data-metric="memory_used">{{ bytes(metrics.memory.used) }}</span> of {{ bytes(metrics.memory.total) }}{% if metrics.memory.swap_total %} · swap {{ metrics.memory.swap_percent }}%{% endif %}</small>
+      {% else %}<strong>n/a</strong><small>Not available on this platform</small>{% endif %}
+    </div>
+    <div class="stat resource" data-resource="disk">
+      <span>Disk (data volume)</span>
+      {% if metrics.disk %}
+      <strong><span data-metric="disk_percent">{{ metrics.disk.percent }}</span>%</strong>
+      {{ meter(metrics.disk.percent, "Disk") }}
+      <small><span data-metric="disk_free">{{ bytes(metrics.disk.free) }}</span> free of {{ bytes(metrics.disk.total) }}</small>
+      {% else %}<strong>n/a</strong>{% endif %}
+    </div>
+    <div class="stat resource">
+      <span>WebManager process</span>
+      <strong data-metric="process_memory">{{ bytes(metrics.process_memory) }}</strong>
+      <small>memory in use{% if metrics.network %} · net ↓ <span data-metric="net_rx">{{ bytes(metrics.network.received) }}</span> ↑ <span data-metric="net_tx">{{ bytes(metrics.network.sent) }}</span>{% endif %}</small>
+    </div>
+  </div>
+  <div class="card mt-16">
+    <div class="card-body">
+      <dl class="facts">
+        <div><dt>Repositories</dt><dd>{{ bytes(metrics.storage.repositories) }}</dd></div>
+        <div><dt>Site logs</dt><dd>{{ bytes(metrics.storage.logs) }}</dd></div>
+        <div><dt>Nginx data &amp; access log</dt><dd>{{ bytes(metrics.storage.nginx) }}</dd></div>
+        <div><dt>Database</dt><dd>{{ bytes(metrics.storage.database) }}</dd></div>
+        <div><dt>Data directory</dt><dd><code>{{ metrics.disk.path if metrics.disk else "n/a" }}</code></dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+{# ---------- WebManager update ---------- #}
+<section class="card mb-24">
   <div class="card-header">
-    <div><h2>WebManager updates</h2><p>Checking is always safe. Installing requires approving the exact commit.</p></div>
-    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ')|capitalize }}</span>
+    <div><h2>WebManager updates</h2><p>Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing always needs your approval.</p></div>
+    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] or update_auto_requested else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{% if update_auto_requested and update_status.state in ['unknown', 'current', 'error'] %}Checking…{% elif update_status.state == "unknown" %}Not checked{% elif update_status.state == "current" %}Up to date{% else %}{{ update_status.state|replace('_', ' ')|capitalize }}{% endif %}</span>
   </div>
   <div class="card-body stack">
-    <p><strong>{{ update_status.message }}</strong></p>
+    {% if update_status.update_available and update_status.state == 'available' %}
+    <div class="alert warning">{{ ui.icon('download') }}<div class="alert-body"><strong>A new version of WebManager is available</strong>Commit <code>{{ update_status.available_commit[:12] }}</code>. It is tested and backed up before installing, and rolled back automatically if anything fails.</div></div>
+    {% elif update_auto_requested %}
+    <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check was more than an hour ago{% else %}No check has run yet{% endif %}, so one has been requested. Refresh this page in a few seconds.</div></div>
+    {% endif %}
+    <p>{{ update_status.message }}</p>
     <dl class="facts">
       <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
-      <div><dt>Available</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "none" }}</code></dd></div>
+      <div><dt>Latest on GitHub</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "—" }}</code></dd></div>
       <div><dt>Last checked</dt><dd>{{ ui.when(update_status.checked_at) if update_status.checked_at else "Never" }}</dd></div>
     </dl>
   </div>
   <div class="card-footer end">
     <form method="post" action="{{ url_for('admin.check_program_update') }}" data-loading>
       {{ ui.csrf() }}
-      <button class="btn" type="submit" data-loading-text="Requesting…">{{ ui.icon('refresh', 14) }}Check now</button>
+      <button class="btn" type="submit">{{ ui.icon('refresh', 14) }}Check now</button>
     </form>
     {% if update_status.update_available and update_status.state == 'available' %}
     <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
       {{ ui.csrf() }}
       <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="btn btn-primary" type="submit" data-loading-text="Approving…">{{ ui.icon('download', 14) }}Approve and install</button>
+      <button class="btn btn-primary" type="submit">{{ ui.icon('download', 14) }}Approve and install</button>
     </form>
     {% endif %}
+  </div>
+</section>
+
+{# ---------- Hosted site updates ---------- #}
+<section class="card">
+  <div class="card-header">
+    <div><h2>Hosted site updates</h2><p>Every Git source is checked for new commits automatically{% if source_updates.last_checked %} · last check {{ ui.when(source_updates.last_checked) }}{% endif %}.</p></div>
+    <span class="badge {{ 'badge-warning' if source_updates.pending else 'badge-danger' if source_updates.failed else 'badge-success' }}">{% if source_updates.pending %}{{ source_updates.pending|length }} waiting{% elif source_updates.failed %}{{ source_updates.failed|length }} failed{% else %}All current{% endif %}</span>
+  </div>
+  <div class="card-body stack">
+    {% if not source_updates.total %}
+    <p class="muted">No Git sources are connected yet.</p>
+    {% elif not source_updates.pending and not source_updates.failed %}
+    <p class="muted">All {{ source_updates.total }} source{{ "" if source_updates.total == 1 else "s" }} are up to date as of their last check.</p>
+    {% endif %}
+    {% for repo in source_updates.pending %}
+    <div class="record-actions">
+      <span><strong>{{ repo.name }}</strong> <span class="badge badge-warning">Update ready</span><br><small class="muted">Revision <code>{{ repo.pending_commit[:12] }}</code> · affects {{ repo.site_count }} site{{ "" if repo.site_count == 1 else "s" }}</small></span>
+      <form method="post" action="{{ url_for('deployments.approve_repository_update', repository_id=repo.id) }}" data-loading data-confirm="Apply this update to every site using {{ repo.name }}?">
+        {{ ui.csrf() }}
+        <input type="hidden" name="next" value="{{ url_for('admin.dashboard', section='updates') }}">
+        <button class="btn btn-sm btn-primary" type="submit">Approve update</button>
+      </form>
+    </div>
+    {% endfor %}
+    {% for repo in source_updates.failed %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>{{ repo.name }}: update check failed</strong>{{ repo.update_error or "No details were recorded." }}</div></div>
+    {% endfor %}
+  </div>
+  <div class="card-footer">
+    <a class="btn btn-ghost btn-sm" href="{{ url_for('deployments.dashboard', view='sources') }}">Manage sources {{ ui.icon('arrow-right', 14) }}</a>
+    <form method="post" action="{{ url_for('admin.check_all_sources') }}" data-loading>
+      {{ ui.csrf() }}
+      <button class="btn btn-sm" type="submit" {% if not source_updates.total %}disabled{% endif %}>{{ ui.icon('refresh', 14) }}Check all sources now</button>
+    </form>
   </div>
 </section>
 {% endif %}
