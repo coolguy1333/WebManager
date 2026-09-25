@@ -1,238 +1,239 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
 {% block content %}
-<section class="admin-hero">
+{% set headings = {
+  "overview": ("Administration", "Accounts, access, domains, and system updates."),
+  "people": ("People", "Activate accounts and add people to teams."),
+  "teams": ("Teams", "Group people and choose what each team may do."),
+  "updates": ("System", "Check for and install WebManager updates."),
+} %}
+{% set heading = headings.get(active_section, headings["overview"]) %}
+<header class="page-header">
   <div>
-    <p class="eyebrow">Control center</p>
-    <h1>Administration</h1>
-    <p>Manage accounts, access, domains, and system updates.</p>
+    <h1>{{ heading[0] }}</h1>
+    <p>{{ heading[1] }}</p>
   </div>
-  <span class="head-meta">{{ counts.active_users }} active accounts</span>
-</section>
+  <div class="actions"><span class="badge">{{ counts.active_users }} active account{{ "" if counts.active_users == 1 else "s" }}</span></div>
+</header>
 
 {% if google_access_unrestricted %}
-<div class="flash warning" role="alert">
-  <div>
+<div class="alert warning mb-24" role="alert">
+  {{ ui.icon('alert') }}
+  <div class="alert-body">
     <strong>Google sign-in is unrestricted.</strong>
-    Any verified Google account can create an active user. Run
-    <code>bash configure-google.sh</code> to limit sign-in.
+    Any verified Google account can create an active user. Run <code>bash configure-google.sh</code> on the server to limit sign-in to specific emails or domains.
   </div>
 </div>
 {% endif %}
 
 {% if active_section == "overview" %}
-<section class="admin-overview-grid">
+<section class="tile-grid mb-24">
   {% if can_manage_users %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='people') }}">
-    <span class="admin-workspace-icon">P</span>
-    <div><strong>People</strong><small>Activate accounts and assign teams.</small></div>
-    <span class="count-badge">{{ counts.users }}</span>
+  <a class="tile" href="{{ url_for('admin.dashboard', section='people') }}">
+    <span class="record-icon">{{ ui.icon('user', 18) }}</span>
+    <span class="tile-text"><strong>People</strong><small>Activate accounts and assign teams.</small></span>
+    <span class="badge">{{ counts.users }}</span>
   </a>
   {% endif %}
   {% if can_manage_groups %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='teams') }}">
-    <span class="admin-workspace-icon">T</span>
-    <div><strong>Teams</strong><small>Group people and choose a simple access profile.</small></div>
-    <span class="count-badge">{{ counts.groups }}</span>
+  <a class="tile" href="{{ url_for('admin.dashboard', section='teams') }}">
+    <span class="record-icon">{{ ui.icon('users', 18) }}</span>
+    <span class="tile-text"><strong>Teams</strong><small>Group people and pick an access profile.</small></span>
+    <span class="badge">{{ counts.groups }}</span>
   </a>
   {% endif %}
   {% if can_manage_access %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.access_dashboard') }}">
-    <span class="admin-workspace-icon">A</span>
-    <div><strong>Access</strong><small>Put sites in pools, then share them with teams or people.</small></div>
-    <span class="count-badge">{{ counts.pools }} pools</span>
+  <a class="tile" href="{{ url_for('admin.access_dashboard') }}">
+    <span class="record-icon">{{ ui.icon('shield', 18) }}</span>
+    <span class="tile-text"><strong>Access</strong><small>Put sites in pools and share them.</small></span>
+    <span class="badge">{{ counts.pools }} pool{{ "" if counts.pools == 1 else "s" }}</span>
   </a>
   {% endif %}
   {% if super_admin %}
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.domains_dashboard') }}">
-    <span class="admin-workspace-icon">D</span>
-    <div><strong>Domains</strong><small>Manage dashboard and hosted-site domains.</small></div>
-    <span class="count-badge">{{ counts.domains }}</span>
+  <a class="tile" href="{{ url_for('admin.domains_dashboard') }}">
+    <span class="record-icon">{{ ui.icon('link', 18) }}</span>
+    <span class="tile-text"><strong>Domains</strong><small>Dashboard and hosted-site domains.</small></span>
+    <span class="badge">{{ counts.domains }}</span>
   </a>
-  <a class="panel admin-workspace-card" href="{{ url_for('admin.dashboard', section='updates') }}">
-    <span class="admin-workspace-icon">U</span>
-    <div><strong>System</strong><small>Review the installed version and approve updates.</small></div>
-    <span class="pill {{ 'ready' if update_status.state == 'current' else 'error' if update_status.state == 'error' else '' }}">{{ update_status.state }}</span>
+  <a class="tile" href="{{ url_for('admin.dashboard', section='updates') }}">
+    <span class="record-icon">{{ ui.icon('cpu', 18) }}</span>
+    <span class="tile-text"><strong>System</strong><small>Installed version and updates.</small></span>
+    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ')|capitalize }}</span>
   </a>
   {% endif %}
 </section>
 
-<section class="panel admin-help-card">
-  <strong>How access works</strong>
-  <p>People join teams. Teams receive a platform profile or access to site pools. Use direct site grants only for one-off exceptions. Super admins always have full access.</p>
-</section>
+<div class="alert info">
+  {{ ui.icon('info') }}
+  <div class="alert-body"><strong>How access works</strong>People join teams. Teams get a platform profile and/or access to site pools. Use direct site grants only for one-off exceptions. Super admins always have full access.</div>
+</div>
 {% endif %}
 
 {% if active_section == "people" and can_manage_users %}
-<section class="admin-workspace-head">
-  <div><h2>People</h2><p>Activate accounts and add each person to the teams they belong to.</p></div>
-  <input class="filter-input" type="search" placeholder="Find a person" data-filter-input="users" aria-label="Filter people">
-</section>
-<div class="admin-record-list">
+<div class="section-title">
+  <div><h2>{{ users|length }} {{ "person" if users|length == 1 else "people" }}</h2></div>
+  <label class="search"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Find a person" data-filter-input="users"></label>
+</div>
+<div class="records">
   {% for user in users %}
-  <details class="panel admin-record" data-filter-item="users" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ user.group_names or '' }}">
+  <details class="record" data-filter-item="users" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ user.group_names or '' }}">
     <summary>
-      <span class="user-avatar">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
-      <span class="admin-record-title">
+      <span class="avatar" aria-hidden="true">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
+      <span class="record-title">
         <strong>{{ user.display_name or user.username }}</strong>
         <small>{{ user.email or user.username }}</small>
       </span>
-      <span class="admin-record-tags">
-        {% if user.is_admin %}<span class="pill ready">Super admin</span>{% endif %}
-        <span class="pill {{ 'ready' if user.is_active else 'error' }}">{{ "Active" if user.is_active else "Disabled" }}</span>
-        {% if user.group_names %}<span class="pill">{{ user.group_names }}</span>{% endif %}
+      <span class="record-tags">
+        {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% endif %}
+        {% if user.group_names %}<span class="badge">{{ user.group_names }}</span>{% endif %}
+        <span class="badge {{ 'badge-success' if user.is_active else 'badge-danger' }}">{{ "Active" if user.is_active else "Disabled" }}</span>
       </span>
+      <span class="chev">{{ ui.icon('chevron') }}</span>
     </summary>
-    <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <div class="admin-toggle-grid">
-        <label class="check-row">
+    <form class="record-body" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
+      {{ ui.csrf() }}
+      <div class="grid-2">
+        <label class="check">
           <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
-          <span><strong>Active account</strong><small>Allow Google sign-in.</small></span>
+          <span><strong>Active account</strong><small>Allow this person to sign in.</small></span>
         </label>
         {% if super_admin %}
-        <label class="check-row">
+        <label class="check">
           <input type="checkbox" name="is_admin" {% if user.is_admin %}checked{% endif %}>
-          <span><strong>Super administrator</strong><small>Full unrestricted access.</small></span>
+          <span><strong>Super administrator</strong><small>Full, unrestricted access.</small></span>
         </label>
         {% endif %}
       </div>
-      <fieldset class="permission-fieldset">
+      <fieldset>
         <legend>Teams</legend>
-        <div class="admin-choice-grid">
+        <div class="choice-list">
           {% for group in groups %}
-          <label class="compact-check">
+          <label class="check">
             <input type="checkbox" name="groups" value="{{ group.id }}" {% if group.id in memberships[user.id] %}checked{% endif %}>
             <span>{{ group.name }}</span>
           </label>
           {% else %}
-          <small>No teams exist yet.</small>
+          <p class="muted">No teams exist yet. <a href="{{ url_for('admin.dashboard', section='teams') }}">Create one</a>.</p>
           {% endfor %}
         </div>
       </fieldset>
-      <div class="admin-record-actions">
-        <small>Joined {{ user.created_at[:10] }}</small>
-        <button class="button primary small" type="submit" data-loading-text="Saving...">Save person</button>
+      <div class="record-actions">
+        <small class="faint">Joined {{ ui.when(user.created_at) }}</small>
+        <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save changes</button>
       </div>
     </form>
   </details>
   {% endfor %}
+  <div class="card list-empty" data-filter-empty="users" hidden>No people match that filter.</div>
 </div>
 {% endif %}
 
-{% if active_section == "teams" and can_manage_groups %}
-<section class="admin-workspace-head">
-  <div><h2>Teams</h2><p>Use teams for pool access. Add platform-wide powers only when necessary.</p></div>
-  <input class="filter-input" type="search" placeholder="Find a team" data-filter-input="groups" aria-label="Filter teams">
-</section>
-
-<details class="panel admin-create-panel">
-  <summary>Create team</summary>
-  <form class="admin-record-editor" method="post" action="{{ url_for('admin.create_group') }}" data-loading>
-    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <div class="admin-form-grid">
-      <label>Team name<input name="name" maxlength="60" placeholder="Web team" required></label>
-      <label>Description<textarea name="description" maxlength="300" rows="2" placeholder="Who belongs in this team"></textarea></label>
-    </div>
-    <label>
-      Platform access
-      <select name="permission_profile" data-permission-profile>
-        {% for key, profile in permission_profiles.items() %}
-        <option value="{{ key }}" {% if key == "team" %}selected{% endif %}>{{ profile.name }} - {{ profile.description }}</option>
-        {% endfor %}
-        <option value="custom">Custom permissions</option>
-      </select>
+{% macro permission_picker(selected_profile, selected_codes) %}
+<label class="field">
+  <span>Platform access</span>
+  <select name="permission_profile" data-permission-profile>
+    {% for key, profile in permission_profiles.items() %}
+    <option value="{{ key }}" {% if selected_profile == key %}selected{% endif %}>{{ profile.name }} — {{ profile.description }}</option>
+    {% endfor %}
+    <option value="custom" {% if selected_profile == "custom" %}selected{% endif %}>Custom permissions</option>
+  </select>
+</label>
+<fieldset data-custom-permissions {% if selected_profile != "custom" %}hidden{% endif %}>
+  <legend>Custom permissions</legend>
+  <div class="grid-2">
+    {% for permission in permissions %}
+    <label class="check">
+      <input type="checkbox" name="permissions" value="{{ permission.code }}" {% if permission.code in selected_codes %}checked{% endif %}>
+      <span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span>
     </label>
-    <fieldset class="permission-fieldset" data-custom-permissions hidden>
-      <legend>Advanced custom permissions</legend>
-      <div class="admin-permission-grid">
-        {% for permission in permissions %}
-        <label class="permission-option">
-          <input type="checkbox" name="permissions" value="{{ permission.code }}">
-          <span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span>
-        </label>
-        {% endfor %}
-      </div>
-    </fieldset>
-    <div class="admin-record-actions">
-      <span></span>
-      <button class="button primary" type="submit" data-loading-text="Creating...">Create team</button>
+    {% endfor %}
+  </div>
+</fieldset>
+{% endmacro %}
+
+{% if active_section == "teams" and can_manage_groups %}
+<details class="card disclosure mb-16" {% if not groups %}open{% endif %}>
+  <summary>{{ ui.icon('plus') }}Create team<span class="chev">{{ ui.icon('chevron') }}</span></summary>
+  <form class="card-body stack" method="post" action="{{ url_for('admin.create_group') }}" data-loading>
+    {{ ui.csrf() }}
+    <div class="form-grid">
+      <label class="field"><span>Team name</span><input name="name" maxlength="60" placeholder="Web team" required></label>
+      <label class="field"><span>Description <span class="hint">optional</span></span><input name="description" maxlength="300" placeholder="Who belongs in this team"></label>
     </div>
+    {{ permission_picker("team", []) }}
+    <div class="record-actions"><span></span><button class="btn btn-primary" type="submit" data-loading-text="Creating…">Create team</button></div>
   </form>
 </details>
 
-<div class="admin-record-list">
+{% if groups %}
+<div class="section-title">
+  <div><h2>{{ groups|length }} team{{ "" if groups|length == 1 else "s" }}</h2></div>
+  <label class="search"><span class="visually-hidden">Filter teams</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Find a team" data-filter-input="groups"></label>
+</div>
+{% endif %}
+<div class="records">
   {% for group in groups %}
-  <details class="panel admin-record" data-filter-item="groups" data-filter-text="{{ group.name }} {{ group.description or '' }}">
+  <details class="record" data-filter-item="groups" data-filter-text="{{ group.name }} {{ group.description or '' }}">
     <summary>
-      <span class="admin-workspace-icon">T</span>
-      <span class="admin-record-title"><strong>{{ group.name }}</strong><small>{{ group.description or "No description" }}</small></span>
-      <span class="admin-record-tags">
-        <span class="count-badge">{{ group.member_count }} people</span>
-        <span class="pill">{{ permission_profiles[group_profiles[group.id]].name if group_profiles[group.id] != "custom" else "Custom access" }}</span>
+      <span class="record-icon">{{ ui.icon('users', 18) }}</span>
+      <span class="record-title"><strong>{{ group.name }}</strong><small>{{ group.description or "No description" }}</small></span>
+      <span class="record-tags">
+        <span class="badge">{{ group.member_count }} {{ "person" if group.member_count == 1 else "people" }}</span>
+        <span class="badge badge-accent">{{ permission_profiles[group_profiles[group.id]].name if group_profiles[group.id] != "custom" else "Custom access" }}</span>
       </span>
+      <span class="chev">{{ ui.icon('chevron') }}</span>
     </summary>
-    <form class="admin-record-editor" method="post" action="{{ url_for('admin.update_group', group_id=group.id) }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <div class="admin-form-grid">
-        <label>Team name<input name="name" maxlength="60" value="{{ group.name }}" required></label>
-        <label>Description<textarea name="description" maxlength="300" rows="2">{{ group.description or "" }}</textarea></label>
+    <form class="record-body" method="post" action="{{ url_for('admin.update_group', group_id=group.id) }}" data-loading>
+      {{ ui.csrf() }}
+      {#- The first submit button is the implicit default when Enter is pressed,
+          so Save must come before Delete in the DOM. -#}
+      <button class="visually-hidden" type="submit" tabindex="-1" aria-hidden="true">Save team</button>
+      <div class="form-grid">
+        <label class="field"><span>Team name</span><input name="name" maxlength="60" value="{{ group.name }}" required></label>
+        <label class="field"><span>Description</span><input name="description" maxlength="300" value="{{ group.description or '' }}"></label>
       </div>
-      <label>
-        Platform access
-        <select name="permission_profile" data-permission-profile>
-          {% for key, profile in permission_profiles.items() %}
-          <option value="{{ key }}" {% if group_profiles[group.id] == key %}selected{% endif %}>{{ profile.name }} - {{ profile.description }}</option>
-          {% endfor %}
-          <option value="custom" {% if group_profiles[group.id] == "custom" %}selected{% endif %}>Custom permissions</option>
-        </select>
-      </label>
-      <fieldset class="permission-fieldset" data-custom-permissions {% if group_profiles[group.id] != "custom" %}hidden{% endif %}>
-        <legend>Advanced custom permissions</legend>
-        <div class="admin-permission-grid">
-          {% for permission in permissions %}
-          <label class="permission-option">
-            <input type="checkbox" name="permissions" value="{{ permission.code }}" {% if permission.code in group_permissions[group.id] %}checked{% endif %}>
-            <span><strong>{{ permission.name }}</strong><small>{{ permission.description }}</small></span>
-          </label>
-          {% endfor %}
-        </div>
-      </fieldset>
-      <div class="admin-record-actions">
-        <button class="button danger-text small" type="submit" formaction="{{ url_for('admin.delete_group', group_id=group.id) }}" data-confirm-button="Delete this team? People will lose its access.">Delete</button>
-        <button class="button primary small" type="submit" data-loading-text="Saving...">Save team</button>
+      {{ permission_picker(group_profiles[group.id], group_permissions[group.id]) }}
+      <div class="record-actions">
+        <button class="btn btn-sm btn-danger-outline" type="submit" formaction="{{ url_for('admin.delete_group', group_id=group.id) }}" formnovalidate data-confirm-button="Delete this team? People will lose its access.">{{ ui.icon('trash', 14) }}Delete team</button>
+        <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save team</button>
       </div>
     </form>
   </details>
   {% else %}
-  <div class="panel empty-state"><h3>No teams</h3><p>Create a team, add people, then share site pools with it.</p></div>
+  <section class="card empty">
+    <span class="record-icon">{{ ui.icon('users', 22) }}</span>
+    <h2>No teams yet</h2>
+    <p>Create a team, add people to it, then share site pools with the whole team.</p>
+  </section>
   {% endfor %}
+  {% if groups %}<div class="card list-empty" data-filter-empty="groups" hidden>No teams match that filter.</div>{% endif %}
 </div>
 {% endif %}
 
 {% if active_section == "updates" and super_admin %}
-<section class="admin-workspace-head">
-  <div><h2>System update</h2><p>Checks are safe. Installation requires approval for the exact available commit.</p></div>
-  <span class="pill {{ 'ready' if update_status.state == 'current' else 'cloning' if update_status.state in ['testing', 'backing_up', 'installing'] else 'error' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ') }}</span>
-</section>
-<section class="panel admin-update-panel">
-  <div class="program-update-copy">
-    <strong>{{ update_status.message }}</strong>
-    {% if update_status.checked_at %}<small>Last checked {{ update_status.checked_at }}</small>{% endif %}
+<section class="card">
+  <div class="card-header">
+    <div><h2>WebManager updates</h2><p>Checking is always safe. Installing requires approving the exact commit.</p></div>
+    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{{ "Not checked" if update_status.state == "unknown" else update_status.state|replace('_', ' ')|capitalize }}</span>
   </div>
-  <dl class="admin-update-commits">
-    <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
-    <div><dt>Available</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "none" }}</code></dd></div>
-  </dl>
-  <div class="button-row">
+  <div class="card-body stack">
+    <p><strong>{{ update_status.message }}</strong></p>
+    <dl class="facts">
+      <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
+      <div><dt>Available</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "none" }}</code></dd></div>
+      <div><dt>Last checked</dt><dd>{{ ui.when(update_status.checked_at) if update_status.checked_at else "Never" }}</dd></div>
+    </dl>
+  </div>
+  <div class="card-footer end">
     <form method="post" action="{{ url_for('admin.check_program_update') }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <button class="button ghost" type="submit" data-loading-text="Requesting...">Check now</button>
+      {{ ui.csrf() }}
+      <button class="btn" type="submit" data-loading-text="Requesting…">{{ ui.icon('refresh', 14) }}Check now</button>
     </form>
     {% if update_status.update_available and update_status.state == 'available' %}
     <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      {{ ui.csrf() }}
       <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="button primary" type="submit" data-loading-text="Approving...">Approve and install</button>
+      <button class="btn btn-primary" type="submit" data-loading-text="Approving…">{{ ui.icon('download', 14) }}Approve and install</button>
     </form>
     {% endif %}
   </div>

@@ -1,130 +1,121 @@
+{% import "_ui.html" as ui with context %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0d10">
-  <title>{{ title }} | WebManager</title>
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <title>{{ title }} · WebManager</title>
   <link rel="icon" href="{{ static_asset('favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ static_asset('app.css') }}">
 </head>
 <body class="{{ 'authenticated' if g.user else 'signed-out' }}">
-  {% if g.user %}
-  <div class="dashboard-shell">
-    <aside class="sidebar" data-sidebar>
-      <a class="sidebar-brand" href="{{ url_for('deployments.dashboard', view='sites') }}">
+{% macro flashes(dismissible=True) %}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-stack" role="status" aria-live="polite">
+      {% for category, message in messages %}
+      <div class="alert flash {{ category }}">
+        {{ ui.icon('check' if category == 'success' else 'alert' if category in ['error', 'warning'] else 'info') }}
+        <div class="alert-body">{{ message }}</div>
+        {% if dismissible %}<button class="icon-button flash-close" type="button" aria-label="Dismiss message">{{ ui.icon('close', 14) }}</button>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+{% endmacro %}
+{% if g.user %}
+  {% set ep = request.endpoint %}
+  {% set view = request.args.get('view', 'sites') %}
+  {% set section = request.args.get('section', 'overview') %}
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app">
+    <aside class="sidebar" id="sidebar" data-sidebar aria-label="Main navigation">
+      <a class="brand" href="{{ url_for('deployments.dashboard') }}">
         <img src="{{ static_asset('logo-mark.svg') }}" alt="">
-        <span><strong>WebManager</strong><small>Hosting control</small></span>
+        <span><strong>WebManager</strong><small>Static site hosting</small></span>
       </a>
 
-      <div class="sidebar-account">
-        <span class="user-avatar">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
-        <span>
-          <strong>{{ g.user.display_name or g.user.username }}</strong>
-          <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
-        </span>
-      </div>
-
-      <nav class="sidebar-nav" aria-label="Main navigation">
-        <p class="sidebar-label">Hosting</p>
-        <a class="{{ 'active' if (request.endpoint == 'deployments.dashboard' and request.args.get('view', 'sites') == 'sites') or request.endpoint in ['deployments.site_detail', 'deployments.site_settings', 'deployments.edit_config'] else '' }}" href="{{ url_for('deployments.dashboard', view='sites') }}">
-          <span class="nav-icon">S</span><span>Sites</span>
+      <nav class="nav">
+        <a class="{{ 'active' if (ep == 'deployments.dashboard' and view == 'sites') or ep in ['deployments.site_detail', 'deployments.site_settings', 'deployments.edit_config'] }}" href="{{ url_for('deployments.dashboard', view='sites') }}" {% if ep == 'deployments.dashboard' and view == 'sites' %}aria-current="page"{% endif %}>
+          {{ ui.icon('globe') }}<span>Sites</span>
         </a>
-        <a class="{{ 'active' if (request.endpoint == 'deployments.dashboard' and request.args.get('view') == 'sources') or request.endpoint in ['deployments.select_folder'] else '' }}" href="{{ url_for('deployments.dashboard', view='sources') }}">
-          <span class="nav-icon">G</span><span>Sources</span>
+        <a class="{{ 'active' if (ep == 'deployments.dashboard' and view == 'sources') or ep == 'deployments.select_folder' }}" href="{{ url_for('deployments.dashboard', view='sources') }}" {% if ep == 'deployments.dashboard' and view == 'sources' %}aria-current="page"{% endif %}>
+          {{ ui.icon('git') }}<span>Sources</span>
         </a>
 
         {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") or has_permission("access.manage") %}
-        <p class="sidebar-label">Manage</p>
-        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section', 'overview') == 'overview' else '' }}" href="{{ url_for('admin.dashboard') }}">
-          <span class="nav-icon">O</span><span>Overview</span>
+        <p class="nav-label">Administration</p>
+        <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'overview' }}" href="{{ url_for('admin.dashboard') }}">
+          {{ ui.icon('grid') }}<span>Overview</span>
         </a>
         {% if g.user.is_admin or has_permission("users.manage") %}
-        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') in ['people', 'users'] else '' }}" href="{{ url_for('admin.dashboard', section='people') }}">
-          <span class="nav-icon">P</span><span>People</span>
+        <a class="{{ 'active' if ep == 'admin.dashboard' and section in ['people', 'users'] }}" href="{{ url_for('admin.dashboard', section='people') }}">
+          {{ ui.icon('user') }}<span>People</span>
         </a>
         {% endif %}
         {% if g.user.is_admin or has_permission("groups.manage") %}
-        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') in ['teams', 'groups'] else '' }}" href="{{ url_for('admin.dashboard', section='teams') }}">
-          <span class="nav-icon">T</span><span>Teams</span>
+        <a class="{{ 'active' if ep == 'admin.dashboard' and section in ['teams', 'groups'] }}" href="{{ url_for('admin.dashboard', section='teams') }}">
+          {{ ui.icon('users') }}<span>Teams</span>
         </a>
         {% endif %}
         {% if g.user.is_admin or has_permission("access.manage") %}
-        <a class="{{ 'active' if request.endpoint == 'admin.access_dashboard' else '' }}" href="{{ url_for('admin.access_dashboard') }}">
-          <span class="nav-icon">A</span><span>Access</span>
+        <a class="{{ 'active' if ep == 'admin.access_dashboard' }}" href="{{ url_for('admin.access_dashboard') }}">
+          {{ ui.icon('shield') }}<span>Access</span>
         </a>
         {% endif %}
         {% if g.user.is_admin %}
-        <a class="{{ 'active' if request.endpoint == 'admin.domains_dashboard' else '' }}" href="{{ url_for('admin.domains_dashboard') }}">
-          <span class="nav-icon">D</span><span>Domains</span>
+        <a class="{{ 'active' if ep == 'admin.domains_dashboard' }}" href="{{ url_for('admin.domains_dashboard') }}">
+          {{ ui.icon('link') }}<span>Domains</span>
         </a>
-        <a class="{{ 'active' if request.endpoint == 'admin.dashboard' and request.args.get('section') == 'updates' else '' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
-          <span class="nav-icon">U</span><span>System</span>
+        <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'updates' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
+          {{ ui.icon('cpu') }}<span>System</span>
         </a>
         {% endif %}
         {% endif %}
       </nav>
 
-      <form class="sidebar-signout" method="post" action="{{ url_for('auth.logout') }}">
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <button type="submit">Sign out</button>
-      </form>
+      <div class="sidebar-footer">
+        <div class="account">
+          <span class="avatar" aria-hidden="true">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
+          <span class="account-text">
+            <strong>{{ g.user.display_name or g.user.username }}</strong>
+            <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
+          </span>
+          <form method="post" action="{{ url_for('auth.logout') }}">
+            {{ ui.csrf() }}
+            <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">{{ ui.icon('logout') }}</button>
+          </form>
+        </div>
+      </div>
     </aside>
+    <div class="scrim" data-sidebar-close></div>
 
-    <div class="workspace">
-      <header class="workspace-header">
-        <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-label="Toggle navigation">Menu</button>
-        <div class="workspace-title">
-          <small>WebManager</small>
-          <strong>{{ title }}</strong>
-        </div>
-        <div class="workspace-user">
-          <span class="status-dot running"></span>
-          <span>{{ g.user.display_name or g.user.email or g.user.username }}</span>
-        </div>
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-button" type="button" data-sidebar-toggle aria-controls="sidebar" aria-expanded="false" aria-label="Open navigation">{{ ui.icon('menu', 18) }}</button>
+        <a class="brand" href="{{ url_for('deployments.dashboard') }}">
+          <img src="{{ static_asset('logo-mark.svg') }}" alt="">
+          <span><strong>{{ title }}</strong></span>
+        </a>
       </header>
-      <main class="content">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            <div class="flash-stack" aria-live="polite">
-              {% for category, message in messages %}
-                <div class="flash {{ category }}">
-                  <span>{{ message }}</span>
-                  <button class="flash-close" type="button" aria-label="Dismiss message">&times;</button>
-                </div>
-              {% endfor %}
-            </div>
-          {% endif %}
-        {% endwith %}
-  {% else %}
-  <div class="auth-shell">
-    <header class="auth-header">
-      <a class="sidebar-brand" href="{{ url_for('auth.login') }}">
-        <img src="{{ static_asset('logo-mark.svg') }}" alt="">
-        <span><strong>WebManager</strong><small>Hosting control</small></span>
-      </a>
-    </header>
-    <main class="auth-content">
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-          <div class="flash-stack" aria-live="polite">
-            {% for category, message in messages %}
-              <div class="flash {{ category }}"><span>{{ message }}</span></div>
-            {% endfor %}
-          </div>
-        {% endif %}
-      {% endwith %}
-  {% endif %}
-      {% block content %}{% endblock %}
-  {% if g.user %}
+      <main class="content" id="main" tabindex="-1">
+        {{ flashes() }}
+        {% block content %}{% endblock %}
       </main>
     </div>
   </div>
-  {% else %}
-    </main>
-  </div>
-  {% endif %}
+{% else %}
+  <main class="auth-page" id="main">
+    <div class="auth-wrap">
+      {{ flashes(dismissible=False) }}
+      {{ self.content() }}
+    </div>
+  </main>
+{% endif %}
   <script src="{{ static_asset('app.js') }}"></script>
 </body>
 </html>

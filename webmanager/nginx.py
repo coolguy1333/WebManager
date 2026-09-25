@@ -19,9 +19,39 @@ BLOCKED_DIRECTIVES = {
     "pid",
     "proxy_store",
     "proxy_store_access",
+    "ssi",
+    "ssi_types",
+    "sub_filter_types",
     "user",
     "worker_processes",
+    "xslt_stylesheet",
+    "image_filter",
+    "open_log_file_cache",
 }
+
+# Variables that are safe to reference in user-edited configs. Anything not on
+# this list (for example $http_*, $arg_*, $cookie_*, $request_uri) carries raw,
+# un-normalised client input and could be used to build file paths such as
+# "../../etc/passwd" inside try_files, rewrite, index, or error_page.
+SAFE_VARIABLES = {
+    "uri",
+    "document_uri",
+    "scheme",
+    "host",
+    "server_name",
+    "server_port",
+    "request_method",
+    "status",
+    "content_type",
+    "https",
+}
+VARIABLE_RE = re.compile(r"\$(\{)?([A-Za-z_][A-Za-z0-9_]*|[0-9])(?(1)\})")
+CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def safe_comment_text(value: str) -> str:
+    """Collapse a user-supplied label so it can live on one nginx comment line."""
+    return CONTROL_CHARACTERS_RE.sub(" ", str(value)).strip()[:120]
 
 
 class NginxConfigError(ValueError):
@@ -70,7 +100,7 @@ def build_site_config(
     else:
         listeners = f"    listen {port};\n    listen [::]:{port};"
         server_name = "_"
-    return f"""# Managed by WebManager for {site_name}
+    return f"""# Managed by WebManager for {safe_comment_text(site_name)}
 server {{
 {listeners}
     server_name {server_name};
@@ -277,6 +307,8 @@ def validate_site_config(
             directive = name.lower()
             if directive == "server" and inside_server:
                 raise NginxConfigError("Nested or additional server blocks are not allowed.")
+            for token in (name, *arguments):
+                _check_token(token)
             if (
                 directive in BLOCKED_DIRECTIVES
                 or directive.endswith("_pass")
@@ -311,6 +343,22 @@ def validate_site_config(
         raise NginxConfigError(
             f"Configuration must listen on gateway port {gateway_port}."
         )
+
+
+def _check_token(token: str):
+    if CONTROL_CHARACTERS_RE.search(token.replace("\t", " ")):
+        raise NginxConfigError("Configuration values cannot contain control characters.")
+    if re.search(r"(^|[/\\])\.\.($|[/\\])", token):
+        raise NginxConfigError("Parent-directory paths (..) are not allowed in managed configs.")
+    for match in VARIABLE_RE.finditer(token):
+        variable = match.group(2)
+        if variable.isdigit():
+            continue
+        if variable.lower() not in SAFE_VARIABLES:
+            raise NginxConfigError(
+                f"The ${variable} variable is not allowed in managed configs. "
+                f"Allowed variables: {', '.join('$' + name for name in sorted(SAFE_VARIABLES))}, and regex captures."
+            )
 
 
 def _listen_port(endpoint: str) -> int | None:

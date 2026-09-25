@@ -4,6 +4,7 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -296,7 +297,7 @@ class WebManagerTestCase(unittest.TestCase):
 
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Sites at a glance", response.data)
+        self.assertIn(b"<h1>Sites</h1>", response.data)
         self.assertIn(b"Alice Example", response.data)
 
     def test_health_endpoint_checks_database(self):
@@ -935,7 +936,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(owner_id)
 
         sites = self.client.get("/?view=sites")
-        self.assertIn(b"Sites at a glance", sites.data)
+        self.assertIn(b"<h1>Sites</h1>", sites.data)
         self.assertNotIn(b"Automatic checks", sites.data)
 
         sources = self.client.get("/?view=sources")
@@ -953,7 +954,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(owner_id)
 
         healthy = self.client.get("/")
-        self.assertIn(b"Needs attention</span><strong>0", healthy.data)
+        self.assertIn(b"data-attention-count>0<", healthy.data)
 
         with self.app.app_context():
             database = get_db()
@@ -969,7 +970,7 @@ class WebManagerTestCase(unittest.TestCase):
             database.commit()
 
         failed = self.client.get("/")
-        self.assertIn(b"Needs attention</span><strong>1", failed.data)
+        self.assertIn(b"data-attention-count>1<", failed.data)
         self.assertIn(b"Source update check failed", failed.data)
         self.assertIn(b"Repository authentication failed", failed.data)
 
@@ -1001,7 +1002,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(viewer_id)
 
         dashboard = self.client.get("/")
-        self.assertIn(b"Owner:", dashboard.data)
+        self.assertIn(b">Owner<", dashboard.data)
         self.assertIn(b"Read only", dashboard.data)
         self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
         denied = self.client.post(
@@ -1070,7 +1071,7 @@ class WebManagerTestCase(unittest.TestCase):
 
         dashboard = self.client.get("/")
         self.assertIn(b"Demo", dashboard.data)
-        self.assertIn(b"View &rarr;", dashboard.data)
+        self.assertIn(b">View</a>", dashboard.data)
         self.assertEqual(self.client.get(f"/sites/{site_id}").status_code, 200)
         denied = self.client.post(
             f"/sites/{site_id}/start",
@@ -1117,8 +1118,8 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(operator_id)
 
         dashboard = self.client.get("/")
-        self.assertIn(b"Pool: Production", dashboard.data)
-        self.assertIn(b"Manage &rarr;", dashboard.data)
+        self.assertIn(b"Production", dashboard.data)
+        self.assertIn(b">Manage</a>", dashboard.data)
         with patch.object(
             self.app.extensions["runtime_manager"],
             "start_site",
@@ -1463,7 +1464,7 @@ class WebManagerTestCase(unittest.TestCase):
         selection = self.client.get(
             f"/repositories/{repository_id}/select"
         )
-        self.assertIn(b"Choose public address style", selection.data)
+        self.assertIn(b"Address style", selection.data)
         self.assertIn(b"Site subdomain", selection.data)
         self.assertIn(b"Domain root", selection.data)
         self.assertIn(b'data-root-available="true"', selection.data)
@@ -1637,10 +1638,15 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn("root.example", site["nginx_config"])
 
         dashboard = self.client.get("/")
-        self.assertIn(b"Root domains", dashboard.data)
-        self.assertIn(b"Subdomains", dashboard.data)
-        self.assertIn(b"Aliases", dashboard.data)
+        self.assertIn(b"alias-modes.primary.example", dashboard.data)
+        self.assertIn(b"+3 more addresses", dashboard.data)
         self.assertIn(b"docs.custom.example", dashboard.data)
+
+        detail = self.client.get(f"/sites/{site_id}")
+        self.assertIn(b"Root domain", detail.data)
+        self.assertIn(b"Custom subdomain", detail.data)
+        self.assertIn(b"Alias", detail.data)
+        self.assertIn(b"docs.custom.example", detail.data)
 
     def test_custom_alias_subdomain_cannot_collide_with_another_site(self):
         user_id = self.add_user("alice")
@@ -2102,9 +2108,9 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(user_id)
 
         pages = {
-            f"/repositories/{repository_id}/select": b"Select a site folder",
-            f"/sites/{site_id}": b"Hosting details",
-            f"/sites/{site_id}/config": b"Edit Nginx config",
+            f"/repositories/{repository_id}/select": b"Pick the folders to publish",
+            f"/sites/{site_id}": b"Addresses",
+            f"/sites/{site_id}/config": b"Nginx configuration",
         }
         for path, expected in pages.items():
             with self.subTest(path=path):
@@ -3277,6 +3283,205 @@ class ServiceUnitTests(unittest.TestCase):
                 "listen 127.0.0.1:8090 default_server;",
                 gateway_config,
             )
+
+
+class SecurityRegressionTests(unittest.TestCase):
+    """Regression tests for the security review. Reuses the app fixtures
+    without re-running every WebManagerTestCase test."""
+
+    setUp = WebManagerTestCase.setUp
+    tearDown = WebManagerTestCase.tearDown
+    csrf = WebManagerTestCase.csrf
+    add_user = WebManagerTestCase.add_user
+    login_user = WebManagerTestCase.login_user
+    add_repository = WebManagerTestCase.add_repository
+    add_site = WebManagerTestCase.add_site
+
+    def test_config_editor_rejects_file_read_primitives(self):
+        root = Path(self.temp_directory.name) / "cfg"
+        root.mkdir()
+        base = build_site_config(
+            "Demo", root, "index.html", 43100, True, ["demo.webmanager.example"], 43099
+        )
+        attacks = [
+            "try_files /$arg_file =404;",
+            "try_files /${http_x_path} =404;",
+            "return 200 $http_cookie;",
+            "try_files /../../../etc/passwd =404;",
+            "rewrite ^ /../secret.key break;",
+            "ssi on;",
+        ]
+        for attack in attacks:
+            with self.subTest(attack=attack):
+                config = base.replace(
+                    "    disable_symlinks on;",
+                    "    disable_symlinks on;\n    location /x { " + attack + " }",
+                )
+                with self.assertRaises(NginxConfigError):
+                    validate_site_config(
+                        config, root, 43100, ["demo.webmanager.example"], 43099
+                    )
+        safe = base.replace(
+            "    disable_symlinks on;",
+            "    disable_symlinks on;\n    location ~ ^/old/(.*)$ { return 301 $scheme://$host/new/$1; }",
+        )
+        validate_site_config(safe, root, 43100, ["demo.webmanager.example"], 43099)
+
+    def test_generated_config_cannot_be_injected_through_site_name(self):
+        root = Path(self.temp_directory.name) / "inject"
+        root.mkdir()
+        config = build_site_config(
+            "Evil\n}\nserver { listen 80; root /; }\n#",
+            root, "index.html", 43100, True, ["demo.webmanager.example"], 43099,
+        )
+        validate_site_config(config, root, 43100, ["demo.webmanager.example"], 43099)
+        lines = config.splitlines()
+        self.assertTrue(lines[0].startswith("# Managed by WebManager for Evil"))
+        self.assertEqual(lines[1], "server {")
+
+    def test_site_names_with_control_characters_are_rejected(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "ctrl-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root / "x")
+        self.login_user(user_id)
+        response = self.client.post(
+            f"/repositories/{repository_id}/deploy",
+            data={
+                "_csrf_token": self.csrf(),
+                "multi_deploy": "1",
+                "selected": "0",
+                "folder_0": ".",
+                "site_name_0": "Bad\nname",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"needs a name of 80 characters or fewer", response.data)
+        with self.app.app_context():
+            count = get_db().execute("SELECT COUNT(*) FROM sites").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_action_redirect_rejects_backslash_open_redirect(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "redir-repo" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        site_id = self.add_site(user_id, repository_id, root)
+        self.login_user(user_id)
+        for target in ("/\\evil.example", "//evil.example", "https://evil.example"):
+            with self.subTest(target=target), patch(
+                "webmanager.services.RuntimeManager.restart_site", return_value="nginx"
+            ):
+                response = self.client.post(
+                    f"/sites/{site_id}/restart",
+                    data={"_csrf_token": self.csrf(), "next": target},
+                )
+                self.assertEqual(response.headers["Location"], f"/sites/{site_id}")
+
+    def test_config_editor_keeps_submitted_text_after_validation_error(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "keep-repo" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        site_id = self.add_site(user_id, repository_id, root)
+        self.login_user(user_id)
+        response = self.client.post(
+            f"/sites/{site_id}/config",
+            data={"_csrf_token": self.csrf(), "nginx_config": "server { my-unsaved-edit; }"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn(b"my-unsaved-edit", response.data)
+
+    def test_deploy_rejects_hostname_already_used_by_another_sites_alias(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "alias-clash" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        site_id = self.add_site(user_id, repository_id, root)
+        with self.app.app_context():
+            database = get_db()
+            other = database.execute(
+                "INSERT INTO domains (name) VALUES ('other.example')"
+            ).lastrowid
+            database.execute(
+                "INSERT INTO site_domain_aliases (site_id, domain_id, hostname_prefix) VALUES (?, ?, 'blog')",
+                (site_id, other),
+            )
+            database.commit()
+        self.login_user(user_id)
+        with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
+            response = self.client.post(
+                f"/repositories/{repository_id}/deploy",
+                data={
+                    "_csrf_token": self.csrf(),
+                    "multi_deploy": "1",
+                    "selected": "0",
+                    "folder_0": "public",
+                    "site_name_0": "Blog",
+                    "domain_id": str(other),
+                    "hosting_mode": "subdomain",
+                },
+                follow_redirects=True,
+            )
+        self.assertIn(b"blog.other.example is already used by Demo", response.data)
+
+    def test_builtin_static_server_hides_dotfiles(self):
+        from http.server import ThreadingHTTPServer
+        import threading
+        from webmanager.site_server import StaticSiteHandler
+
+        root = Path(self.temp_directory.name) / "static-root"
+        (root / ".git").mkdir(parents=True)
+        (root / ".git" / "config").write_text("[remote]", encoding="utf-8")
+        (root / ".env").write_text("SECRET=1", encoding="utf-8")
+        (root / "index.html").write_text("hello", encoding="utf-8")
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            lambda *a, **k: StaticSiteHandler(*a, directory=str(root), **k),
+        )
+        server.RequestHandlerClass.log_message = lambda *a, **k: None
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            for path in ("/.git/config", "/.env", "/sub/../.env"):
+                with self.subTest(path=path):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5)
+                    self.assertEqual(caught.exception.code, 404)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as ok:
+                self.assertEqual(ok.read(), b"hello")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_clone_scrubs_credentials_from_saved_remote(self):
+        import subprocess
+        from webmanager.git_service import _scrub_remote_credentials
+
+        repository = Path(self.temp_directory.name) / "scrub"
+        repository.mkdir()
+        subprocess.run(("git", "init", "-q", str(repository)), check=True)
+        secret_url = "https://user:ghp_secret@github.com/example/repo.git"
+        subprocess.run(
+            ("git", "-C", str(repository), "remote", "add", "origin", secret_url),
+            check=True,
+        )
+        _scrub_remote_credentials(repository, secret_url)
+        saved = (repository / ".git" / "config").read_text(encoding="utf-8")
+        self.assertNotIn("ghp_secret", saved)
+        self.assertIn("https://github.com/example/repo.git", saved)
+
+    def test_authenticated_pages_are_not_cached(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.get("/")
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertIn("Permissions-Policy", response.headers)
 
 
 if __name__ == "__main__":

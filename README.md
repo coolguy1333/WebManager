@@ -1677,6 +1677,10 @@ Before exposing WebManager publicly:
 10. Review Google OAuth consent-screen and test-user settings before production use.
 
 The Nginx editor enforces each site's hostname, internal ports, document root,
-and symlink protection. It also rejects proxy, include, write, module, and
-other unsafe directives. Users can still publish files from repositories they
+and symlink protection. It also rejects proxy, include, SSI, write, module, and
+other unsafe directives, parent-directory (`..`) paths, and any variable that
+carries raw client input (for example `$arg_*`, `$http_*`, `$cookie_*`, or
+`$request_uri`). Only normalised variables such as `$uri`, `$host`, `$scheme`,
+and regex captures are allowed, so a site config cannot be used to read files
+such as the WebManager secret key or database. Users can still publish files from repositories they
 control, so account access should remain limited to trusted people.

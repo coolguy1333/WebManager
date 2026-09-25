@@ -21,6 +21,11 @@ class StaticSiteHandler(SimpleHTTPRequestHandler):
 
     def send_head(self):
         request_path = unquote(urlsplit(self.path).path)
+        # Match the managed Nginx config: never serve dotfiles or dot-folders
+        # such as .git/, .env, or .htpasswd from the repository checkout.
+        if any(part.startswith(".") for part in request_path.split("/") if part):
+            self.send_error(404, "File not found")
+            return None
         requested_path = Path(self.translate_path(request_path)).resolve()
         if requested_path != self.site_root and self.site_root not in requested_path.parents:
             self.send_error(403, "Requested path is outside the site root")

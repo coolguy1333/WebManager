@@ -1,37 +1,36 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
 {% block content %}
-<section class="page-head compact">
+<header class="page-header">
   <div>
-    <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">&larr; {{ site.name }}</a>
-    <p class="eyebrow">Advanced settings</p>
-    <h1>Edit Nginx config</h1>
-    <p>The managed hostname, internal ports, document root, and symlink protection must remain in the configuration.</p>
+    <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ ui.icon('arrow-left', 14) }}{{ site.name }}</a>
+    <h1>Nginx configuration</h1>
+    <p>Advanced. Changes are validated before they are applied.</p>
   </div>
-  <span class="port-chip large">:{{ site.port }}</span>
-</section>
+  <div class="actions"><span class="badge mono">port {{ site.port }}</span></div>
+</header>
 
-<section class="config-guardrails panel">
-  <strong>Managed safety rules</strong>
-  <span>Keep the managed hostname and ports, assigned document root, and <code>disable_symlinks on</code>. Proxy, include, write, module, and TLS directives are blocked.</span>
-</section>
+<div class="alert info mb-16">
+  {{ ui.icon('shield') }}
+  <div class="alert-body">
+    <strong>Guardrails</strong>
+    Keep the managed hostnames, ports, document root, and <code>disable_symlinks on</code>. Proxy, include, SSI, module, TLS, and file-writing directives are blocked, as are <code>..</code> paths and client-controlled variables (only <code>$uri</code>, <code>$host</code>, <code>$scheme</code> and similar are allowed).
+  </div>
+</div>
 
-<form class="editor-panel panel" method="post" data-loading data-editor-form>
-  <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<form class="card" method="post" data-loading data-editor-form>
+  {{ ui.csrf() }}
   <div class="editor-toolbar">
-    <div>
-      <span class="window-dot red"></span>
-      <span class="window-dot yellow"></span>
-      <span class="window-dot green"></span>
-      <strong>{{ site.slug }}.conf</strong>
-    </div>
-    <span><span data-character-count>{{ submitted_config|default(site.nginx_config)|length }}</span> characters</span>
+    <span>{{ ui.icon('code', 14) }} {{ site.slug }}.conf</span>
+    <span><span data-character-count>{{ submitted_config|default(site.nginx_config)|length }}</span> chars</span>
   </div>
-  <textarea class="code-editor" name="nginx_config" spellcheck="false" aria-label="Nginx configuration">{{ submitted_config|default(site.nginx_config) }}</textarea>
-  <div class="editor-actions">
-    <p>Saving reloads Nginx when it is installed and this site is running.</p>
-    <div class="button-row">
-      <a class="button ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
-      <button class="button primary" type="submit" data-loading-text="Validating...">Save configuration</button>
+  <label class="visually-hidden" for="nginx-config">Nginx configuration</label>
+  <textarea id="nginx-config" class="code-editor" name="nginx_config" spellcheck="false" autocapitalize="off" autocomplete="off">{{ submitted_config|default(site.nginx_config) }}</textarea>
+  <div class="card-footer">
+    <span class="hint">Tab inserts spaces · Esc then Tab moves focus · Saving reloads Nginx if the site is running.</span>
+    <div class="actions">
+      <a class="btn btn-ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
+      <button class="btn btn-primary" type="submit" data-loading-text="Validating…">Validate &amp; save</button>
     </div>
   </div>
 </form>
