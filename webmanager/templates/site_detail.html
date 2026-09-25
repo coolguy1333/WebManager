@@ -81,7 +81,7 @@
     <small>Changed {{ ui.when(site.updated_at) }}</small>
   </div>
   <div class="stat">
-    <span>Automatic updates</span>
+    <span>Source updates</span>
     <strong>{{ update_display.label }}</strong>
     <small>{% if site.repository_last_update_at %}Updated {{ ui.when(site.repository_last_update_at) }}{% elif site.repository_last_checked_at %}Checked {{ ui.when(site.repository_last_checked_at) }}{% else %}Not checked yet{% endif %}</small>
   </div>
@@ -121,8 +121,8 @@
     </div>
     <div class="card-body">
       <dl class="kv">
-        <div><dt>When found</dt><dd>{{ "Apply automatically" if site.repository_update_mode == "auto" else "Ask for approval" }}</dd></div>
-        <div><dt>Schedule</dt><dd>{% if site.repository_auto_refresh_minutes %}Every {{ site.repository_auto_refresh_minutes }} minutes{% else %}Manual checks only{% endif %}</dd></div>
+        <div><dt>New commits</dt><dd>{{ "Installed automatically" if update_display.automatic else "Need your approval" }}</dd></div>
+        <div><dt>{{ "Updates every" if update_display.automatic else "Checked every" }}</dt><dd>{{ site.repository_auto_refresh_minutes|interval }}</dd></div>
         <div><dt>Last checked</dt><dd>{{ ui.when(site.repository_last_checked_at) }}</dd></div>
         <div><dt>Last update applied</dt><dd>{{ ui.when(site.repository_last_update_at, "None yet") }}</dd></div>
       </dl>
@@ -133,18 +133,23 @@
 
 <section class="card mb-16">
   <div class="card-header">
-    <div><h2>Traffic</h2><p>Last {{ analytics.days }} days from the Nginx access log · {{ "%.1f"|format(analytics.bytes / 1048576) }} MB served · no tracking script</p></div>
+    <div><h2>Traffic</h2><p>Last {{ analytics.days }} days · {{ "%.1f"|format(analytics.bytes / 1048576) }} MB served · {{ "{:,}".format(analytics.errors) }} error responses</p></div>
+    <a class="btn btn-sm" href="{{ url_for('deployments.analytics', site=site.id) }}">{{ ui.icon('activity', 14) }}Full analytics</a>
   </div>
-  <div class="card-body">
-    {% if analytics.daily %}
+  <div class="card-body stack">
+    {% if analytics.requests %}
+    {{ ui.area_chart(analytics.daily, height=200) }}
     <div class="grid-2">
       <div>
-        <h3 class="mb-16">Requests per day</h3>
-        <div class="bars">{% for day, count in analytics.daily %}<div class="bar-row"><span>{{ day[5:] }}</span><progress max="{{ analytics.daily_max }}" value="{{ count }}">{{ count }}</progress><strong>{{ count }}</strong></div>{% endfor %}</div>
+        <h3 class="mb-16">Top pages</h3>
+        <div class="rank-list">
+          {% set top_path = analytics.top_paths[0][1] if analytics.top_paths else 0 %}
+          {% for path, count in analytics.top_paths[:6] %}<div><code title="{{ path }}">{{ path }}</code>{{ ui.bar(count, top_path) }}<strong>{{ "{:,}".format(count) }}</strong></div>{% endfor %}
+        </div>
       </div>
       <div>
-        <h3 class="mb-16">Top paths</h3>
-        <div class="path-list">{% for path, count in analytics.top_paths %}<div><code>{{ path }}</code><strong>{{ count }}</strong></div>{% endfor %}</div>
+        <h3 class="mb-16">Responses</h3>
+        {{ ui.status_bar(analytics.status_groups) }}
       </div>
     </div>
     {% else %}

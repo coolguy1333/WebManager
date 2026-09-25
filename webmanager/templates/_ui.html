@@ -50,3 +50,75 @@
 {%- endmacro %}
 
 {% macro csrf() -%}<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">{%- endmacro %}
+
+{#- ---------- Charts (inline SVG) ---------- -#}
+{% macro nice_max(value) -%}
+{%- set ns = namespace(result=none) -%}
+{%- for candidate in [5, 6, 8, 10, 20, 25, 30, 40, 50, 60, 80, 100, 200, 250, 300, 400, 500, 600, 800, 1000, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000, 20000, 25000, 30000, 40000, 50000, 60000, 80000, 100000, 200000, 250000, 300000, 400000, 500000, 600000, 800000, 1000000, 2000000, 2500000, 3000000, 4000000, 5000000, 6000000, 8000000, 10000000, 20000000, 25000000, 30000000, 40000000, 50000000, 60000000, 80000000] -%}
+{%- if ns.result is none and candidate >= value -%}{%- set ns.result = candidate -%}{%- endif -%}
+{%- endfor -%}
+{{ ns.result if ns.result is not none else value }}
+{%- endmacro %}
+
+{% macro area_chart(series, height=220, unit="requests") -%}
+{%- set W, L, R, T, B = 760, 44, 12, 12, 28 -%}
+{%- set H = height -%}
+{%- set n = series|length -%}
+{%- set top = nice_max(series|map(attribute=1)|max if n else 0)|int -%}
+{%- set plot_w = W - L - R -%}
+{%- set plot_h = H - T - B -%}
+{%- set step = plot_w / ((n - 1) if n > 1 else 1) -%}
+{%- set ns = namespace(line="", area="") -%}
+{%- for day, value in series -%}
+  {%- set x = L + loop.index0 * step -%}
+  {%- set y = T + plot_h * (1 - value / top) -%}
+  {%- set ns.line = ns.line ~ ("%.1f,%.1f " % (x, y)) -%}
+{%- endfor -%}
+{%- set ns.area = "M%.1f,%.1f L" % (L, T + plot_h) ~ ns.line ~ "L%.1f,%.1f Z" % (L + (n - 1) * step, T + plot_h) -%}
+{%- set label_every = ((n / 7)|round(0, 'ceil'))|int or 1 -%}
+<svg class="chart" viewBox="0 0 {{ W }} {{ H }}" role="img" aria-label="{{ unit|capitalize }} per day, maximum {{ series|map(attribute=1)|max if n else 0 }}">
+  {%- for i in range(5) %}
+  {%- set gy = T + plot_h * i / 4 %}
+  <line class="chart-grid" x1="{{ L }}" x2="{{ W - R }}" y1="{{ gy }}" y2="{{ gy }}"/>
+  <text class="chart-axis" x="{{ L - 8 }}" y="{{ gy + 4 }}" text-anchor="end">{{ "{:,}".format((top * (4 - i) / 4)|round|int) }}</text>
+  {%- endfor %}
+  {%- if n %}
+  <path class="chart-area" d="{{ ns.area }}"/>
+  <polyline class="chart-line" points="{{ ns.line }}"/>
+  {%- for day, value in series %}
+  {%- set x = L + loop.index0 * step %}
+  {%- set y = T + plot_h * (1 - value / top) %}
+  <g class="chart-point">
+    <rect class="chart-hit" x="{{ x - step / 2 }}" y="{{ T }}" width="{{ step if step > 1 else 1 }}" height="{{ plot_h }}"/>
+    <circle cx="{{ x }}" cy="{{ y }}" r="3.5"/>
+    <title>{{ day }}: {{ "{:,}".format(value) }} {{ unit }}</title>
+  </g>
+  {%- if loop.index0 % label_every == 0 or loop.last %}
+  <text class="chart-axis" x="{{ x }}" y="{{ H - 8 }}" text-anchor="{{ 'end' if loop.last else 'middle' if not loop.first else 'start' }}">{{ day[5:]|replace('-', '/') }}</text>
+  {%- endif %}
+  {%- endfor %}
+  {%- endif %}
+</svg>
+{%- endmacro %}
+
+{% macro sparkline(series) -%}
+{%- set W, H = 120, 28 -%}
+{%- set n = series|length -%}
+{%- set top = (series|map(attribute=1)|max if n else 0) or 1 -%}
+{%- set ns = namespace(line="") -%}
+{%- for day, value in series -%}{%- set ns.line = ns.line ~ ("%.1f,%.1f " % (loop.index0 * W / ((n - 1) or 1), H - 2 - (H - 4) * value / top)) -%}{%- endfor -%}
+<svg class="sparkline" viewBox="0 0 {{ W }} {{ H }}" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ ns.line }}"/></svg>
+{%- endmacro %}
+
+{% macro bar(value, maximum) -%}
+<svg class="hbar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="hbar-track" width="100" height="8" rx="4"/><rect class="hbar-fill" width="{{ (100 * value / maximum) if maximum else 0 }}" height="8" rx="4"/></svg>
+{%- endmacro %}
+
+{% macro status_bar(groups) -%}
+{%- set total = groups|sum(attribute=1) -%}
+{%- set ns = namespace(x=0) -%}
+<svg class="stackbar" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true">
+{%- for name, count in groups %}{% set w = 100 * count / total if total else 0 %}<rect class="s-{{ name }}" x="{{ ns.x }}" width="{{ w }}" height="10"/>{% set ns.x = ns.x + w %}{% endfor -%}
+</svg>
+<div class="legend">{% for name, count in groups %}<span><i class="s-{{ name }}"></i>{{ name }} <strong>{{ "{:,}".format(count) }}</strong></span>{% else %}<span class="muted">No responses yet</span>{% endfor %}</div>
+{%- endmacro %}

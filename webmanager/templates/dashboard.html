@@ -22,9 +22,24 @@
 </section>
 
 {% if sites %}
-<div class="section-title">
-  <div><h2>All sites</h2></div>
-  <label class="search"><span class="visually-hidden">Filter sites</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Filter by name or domain" data-filter-input="sites"></label>
+<div class="toolbar" data-site-toolbar>
+  <label class="search grow"><span class="visually-hidden">Search sites</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search by name, domain, source, owner…" data-site-search></label>
+  <div class="segmented" role="radiogroup" aria-label="Status filter">
+    <label><input type="radio" name="site_status" value="all" checked><span>All <b data-status-count="all">{{ sites|length }}</b></span></label>
+    <label><input type="radio" name="site_status" value="running"><span>Running <b data-status-count="running">{{ summary.running }}</b></span></label>
+    <label><input type="radio" name="site_status" value="stopped"><span>Stopped <b data-status-count="stopped">{{ summary.stopped }}</b></span></label>
+    <label><input type="radio" name="site_status" value="attention"><span>Attention <b data-status-count="attention">{{ summary.attention }}</b></span></label>
+  </div>
+  <label class="field inline-field"><span>Group by</span>
+    <select data-site-group>
+      <option value="">None</option>
+      <option value="source">Source</option>
+      <option value="domain">Domain</option>
+      <option value="pool">Pool</option>
+      {% if show_all %}<option value="owner">Owner</option>{% endif %}
+      <option value="status">Status</option>
+    </select>
+  </label>
 </div>
 <div class="list sites-list" role="table" aria-label="Sites">
   <div class="list-head" role="row">
@@ -37,7 +52,15 @@
   {% for site in sites %}
   {% set domain_info = site_domain_summaries[site.id] %}
   {% set reasons = attention_reasons[site.id] %}
-  <div class="list-row" role="row" data-filter-item="sites" data-filter-text="{{ site.name }} {{ site.repository_name }} {% for item in domain_info['items'] %}{{ item.hostname }} {% endfor %}">
+  {% set row_status = "attention" if reasons else ("running" if site.status == "running" else "stopped") %}
+  <div class="list-row" role="row" data-site-row
+       data-status="{{ row_status }}"
+       data-group-source="{{ site.repository_name }}"
+       data-group-domain="{{ site.domain_name or 'No public domain' }}"
+       data-group-pool="{{ site.pool_name or 'No pool' }}"
+       data-group-owner="{{ site.owner_name or site.owner_email or 'Unknown' }}"
+       data-group-status="{{ {'attention': 'Needs attention', 'running': 'Running', 'stopped': 'Stopped'}[row_status] }}"
+       data-search="{{ (site.name ~ ' ' ~ site.repository_name ~ ' ' ~ site.folder ~ ' ' ~ (site.pool_name or '') ~ ' ' ~ (site.owner_name or '') ~ ' ' ~ (site.owner_email or '') ~ ' ' ~ (domain_info['items']|map(attribute='hostname')|join(' ')))|lower }}">
     <div class="site-name" role="cell">
       <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>
       <small>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}{% if site.id not in manageable_site_ids %} · Read only{% endif %}</small>
@@ -64,7 +87,7 @@
     {% if reasons %}<div class="site-error" role="cell">{{ ui.icon('alert', 12) }} {{ reasons|join(" ") }}</div>{% endif %}
   </div>
   {% endfor %}
-  <div class="list-empty" data-filter-empty="sites" hidden>No sites match that filter.</div>
+  <div class="list-empty" data-site-empty hidden>No sites match. <button class="btn btn-sm btn-ghost" type="button" data-site-reset>Clear filters</button></div>
 </div>
 {% else %}
 <section class="card empty">
@@ -116,9 +139,9 @@
       <span class="record-icon">{{ ui.icon('git', 18) }}</span>
       <span class="record-title"><strong>{{ repository.name }}</strong><small>{{ repository.url }}{% if repository.branch %} · {{ repository.branch }}{% endif %}</small></span>
       <span class="record-tags">
-        {% if repository.pending_commit %}<span class="badge badge-warning">Update waiting</span>{% endif %}
+        {% if repository.pending_commit %}<span class="badge badge-warning">Update ready</span>{% endif %}
         {% if repository.status == "error" %}<span class="badge badge-danger">Clone failed</span>{% endif %}
-        <span class="badge {{ 'badge-success' if update.label == 'Enabled' else 'badge-danger' if update.label == 'Failed' else 'badge-info' if update.state in ['checking', 'updating'] else '' }}" title="Automatic update checks">Auto-update: {{ update.label }}</span>
+        <span class="badge {{ 'badge-danger' if update.state == 'failed' else 'badge-info' if update.state in ['checking', 'updating'] else 'badge-success' if update.automatic else '' }}" title="How updates are installed">{{ update.label if update.state in ['failed', 'checking', 'updating'] or update.automatic else "Approve updates" }}</span>
         <span class="badge">{{ repository.site_count }} site{{ "" if repository.site_count == 1 else "s" }}</span>
       </span>
       <span class="chev">{{ ui.icon('chevron') }}</span>
@@ -128,7 +151,7 @@
         <div><dt>Status</dt><dd>{{ repository.status|replace('_', ' ')|capitalize }}</dd></div>
         <div><dt>Branch</dt><dd>{{ repository.branch or "Default" }}</dd></div>
         <div><dt>Last checked</dt><dd>{{ ui.when(repository.last_checked_at) }}</dd></div>
-        <div><dt>Next check</dt><dd>{% if repository.auto_refresh_minutes %}{{ ui.when(repository.next_refresh_at, "Scheduling…") }}{% else %}Not scheduled{% endif %}</dd></div>
+        <div><dt>Next check</dt><dd>{% if auto_refresh_service_enabled %}{{ ui.when(repository.next_refresh_at, "Soon") }}{% else %}Manual only{% endif %}</dd></div>
         <div><dt>Last update applied</dt><dd>{{ ui.when(repository.last_update_at, "None yet") }}</dd></div>
         {% if show_all %}<div><dt>Owner</dt><dd>{{ repository.owner_name or repository.owner_email }}</dd></div>{% endif %}
       </dl>
@@ -163,16 +186,30 @@
       {% endif %}
 
       {% if can_edit %}
-      <form method="post" action="{{ url_for('deployments.schedule_repository_refresh', repository_id=repository.id) }}" data-loading>
+      <form method="post" action="{{ url_for('deployments.schedule_repository_refresh', repository_id=repository.id) }}" data-loading data-update-form>
         {{ ui.csrf() }}
+        {% set amount, unit = split_interval(repository.auto_refresh_minutes if update.automatic else 60) %}
         <fieldset>
-          <legend>Automatic update checks</legend>
+          <legend>Updates</legend>
           <div class="form-row">
-            <label class="field"><span>Check every</span><span class="input-suffix"><input type="number" name="auto_refresh_minutes" min="{{ refresh_min }}" max="{{ refresh_max }}" value="{{ repository.auto_refresh_minutes or '' }}" placeholder="Off"><span>minutes</span></span></label>
-            <label class="field"><span>When an update is found</span><select name="update_mode"><option value="approval" {% if repository.update_mode == "approval" %}selected{% endif %}>Ask me to approve it</option><option value="auto" {% if repository.update_mode == "auto" %}selected{% endif %}>Apply it automatically</option></select></label>
-            <button class="btn" type="submit" data-loading-text="Saving…">Save schedule</button>
+            <div class="field shrink">
+              <div class="segmented" role="radiogroup" aria-label="When a new commit is found">
+                <label><input type="radio" name="update_mode" value="approval" {% if not update.automatic %}checked{% endif %}><span>Ask me to approve</span></label>
+                <label><input type="radio" name="update_mode" value="auto" {% if update.automatic %}checked{% endif %}><span>Install automatically</span></label>
+              </div>
+            </div>
+            <div class="field interval-field" data-auto-interval>
+              <span class="interval-inline">
+                <span>every</span>
+                <input type="number" name="auto_update_every" min="1" max="{{ refresh_max }}" value="{{ amount }}" aria-label="Update interval">
+                <select name="auto_update_unit" aria-label="Interval unit">
+                  {% for option in ["minutes", "hours", "days"] %}<option value="{{ option }}" {% if option == unit %}selected{% endif %}>{{ option }}</option>{% endfor %}
+                </select>
+              </span>
+            </div>
+            <button class="btn" type="submit">Save</button>
           </div>
-          <p class="hint">Leave the interval empty to turn scheduled checks off ({{ refresh_min }}–{{ refresh_max }} minutes). Automatic checks: {{ "enabled" if update.enabled else "disabled" }}.</p>
+          <p class="hint mt-16" data-update-hint>{% if update.automatic %}New commits are checked, tested, and installed every {{ repository.auto_refresh_minutes|interval }}.{% else %}WebManager checks for new commits every {{ repository.auto_refresh_minutes|interval }} and flags the site under <strong>Needs attention</strong> until you approve.{% endif %}</p>
         </fieldset>
       </form>
 

@@ -47,26 +47,15 @@
           {{ ui.icon('git') }}<span>Sources</span>
         </a>
 
+        <a class="{{ 'active' if ep == 'deployments.analytics' }}" href="{{ url_for('deployments.analytics') }}" {% if ep == 'deployments.analytics' %}aria-current="page"{% endif %}>
+          {{ ui.icon('activity') }}<span>Analytics</span>
+        </a>
+
         {% if g.user.is_admin or has_permission("users.manage") or has_permission("groups.manage") or has_permission("access.manage") %}
         <p class="nav-label">Administration</p>
-        <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'overview' }}" href="{{ url_for('admin.dashboard') }}">
-          {{ ui.icon('grid') }}<span>Overview</span>
+        <a class="{{ 'active' if ep == 'admin.access_dashboard' or (ep == 'admin.dashboard' and section != 'updates') }}" href="{{ url_for('admin.dashboard') }}">
+          {{ ui.icon('users') }}<span>People &amp; access</span>
         </a>
-        {% if g.user.is_admin or has_permission("users.manage") %}
-        <a class="{{ 'active' if ep == 'admin.dashboard' and section in ['people', 'users'] }}" href="{{ url_for('admin.dashboard', section='people') }}">
-          {{ ui.icon('user') }}<span>People</span>
-        </a>
-        {% endif %}
-        {% if g.user.is_admin or has_permission("groups.manage") %}
-        <a class="{{ 'active' if ep == 'admin.dashboard' and section in ['teams', 'groups'] }}" href="{{ url_for('admin.dashboard', section='teams') }}">
-          {{ ui.icon('users') }}<span>Teams</span>
-        </a>
-        {% endif %}
-        {% if g.user.is_admin or has_permission("access.manage") %}
-        <a class="{{ 'active' if ep == 'admin.access_dashboard' }}" href="{{ url_for('admin.access_dashboard') }}">
-          {{ ui.icon('shield') }}<span>Access</span>
-        </a>
-        {% endif %}
         {% if g.user.is_admin %}
         <a class="{{ 'active' if ep == 'admin.domains_dashboard' }}" href="{{ url_for('admin.domains_dashboard') }}">
           {{ ui.icon('link') }}<span>Domains</span>
