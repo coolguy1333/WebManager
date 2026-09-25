@@ -1,15 +1,15 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
 {% block content %}
-<section class="panel error-page">
+<section class="error-page {% if not g.user %}card auth-card{% endif %}">
   <div class="error-code">{{ error_code or "!" }}</div>
-  <p class="eyebrow">WebManager</p>
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
-  <div class="button-row">
-    <a class="button primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
+  <div class="actions">
+    {% if g.user %}<button class="btn" type="button" data-history-back>{{ ui.icon('arrow-left', 14) }}Go back</button>{% endif %}
+    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard') if g.user else url_for('auth.login') }}">
       {{ "Return to dashboard" if g.user else "Return to sign in" }}
     </a>
-    {% if g.user %}<button class="button ghost" type="button" data-history-back>Go back</button>{% endif %}
   </div>
 </section>
 {% endblock %}

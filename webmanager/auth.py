@@ -11,7 +11,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 from .access_control import has_permission
 from .db import get_db
 from .domains import dashboard_hostnames
-from .security import csrf_token, validate_csrf
+from .security import csrf_token, safe_local_path, validate_csrf
 
 
 bp = Blueprint("auth", __name__, url_prefix="/auth")
@@ -48,14 +48,7 @@ def _configured_values(name):
 
 
 def _safe_next(value):
-    if not value:
-        return None
-    if "\\" in value or any(ord(character) < 32 for character in value):
-        return None
-    parsed = urlsplit(value)
-    if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
-        return None
-    return value
+    return safe_local_path(value)
 
 
 def _unique_username(database, email):

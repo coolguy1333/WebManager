@@ -88,6 +88,7 @@ def clone_repository(
             text=True,
             timeout=180,
             check=False,
+            env=_git_environment(),
         )
     except FileNotFoundError as exc:
         raise GitError("Git is not installed or is not available on PATH.") from exc
@@ -108,6 +109,8 @@ def clone_repository(
             detail = "Authentication failed. Configure Git credentials or SSH keys on this server."
         raise GitError(detail[-1200:] or "Git clone failed.")
 
+    _scrub_remote_credentials(staging, url)
+
     if validate_staging is not None:
         try:
             validate_staging(staging)
@@ -119,6 +122,33 @@ def clone_repository(
             raise GitError(f"Repository validation failed: {exc}") from exc
 
     activate_repository(staging, target, backup=backup)
+
+
+def _git_environment():
+    """Never let Git block on an interactive credential or host-key prompt."""
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment.setdefault("GIT_ASKPASS", "echo")
+    environment.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    return environment
+
+
+def _scrub_remote_credentials(repository: Path, url: str):
+    """Remove any user:token@ credentials Git saved into .git/config."""
+    clean = display_repo_url(url)
+    if clean == url:
+        return
+    try:
+        subprocess.run(
+            ("git", "-C", str(repository), "remote", "set-url", "origin", clean),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=_git_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def activate_repository(staging: Path, target: Path, backup: Path | None = None):
@@ -157,6 +187,7 @@ def repository_commit(path: Path) -> str:
             text=True,
             timeout=30,
             check=False,
+            env=_git_environment(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         raise GitError(f"Could not read the repository revision: {exc}") from exc

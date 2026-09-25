@@ -48,13 +48,20 @@ from .repository_refresh import (
     MIN_REFRESH_MINUTES,
     next_refresh_time,
 )
-from .security import login_required, validate_csrf
+from .security import login_required, safe_local_path, validate_csrf
 from .services import RuntimeErrorDetail, allocate_port, port_is_available
 
 
 bp = Blueprint("deployments", __name__)
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def valid_site_name(name: str) -> bool:
+    return bool(name) and len(name) <= 80 and not CONTROL_CHARACTERS_RE.search(name)
 
 
 def slugify(value: str) -> str:
@@ -81,8 +88,8 @@ def request_hostname() -> str:
 
 
 def action_redirect(endpoint: str, **values):
-    requested = request.form.get("next", "").strip()
-    if requested.startswith("/") and not requested.startswith("//"):
+    requested = safe_local_path(request.form.get("next", "").strip())
+    if requested:
         return redirect(requested, code=303)
     return redirect(url_for(endpoint, **values), code=303)
 
@@ -126,12 +133,14 @@ def site_routing_details(site) -> list[dict[str, str]]:
 def site_domain_summary(site):
     bindings = site_domain_bindings(get_db(), site)
     groups = {"root": [], "subdomains": [], "aliases": []}
+    items = []
     main = None
     for binding in bindings:
         hostname = binding_hostname(site, binding)
         item = {
             **binding,
             "hostname": hostname,
+            "url": f"{current_app.config['SITE_PUBLIC_SCHEME']}://{hostname}",
             "label": (
                 "Root domain"
                 if binding["use_domain_root"]
@@ -142,6 +151,7 @@ def site_domain_summary(site):
                 else "Alias"
             ),
         }
+        items.append(item)
         if binding["is_primary"]:
             main = item
         if binding["use_domain_root"]:
@@ -152,6 +162,7 @@ def site_domain_summary(site):
             groups["subdomains"].append(item)
     return {
         "main": main,
+        "items": items,
         "groups": groups,
         "count": len(bindings),
     }
@@ -787,7 +798,7 @@ def deploy_repository(repository_id):
         )
 
     if not deployments or any(
-        not item["name"] or len(item["name"]) > 80 for item in deployments
+        not valid_site_name(item["name"]) for item in deployments
     ):
         flash("Every selected site needs a name of 80 characters or fewer.", "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
@@ -828,6 +839,9 @@ def deploy_repository(repository_id):
                     raise ValueError(
                         "The generated hostname is reserved for the WebManager dashboard."
                     )
+                owner = hostname_owner(database, hostname)
+                if owner:
+                    raise ValueError(f"{hostname} is already used by {owner['name']}.")
             config = build_site_config(
                 item["name"],
                 selected,
@@ -1064,7 +1078,7 @@ def site_settings(site_id):
         except ValueError:
             port = -1
 
-        if not name or len(name) > 80:
+        if not valid_site_name(name):
             flash("Site name is required and must be 80 characters or fewer.", "error")
         elif port < current_app.config["SITE_PORT_MIN"] or port > current_app.config["SITE_PORT_MAX"]:
             flash(
@@ -1274,12 +1288,17 @@ def edit_config(site_id):
     if request.method == "POST":
         validate_csrf()
         config = request.form.get("nginx_config", "")
+        def rejected(message):
+            flash(message, "error")
+            return render_template(
+                "config_editor.html",
+                title=f"Edit {site['name']}",
+                site=site,
+                submitted_config=config,
+            ), 422
+
         if len(config.encode("utf-8")) > 128 * 1024:
-            flash("Configuration must be smaller than 128 KB.", "error")
-            return redirect(
-                url_for("deployments.edit_config", site_id=site_id),
-                code=303,
-            )
+            return rejected("Configuration must be smaller than 128 KB.")
         else:
             try:
                 hostnames = site_hostnames(get_db(), site)
@@ -1291,11 +1310,7 @@ def edit_config(site_id):
                     current_app.config["SITE_GATEWAY_PORT"] if hostnames else None,
                 )
             except NginxConfigError as exc:
-                flash(str(exc), "error")
-                return redirect(
-                    url_for("deployments.edit_config", site_id=site_id),
-                    code=303,
-                )
+                return rejected(str(exc))
 
             database = get_db()
             database.execute(
@@ -1315,8 +1330,7 @@ def edit_config(site_id):
             if not valid:
                 database.rollback()
                 runtime.sync_nginx_configs()
-                flash(f"Configuration was not saved: {message}", "error")
-                return redirect(url_for("deployments.edit_config", site_id=site_id))
+                return rejected(f"Configuration was not saved: {message}")
 
             database.commit()
             if site["status"] == "running" and site["runtime_backend"] == "nginx":

@@ -1,7 +1,7 @@
 import os
 import re
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, render_template, request, url_for
@@ -126,6 +126,37 @@ def create_app(test_config=None):
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
 
+    @app.template_filter("ago")
+    def relative_time(value):
+        """Render stored UTC timestamps ("YYYY-MM-DD HH:MM:SS") as relative text."""
+        if not value:
+            return ""
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", ""))
+        except ValueError:
+            return str(value)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        seconds = int((datetime.now(timezone.utc) - moment).total_seconds())
+        future = seconds < 0
+        seconds = abs(seconds)
+        for limit, size, unit in (
+            (60, 1, "second"),
+            (3600, 60, "minute"),
+            (86400, 3600, "hour"),
+            (86400 * 30, 86400, "day"),
+            (86400 * 365, 86400 * 30, "month"),
+        ):
+            if seconds < limit:
+                amount = max(1, seconds // size) if unit != "second" else seconds
+                break
+        else:
+            amount, unit = seconds // (86400 * 365), "year"
+        if unit == "second" and amount < 10:
+            return "just now"
+        label = f"{amount} {unit}{'' if amount == 1 else 's'}"
+        return f"in {label}" if future else f"{label} ago"
+
     @app.context_processor
     def versioned_static_assets():
         def static_asset(filename):
@@ -206,6 +237,19 @@ def create_app(test_config=None):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
+        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        if app.config["SESSION_COOKIE_SECURE"]:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000"
+            )
+        if request.endpoint != "static" and "Cache-Control" not in response.headers:
+            # Pages contain CSRF tokens and account data; keep them out of
+            # shared and back/forward caches.
+            response.headers["Cache-Control"] = "no-store"
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "

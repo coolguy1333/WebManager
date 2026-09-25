@@ -1,125 +1,128 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
 {% block content %}
-<section class="page-head compact">
+<header class="page-header">
   <div>
-    <a class="back-link" href="{{ url_for('deployments.dashboard', view='sources') }}">&larr; Sources</a>
-    <p class="eyebrow">Repository inspected</p>
-    <h1>Select a site folder</h1>
-    <p><strong>{{ repository.name }}</strong><span class="separator">/</span>{{ repository.url }}</p>
+    <a class="back-link" href="{{ url_for('deployments.dashboard', view='sources') }}">{{ ui.icon('arrow-left', 14) }}Sources</a>
+    <div class="steps mb-16" aria-label="Deploy progress">
+      <span class="step done"><b>{{ ui.icon('check', 12) }}</b>Connect repository</span>
+      <span class="sep"></span>
+      <span class="step current"><b>2</b>Choose folders &amp; address</span>
+    </div>
+    <h1>Deploy from {{ repository.name }}</h1>
+    <p class="truncate">{{ repository.url }}</p>
   </div>
-  <div class="button-row">
+  <div class="actions">
     <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <button class="button ghost" type="submit" data-loading-text="Refreshing...">Refresh source</button>
+      {{ ui.csrf() }}
+      <input type="hidden" name="next" value="{{ request.path }}">
+      <button class="btn" type="submit" data-loading-text="Refreshing…">{{ ui.icon('refresh', 14) }}Refresh source</button>
     </form>
-    <span class="step-badge">Step 2 of 2</span>
   </div>
-</section>
+</header>
 
 {% if candidates %}
 <form method="post" action="{{ url_for('deployments.deploy_repository', repository_id=repository.id) }}" data-loading>
-  <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+  {{ ui.csrf() }}
   <input type="hidden" name="multi_deploy" value="1">
-  {% if site_domains %}
-  <section class="panel domain-picker" data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
-    <label>
-      Choose domain
-      <select name="domain_id" required data-hosting-domain>
-        {% for domain in site_domains %}
-        <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}">{{ domain.name }}{% if domain.is_default %} (default){% endif %}</option>
-        {% endfor %}
-      </select>
-    </label>
-    {% if site_domains|length > 1 %}
-    <fieldset class="domain-alias-picker">
-      <legend>Additional domains</legend>
-      <p>Serve each selected site on the same address across more domains.</p>
-      <div class="domain-alias-grid">
-        {% for domain in site_domains %}
-        <label class="compact-check">
-          <input type="checkbox" name="additional_domain_ids" value="{{ domain.id }}" data-domain-alias="{{ domain.id }}">
-          <span><strong>{{ domain.name }}</strong><small>Uses the same site slug or root mode.</small></span>
-        </label>
-        {% endfor %}
+
+  <section class="mb-24">
+    <div class="section-title">
+      <div>
+        <h2>1. Pick the folders to publish</h2>
+        <p>We found {{ candidates|length }} folder{{ "" if candidates|length == 1 else "s" }} with an index page. Each one you select becomes its own site.</p>
       </div>
-    </fieldset>
-    {% endif %}
-    <fieldset class="hosting-mode-picker">
-      <legend>Choose public address style</legend>
-      <label class="hosting-mode-option">
-        <input type="radio" name="hosting_mode" value="subdomain" checked>
-        <span><strong>Site subdomain</strong><small>Best for deploying one or several folders.</small><code data-subdomain-preview>site.example.com</code></span>
-      </label>
-      <label class="hosting-mode-option">
-        <input type="radio" name="hosting_mode" value="root">
-        <span><strong>Domain root</strong><small>Serve one selected site directly at the domain.</small><code data-root-preview>example.com</code></span>
-      </label>
-    </fieldset>
-    <div class="hosting-preview" data-hosting-preview>
-      <strong>Public address</strong>
-      <code data-hosting-url></code>
-      <small data-hosting-help>Each selected site receives its own subdomain.</small>
+      <span class="badge badge-accent"><span data-selected-count>1</span> of {{ candidates|length }} selected</span>
     </div>
-  </section>
-  {% endif %}
-  <div class="section-heading">
-    <div>
-      <p class="eyebrow">Index pages found</p>
-      <h2>Select one or more sites</h2>
-      <p>Each selected folder becomes an independently configurable deployment.</p>
-    </div>
-    <span class="count-badge"><span data-selected-count>1</span> selected / {{ candidates|length }}</span>
-  </div>
-  <div class="multi-deploy-grid">
-    {% for candidate in candidates %}
-    <article class="panel multi-deploy-card {% if loop.first %}selected{% endif %}" data-deploy-option>
-      <div class="multi-deploy-head">
-        <label class="compact-check">
+    <div class="grid-auto">
+      {% for candidate in candidates %}
+      <article class="card folder-card {% if loop.first %}selected{% endif %}" data-deploy-option>
+        <label class="check">
           <input type="checkbox" name="selected" value="{{ loop.index0 }}" {% if loop.first %}checked{% endif %}>
           <span>
-            <strong>{{ "Repository root" if candidate.folder == "." else candidate.folder }}</strong>
-            <small>{{ candidate.index_file }} / depth {{ candidate.depth }}</small>
+            <strong>{{ ui.icon('folder', 14) }} {{ "Repository root" if candidate.folder == "." else candidate.folder }}</strong>
+            <small>{{ candidate.index_file }}</small>
           </span>
         </label>
-      </div>
-      <input type="hidden" name="folder_{{ loop.index0 }}" value="{{ candidate.folder }}">
-      <label>
-        Site name
-        <input name="site_name_{{ loop.index0 }}" value="{{ candidate.suggested_name }}" maxlength="80">
-      </label>
-      <label class="check-row">
-        <input type="checkbox" name="spa_fallback_{{ loop.index0 }}" checked>
-        <span><strong>SPA fallback</strong><small>Unknown routes load {{ candidate.index_file }}.</small></span>
-      </label>
-      <small>
-        {% if site_domains %}
-          Gets a unique hostname on the selected domain and an internal port.
-        {% else %}
-          Gets an automatic port from {{ port_min }}-{{ port_max }}.
-        {% endif %}
-      </small>
-    </article>
-    {% endfor %}
-  </div>
-  <div class="deploy-submit-bar panel">
-    <div>
-      <strong>Ready to deploy</strong>
-      <small>Settings can be changed later from each site page.</small>
+        <input type="hidden" name="folder_{{ loop.index0 }}" value="{{ candidate.folder }}">
+        <div class="folder-options stack-sm">
+          <label class="field"><span>Site name</span><input name="site_name_{{ loop.index0 }}" value="{{ candidate.suggested_name }}" maxlength="80"></label>
+          <label class="check plain">
+            <input type="checkbox" name="spa_fallback_{{ loop.index0 }}" checked>
+            <span><strong>Single-page app fallback</strong><small>Unknown paths load {{ candidate.index_file }}.</small></span>
+          </label>
+        </div>
+      </article>
+      {% endfor %}
     </div>
-    <button class="button primary" type="submit" data-loading-text="Deploying selected sites..." data-deploy-submit>Deploy selected sites</button>
+  </section>
+
+  {% if site_domains %}
+  <section class="card" data-hosting-picker data-public-scheme="{{ site_public_scheme }}">
+    <div class="card-header"><div><h2>2. Choose the public address</h2><p>You can add more domains and aliases later from each site's settings.</p></div></div>
+    <div class="card-body stack">
+      <label class="field">
+        <span>Domain</span>
+        <select name="domain_id" required data-hosting-domain>
+          {% for domain in site_domains %}
+          <option value="{{ domain.id }}" data-domain="{{ domain.name }}" data-root-available="{{ 'true' if not domain.root_site_id else 'false' }}" data-root-site="{{ domain.root_site_name or '' }}">{{ domain.name }}{% if domain.is_default %} (default){% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <fieldset>
+        <legend>Address style</legend>
+        <div class="choice-cards">
+          <label class="check">
+            <input type="radio" name="hosting_mode" value="subdomain" checked>
+            <span><strong>Site subdomain</strong><small>Best for one or several folders.</small><code data-subdomain-preview>site.example.com</code></span>
+          </label>
+          <label class="check">
+            <input type="radio" name="hosting_mode" value="root">
+            <span><strong>Domain root</strong><small>Serve exactly one site at the bare domain.</small><code data-root-preview>example.com</code></span>
+          </label>
+        </div>
+      </fieldset>
+      {% if site_domains|length > 1 %}
+      <fieldset>
+        <legend>Also serve on <span class="hint">optional</span></legend>
+        <div class="choice-list">
+          {% for domain in site_domains %}
+          <label class="check">
+            <input type="checkbox" name="additional_domain_ids" value="{{ domain.id }}" data-domain-alias="{{ domain.id }}">
+            <span><strong>{{ domain.name }}</strong><small>Same name or root mode</small></span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      {% endif %}
+      <div class="preview-box" data-hosting-preview>
+        <span>Public address</span>
+        <code data-hosting-url></code>
+        <small data-hosting-help>Each selected folder receives its own subdomain.</small>
+      </div>
+    </div>
+  </section>
+  {% else %}
+  <div class="alert info">{{ ui.icon('info') }}<div class="alert-body">No public domains are configured yet, so each site gets an internal port from {{ port_min }}–{{ port_max }}. An administrator can add domains under <strong>Domains</strong>.</div></div>
+  {% endif %}
+
+  <div class="sticky-bar">
+    <div><strong>Ready to deploy</strong><small>Names, folders, and addresses can be changed later.</small></div>
+    <button class="btn btn-primary" type="submit" data-loading-text="Deploying…" data-deploy-submit>{{ ui.icon('play', 14) }}Deploy <span data-deploy-label>selected site</span></button>
   </div>
 </form>
 {% else %}
-<section class="panel empty-state large">
-  <div class="empty-icon">404</div>
+<section class="card empty">
+  <span class="record-icon">{{ ui.icon('folder', 22) }}</span>
   <h2>No index page found</h2>
-  <p>This repository does not contain an <code>index.html</code> or <code>index.htm</code> outside ignored dependency folders.</p>
-  <div class="button-row">
+  <p>This repository has no <code>index.html</code> or <code>index.htm</code> outside dependency folders like <code>node_modules</code>. If your site needs a build step, commit the built output (for example <code>dist/</code>) and refresh.</p>
+  <div class="actions">
     <form method="post" action="{{ url_for('deployments.refresh_repository', repository_id=repository.id) }}" data-loading>
-      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-      <button class="button primary" type="submit" data-loading-text="Refreshing...">Refresh repository</button>
+      {{ ui.csrf() }}
+      <input type="hidden" name="next" value="{{ request.path }}">
+      <button class="btn btn-primary" type="submit" data-loading-text="Refreshing…">{{ ui.icon('refresh', 14) }}Refresh repository</button>
     </form>
-    <a class="button ghost" href="{{ url_for('deployments.dashboard') }}">Try another repository</a>
+    <a class="btn" href="{{ url_for('deployments.dashboard', view='sources') }}">Back to sources</a>
   </div>
 </section>
 {% endif %}

@@ -24,11 +24,18 @@ document.querySelectorAll("form[data-loading]").forEach((form) => {
     buttons.forEach((button) => {
       button.disabled = true;
       button.classList.add("is-loading");
-      if (button.dataset.loadingText) {
-        button.dataset.originalText = button.textContent.trim();
-        button.textContent = button.dataset.loadingText;
-      }
+      button.setAttribute("aria-busy", "true");
     });
+  });
+});
+
+// Buttons disabled by data-loading stay disabled if the page is restored from
+// the back/forward cache; re-enable them so the form can be used again.
+window.addEventListener("pageshow", () => {
+  document.querySelectorAll("button.is-loading").forEach((button) => {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+    button.removeAttribute("aria-busy");
   });
 });
 
@@ -37,6 +44,15 @@ document.querySelectorAll(".flash-close").forEach((button) => {
     button.closest(".flash")?.remove();
   });
 });
+document.querySelectorAll(".flash.success").forEach((flash) => {
+  window.setTimeout(() => flash.remove(), 8000);
+});
+
+const connectPanel = document.querySelector("details#connect");
+if (connectPanel && window.location.hash === "#connect") {
+  connectPanel.open = true;
+  connectPanel.querySelector("input")?.focus();
+}
 
 document.querySelector("[data-history-back]")?.addEventListener("click", () => {
   window.history.back();
@@ -95,6 +111,13 @@ const updateDeploySelection = () => {
   });
   if (selectedCount) {
     selectedCount.textContent = count;
+  }
+  const deployLabel = document.querySelector("[data-deploy-label]");
+  if (deployLabel) {
+    deployLabel.textContent = count === 1 ? "1 site" : `${count} sites`;
+  }
+  if (deploySubmit && !document.querySelector('input[name="hosting_mode"][value="root"]:checked')) {
+    deploySubmit.disabled = count === 0;
   }
 };
 
@@ -167,7 +190,7 @@ const updateHostingChoice = () => {
     hostingHelp.classList.toggle("error-text", rootMode && !rootAvailable);
   }
   if (deploySubmit) {
-    deploySubmit.disabled = rootMode && !rootAvailable;
+    deploySubmit.disabled = (rootMode && !rootAvailable) || selectedCards.length === 0;
   }
 };
 
@@ -233,10 +256,18 @@ document.querySelectorAll("[data-filter-input]").forEach((input) => {
   input.addEventListener("input", () => {
     const group = input.dataset.filterInput;
     const query = input.value.trim().toLowerCase();
+    let visible = 0;
     document.querySelectorAll(`[data-filter-item="${group}"]`).forEach((item) => {
       const text = (item.dataset.filterText || item.textContent).toLowerCase();
       item.hidden = Boolean(query) && !text.includes(query);
+      if (!item.hidden) {
+        visible += 1;
+      }
     });
+    const empty = document.querySelector(`[data-filter-empty="${group}"]`);
+    if (empty) {
+      empty.hidden = visible > 0;
+    }
   });
 });
 
@@ -254,16 +285,20 @@ document.querySelectorAll("[data-permission-profile]").forEach((select) => {
 });
 
 const sidebar = document.querySelector("[data-sidebar]");
-document.querySelector("[data-sidebar-toggle]")?.addEventListener("click", () => {
-  sidebar?.classList.toggle("open");
-});
-document.addEventListener("click", (event) => {
-  if (
-    sidebar?.classList.contains("open")
-    && !sidebar.contains(event.target)
-    && !event.target.closest("[data-sidebar-toggle]")
-  ) {
-    sidebar.classList.remove("open");
+const sidebarToggle = document.querySelector("[data-sidebar-toggle]");
+const setSidebar = (open) => {
+  sidebar?.classList.toggle("open", open);
+  sidebarToggle?.setAttribute("aria-expanded", String(open));
+  if (open) {
+    sidebar?.querySelector("a, button")?.focus();
+  }
+};
+sidebarToggle?.addEventListener("click", () => setSidebar(!sidebar?.classList.contains("open")));
+document.querySelector("[data-sidebar-close]")?.addEventListener("click", () => setSidebar(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sidebar?.classList.contains("open")) {
+    setSidebar(false);
+    sidebarToggle?.focus();
   }
 });
 
@@ -352,13 +387,24 @@ if (editor) {
     }
   });
 
+  // Tab indents; pressing Escape first lets Tab move focus out (keyboard users
+  // are never trapped). execCommand keeps the browser's undo history intact.
+  let releaseTab = false;
   editor.addEventListener("keydown", (event) => {
-    if (event.key === "Tab") {
-      event.preventDefault();
-      const start = editor.selectionStart;
-      editor.value = `${editor.value.slice(0, start)}    ${editor.value.slice(editor.selectionEnd)}`;
-      editor.selectionStart = editor.selectionEnd = start + 4;
-      updateCounter();
+    if (event.key === "Escape") {
+      releaseTab = true;
+      return;
     }
+    if (event.key === "Tab" && !event.shiftKey && !releaseTab) {
+      event.preventDefault();
+      if (!document.execCommand("insertText", false, "    ")) {
+        const start = editor.selectionStart;
+        editor.value = `${editor.value.slice(0, start)}    ${editor.value.slice(editor.selectionEnd)}`;
+        editor.selectionStart = editor.selectionEnd = start + 4;
+      }
+      updateCounter();
+      return;
+    }
+    releaseTab = false;
   });
 }
