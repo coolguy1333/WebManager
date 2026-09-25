@@ -6,7 +6,6 @@ import sys
 import time
 from pathlib import Path
 
-from flask import current_app
 
 from .db import get_db
 from .domains import site_hostnames
@@ -363,9 +362,22 @@ class RuntimeManager:
                         gateway_port,
                     )
                 except NginxConfigError as exc:
-                    raise RuntimeErrorDetail(
-                        f"{site['name']} has an unsafe Nginx config: {exc}"
-                    ) from exc
+                    message = f"{site['name']} has an unsafe Nginx config: {exc}"
+                    if site["id"] == activating_site_id:
+                        raise RuntimeErrorDetail(message) from exc
+                    # Never let one bad config take every other site offline.
+                    self.app.logger.error(message)
+                    (config_dir / f"{site['id']}-{site['slug']}.conf").unlink(missing_ok=True)
+                    database.execute(
+                        """
+                        UPDATE sites SET status = 'error', runtime_backend = NULL,
+                            last_error = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (f"{message}. Open Settings and save to regenerate a safe config.", site["id"]),
+                    )
+                    database.commit()
+                    continue
                 path = config_dir / f"{site['id']}-{site['slug']}.conf"
                 path.write_text(site["nginx_config"], encoding="utf-8")
 

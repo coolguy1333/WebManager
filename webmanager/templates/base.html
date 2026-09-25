@@ -44,7 +44,7 @@
           {{ ui.icon('globe') }}<span>Sites</span>
         </a>
         <a class="{{ 'active' if (ep == 'deployments.dashboard' and view == 'sources') or ep == 'deployments.select_folder' }}" href="{{ url_for('deployments.dashboard', view='sources') }}" {% if ep == 'deployments.dashboard' and view == 'sources' %}aria-current="page"{% endif %}>
-          {{ ui.icon('git') }}<span>Sources</span>
+          {{ ui.icon('git') }}<span>Sources</span>{% if nav_badges.sources %}<span class="nav-badge" title="{{ nav_badges.sources }} source update{{ '' if nav_badges.sources == 1 else 's' }} waiting">{{ nav_badges.sources }}</span>{% endif %}
         </a>
 
         <a class="{{ 'active' if ep == 'deployments.analytics' }}" href="{{ url_for('deployments.analytics') }}" {% if ep == 'deployments.analytics' %}aria-current="page"{% endif %}>
@@ -61,7 +61,7 @@
           {{ ui.icon('link') }}<span>Domains</span>
         </a>
         <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'updates' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
-          {{ ui.icon('cpu') }}<span>System</span>
+          {{ ui.icon('cpu') }}<span>System</span>{% if nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}
         </a>
         {% endif %}
         {% endif %}

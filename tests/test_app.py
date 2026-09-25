@@ -32,7 +32,6 @@ from webmanager.nginx import (
     route_site_config,
     validate_site_config,
 )
-from webmanager.repository_refresh import MAX_REFRESH_MINUTES
 from webmanager.services import RuntimeErrorDetail, allocate_port
 
 
@@ -2015,7 +2014,7 @@ class WebManagerTestCase(unittest.TestCase):
         response = self.client.get("/definitely-not-a-page")
         self.assertEqual(response.status_code, 404)
         self.assertIn(b"Page not found", response.data)
-        self.assertIn(b"Return to dashboard", response.data)
+        self.assertIn(b"Go to your sites", response.data)
 
     def test_site_subdomain_slugs_are_unique_across_users(self):
         alice_id = self.add_user("alice")
@@ -2238,7 +2237,7 @@ class WebManagerTestCase(unittest.TestCase):
             f"/sites/{site_id}/settings",
         )
 
-    def test_failed_initial_repository_clone_records_visible_failure_state(self):
+    def test_failed_initial_repository_clone_is_reported_and_cleaned_up(self):
         user_id = self.add_user("alice")
         self.login_user(user_id)
 
@@ -2255,15 +2254,11 @@ class WebManagerTestCase(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["Location"], "/?view=sources")
+        self.assertEqual(response.headers["Location"], "/?view=sources&connect=1#connect")
         with self.app.app_context():
-            repository = get_db().execute(
-                "SELECT * FROM repositories ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        self.assertEqual(repository["status"], "error")
-        self.assertEqual(repository["update_state"], "failed")
-        self.assertIsNotNone(repository["last_checked_at"])
-        self.assertIn("authentication failed", repository["update_error"])
+            count = get_db().execute("SELECT COUNT(*) FROM repositories").fetchone()[0]
+        # A failed first clone is reported, not kept as a broken source.
+        self.assertEqual(count, 0)
 
     def test_scheduled_refresh_rejects_update_that_breaks_deployed_site(self):
         user_id = self.add_user("alice")
@@ -2275,7 +2270,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.add_site(user_id, repository_id, site_root)
         manager = self.app.extensions["repository_refresh_manager"]
 
-        def invalid_clone(_url, _target, _branch, validate_staging):
+        def invalid_clone(_url, _target, _branch, validate_staging, **_kwargs):
             staging = Path(self.temp_directory.name) / "invalid-staging"
             staging.mkdir()
             validate_staging(staging)
@@ -2315,7 +2310,7 @@ class WebManagerTestCase(unittest.TestCase):
 
         observed_states = []
 
-        def current_clone(_url, target, _branch, validate_staging):
+        def current_clone(_url, target, _branch, validate_staging, **_kwargs):
             with self.app.app_context():
                 observed_states.append(
                     get_db().execute(
@@ -2397,7 +2392,7 @@ class WebManagerTestCase(unittest.TestCase):
             )
             database.commit()
 
-        def staged_clone(_url, target, _branch, validate_staging):
+        def staged_clone(_url, target, _branch, validate_staging, **_kwargs):
             target.mkdir(parents=True)
             (target / "index.html").write_text("new", encoding="utf-8")
             validate_staging(target)
@@ -2473,7 +2468,7 @@ class WebManagerTestCase(unittest.TestCase):
             )
             database.commit()
 
-        def staged_clone(_url, target, _branch, validate_staging):
+        def staged_clone(_url, target, _branch, validate_staging, **_kwargs):
             target.mkdir(parents=True)
             (target / "index.html").write_text("new", encoding="utf-8")
             validate_staging(target)
@@ -3550,6 +3545,174 @@ class SecurityRegressionTests(unittest.TestCase):
         data = aggregate_analytics(log, {1: ["a.example"]}, 7)
         self.assertEqual(len(data["daily"]), 7)
         self.assertEqual(data["requests"], 0)
+
+    def test_system_page_shows_resources_and_update_checks(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        self.login_user(admin_id)
+        page = self.client.get("/admin/?section=updates")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Resource usage", page.data)
+        self.assertIn(b"Hosted site updates", page.data)
+        # A stale (never run) check is requested automatically.
+        self.assertTrue(Path(self.app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"]).exists())
+        metrics = self.client.get("/admin/system/metrics")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("cpu_count", metrics.get_json())
+
+    def test_system_metrics_are_admin_only(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        self.assertEqual(self.client.get("/admin/system/metrics").status_code, 403)
+
+    def test_check_all_sources_schedules_every_repository(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        root = Path(self.temp_directory.name) / "check-all" / "public"
+        root.mkdir(parents=True)
+        repository_id = self.add_repository(admin_id, root)
+        self.login_user(admin_id)
+        with patch.object(self.app.extensions["repository_refresh_manager"], "refresh") as refresh:
+            response = self.client.post(
+                "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
+            )
+        self.assertEqual(response.status_code, 303)
+        with self.app.app_context():
+            row = get_db().execute(
+                "SELECT next_refresh_at FROM repositories WHERE id = ?", (repository_id,)
+            ).fetchone()
+        self.assertTrue(row["next_refresh_at"] or refresh.called)
+
+    def test_hosted_404_uses_site_page_or_builtin_page(self):
+        from http.server import ThreadingHTTPServer
+        import threading
+        from webmanager.site_server import StaticSiteHandler
+
+        root = Path(self.temp_directory.name) / "hosted-404"
+        root.mkdir()
+        (root / "index.html").write_text("home", encoding="utf-8")
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            lambda *a, **k: StaticSiteHandler(*a, directory=str(root), **k),
+        )
+        server.RequestHandlerClass.log_message = lambda *a, **k: None
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/missing"
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertIn(b"Page not found", caught.exception.read())
+            (root / "404.html").write_text("custom not found", encoding="utf-8")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertEqual(caught.exception.read(), b"custom not found")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_default_limits_block_extra_sources_and_sites(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "quota" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        first = self.add_repository(user_id, root)
+        second_root = Path(self.temp_directory.name) / "quota2" / "public"
+        second_root.mkdir(parents=True)
+        self.add_repository(user_id, second_root)
+        self.login_user(user_id)
+
+        # Default: 2 sources. A third is refused before any clone happens.
+        with patch("webmanager.deployments.clone_repository") as clone:
+            response = self.client.post(
+                "/repositories/inspect",
+                data={"_csrf_token": self.csrf(), "repository_url": "https://github.com/a/b.git"},
+                follow_redirects=True,
+            )
+        clone.assert_not_called()
+        self.assertIn(b"limit of 2 sources", response.data)
+
+        # Default: 3 sites. Deploying 4 folders at once is refused.
+        data = {"_csrf_token": self.csrf(), "multi_deploy": "1"}
+        for index in range(4):
+            data.setdefault("selected", [])
+            data["selected"].append(str(index))
+            data[f"folder_{index}"] = "public"
+            data[f"site_name_{index}"] = f"Site {index}"
+        response = self.client.post(f"/repositories/{first}/deploy", data=data, follow_redirects=True)
+        self.assertIn(b"you can add 3 more sites", response.data)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM sites").fetchone()[0], 0)
+
+    def test_admin_can_change_default_and_personal_limits(self):
+        admin_id = self.add_user("admin", is_admin=True)
+        user_id = self.add_user("alice")
+        self.login_user(admin_id)
+        response = self.client.post(
+            "/admin/limits",
+            data={"_csrf_token": self.csrf(), "max_sites": "10", "max_sources": "0"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"10 sites and unlimited sources", response.data)
+        self.client.post(
+            f"/admin/users/{user_id}",
+            data={"_csrf_token": self.csrf(), "is_active": "on", "max_sites": "1", "max_sources": ""},
+        )
+        from webmanager import quotas
+        with self.app.app_context():
+            database = get_db()
+            self.assertEqual(quotas.limit_for(database, user_id, "sites"), 1)
+            self.assertIsNone(quotas.limit_for(database, user_id, "sources"))
+            self.assertIsNone(quotas.limit_for(database, admin_id, "sites"))
+
+    def test_non_admin_cannot_change_limits(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.post(
+            "/admin/limits",
+            data={"_csrf_token": self.csrf(), "max_sites": "999", "max_sources": "999"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_discarded_update_is_not_flagged_again(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "dismiss" / "public"
+        root.mkdir(parents=True)
+        repository_id = self.add_repository(user_id, root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE repositories SET pending_commit = ?, pending_path = NULL WHERE id = ?",
+                ("b" * 40, repository_id),
+            )
+            database.commit()
+        result = self.app.extensions["repository_refresh_manager"].discard_pending(repository_id)
+        self.assertEqual(result.status, "discarded")
+        with self.app.app_context():
+            row = get_db().execute(
+                "SELECT dismissed_commit, pending_commit FROM repositories WHERE id = ?",
+                (repository_id,),
+            ).fetchone()
+        self.assertEqual(row["dismissed_commit"], "b" * 40)
+        self.assertIsNone(row["pending_commit"])
+
+    def test_oversized_repository_is_rejected(self):
+        from webmanager.git_service import _tree_size
+        folder = Path(self.temp_directory.name) / "big"
+        folder.mkdir()
+        (folder / "blob.bin").write_bytes(b"x" * 4096)
+        self.assertGreater(_tree_size(folder, 1024), 1024)
+        self.assertEqual(_tree_size(folder, 10**9), 4096)
+
+    def test_failed_clone_does_not_leave_a_broken_source(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        with patch("webmanager.deployments.clone_repository", side_effect=GitError("Authentication failed.")):
+            response = self.client.post(
+                "/repositories/inspect",
+                data={"_csrf_token": self.csrf(), "repository_url": "https://github.com/a/private.git"},
+                follow_redirects=True,
+            )
+        self.assertIn(b"Could not clone https://github.com/a/private.git", response.data)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM repositories").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,11 @@
 </header>
 
 {% if candidates %}
-<form method="post" action="{{ url_for('deployments.deploy_repository', repository_id=repository.id) }}" data-loading data-deploy-form data-public-scheme="{{ site_public_scheme }}">
+{% set remaining = none if g.user.is_admin else quota.sites.remaining %}
+{% if remaining is not none %}
+<div class="alert {{ 'error' if remaining == 0 else 'info' }} mb-16">{{ ui.icon('info') }}<div class="alert-body">{% if remaining == 0 %}<strong>Site limit reached</strong>You're using all {{ quota.sites.limit }} of your sites. Delete a site or ask an administrator to raise your limit.{% else %}You can deploy <strong>{{ remaining }}</strong> more site{{ "" if remaining == 1 else "s" }} ({{ quota.sites.used }} of {{ quota.sites.limit }} used).{% endif %}</div></div>
+{% endif %}
+<form method="post" action="{{ url_for('deployments.deploy_repository', repository_id=repository.id) }}" data-loading data-deploy-form data-public-scheme="{{ site_public_scheme }}" {% if remaining is not none %}data-max-sites="{{ remaining }}"{% endif %}>
   {{ ui.csrf() }}
   <input type="hidden" name="multi_deploy" value="1">
 

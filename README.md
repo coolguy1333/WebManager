@@ -138,6 +138,11 @@ Everything below is optional reference material for custom networking, private r
 - Editable site name, hostname slug, source folder, port, and fallback settings
 - Per-site traffic analytics from structured Nginx logs
 - Site pools with team access and optional individual exceptions
+- Per-person limits on sites and Git sources (defaults: 3 sites, 2 sources; super admins unlimited)
+- Source updates are always checked; install automatically every N minutes, hours, or days, or approve each one
+- Analytics page with traffic charts for every site you can see (admins see all sites)
+- System page with live CPU, memory, and disk usage plus WebManager and site update status
+- Custom 404 pages: add a `404.html` to a site's folder, or visitors see a clean built-in page
 - Immediate start, stop, restart, update, and delete controls
 - Validated site updates with owner approval or automatic application
 - Per-repository Git update-check intervals
@@ -972,6 +977,7 @@ WEBMANAGER_GOOGLE_ALLOWED_DOMAINS=
 WEBMANAGER_GOOGLE_ALLOWED_EMAILS=
 WEBMANAGER_AUTO_REFRESH_ENABLED=1
 WEBMANAGER_AUTO_REFRESH_POLL_SECONDS=30
+WEBMANAGER_MAX_REPOSITORY_MB=1024
 WEBMANAGER_DEBUG=0
 PYTHONUNBUFFERED=1
 PYTHONDONTWRITEBYTECODE=1
@@ -1000,6 +1006,7 @@ GIT_TERMINAL_PROMPT=0
 | `WEBMANAGER_GOOGLE_ALLOWED_EMAILS` | empty | Comma-separated verified Google emails |
 | `WEBMANAGER_AUTO_REFRESH_ENABLED` | `1` | Enables the background repository scheduler |
 | `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
+| `WEBMANAGER_MAX_REPOSITORY_MB` | `1024` | Largest repository checkout accepted; bigger clones are rejected |
 | `WEBMANAGER_DEBUG` | `0` | Flask debugging; keep disabled in production |
 
 After editing the file:

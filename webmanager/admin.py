@@ -1,5 +1,7 @@
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from flask import (
     Blueprint,
@@ -7,6 +9,7 @@ from flask import (
     current_app,
     flash,
     g,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -30,6 +33,7 @@ from .domains import (
     normalize_domain,
     site_hostnames,
 )
+from . import quotas, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -222,6 +226,24 @@ def dashboard():
             "count"
         ],
     }
+    quota_defaults = quotas.get_defaults(database)
+    usage = {
+        row["id"]: {"sites": row["site_count"], "sources": row["source_count"]}
+        for row in database.execute(
+            """
+            SELECT users.id,
+                   (SELECT COUNT(*) FROM sites WHERE sites.user_id = users.id) AS site_count,
+                   (SELECT COUNT(*) FROM repositories WHERE repositories.user_id = users.id) AS source_count
+            FROM users
+            """
+        ).fetchall()
+    }
+    update_status = read_update_status() if super_admin else None
+    update_auto_requested = False
+    source_updates = None
+    if active_section == "updates":
+        update_auto_requested = _auto_request_program_check(update_status)
+        source_updates = _source_update_summary(database)
     return render_template(
         "admin/dashboard.html",
         title="System" if active_section == "updates" else "People & access",
@@ -238,7 +260,12 @@ def dashboard():
         can_manage_groups=can_manage_groups,
         can_manage_access=can_manage_access,
         super_admin=super_admin,
-        update_status=read_update_status() if super_admin else None,
+        update_status=update_status,
+        update_auto_requested=update_auto_requested,
+        quota_defaults=quota_defaults,
+        usage=usage,
+        source_updates=source_updates,
+        metrics=system_metrics.collect(current_app) if active_section == "updates" else None,
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -815,6 +842,121 @@ def install_program_update():
     return redirect(url_for("admin.dashboard", section="updates"))
 
 
+AUTO_CHECK_AFTER = timedelta(hours=1)
+
+
+def _auto_request_program_check(status):
+    """Ask the updater for a fresh check when the last one is stale.
+
+    Opening the System page should never show hours-old update information.
+    Returns True when a check was requested.
+    """
+    if status is None or status.get("state") in {"testing", "backing_up", "installing"}:
+        return False
+    checked_at = status.get("checked_at")
+    stale = True
+    if checked_at:
+        try:
+            moment = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            stale = datetime.now(timezone.utc) - moment > AUTO_CHECK_AFTER
+        except ValueError:
+            stale = True
+    if not stale:
+        return False
+    request_file = Path(current_app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"])
+    if request_file.exists():
+        return True
+    try:
+        request_program_update_check()
+    except OSError:
+        return False
+    return True
+
+
+def _source_update_summary(database):
+    rows = database.execute(
+        """
+        SELECT repositories.id, repositories.name, repositories.pending_commit,
+               repositories.update_state, repositories.update_error,
+               repositories.update_mode, repositories.last_checked_at,
+               repositories.next_refresh_at,
+               COUNT(sites.id) AS site_count
+        FROM repositories LEFT JOIN sites ON sites.repository_id = repositories.id
+        GROUP BY repositories.id
+        ORDER BY repositories.name COLLATE NOCASE
+        """
+    ).fetchall()
+    return {
+        "total": len(rows),
+        "pending": [row for row in rows if row["pending_commit"]],
+        "failed": [row for row in rows if row["update_state"] == "failed"],
+        "last_checked": max((row["last_checked_at"] or "" for row in rows), default="") or None,
+    }
+
+
+@bp.post("/limits")
+@login_required
+def update_default_limits():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        sites = quotas.parse_limit(request.form.get("max_sites"))
+        sources = quotas.parse_limit(request.form.get("max_sources"))
+    except ValueError as exc:
+        flash(str(exc) if "between" in str(exc) or "Enter" in str(exc) else "Limits must be whole numbers.", "error")
+        return redirect(url_for("admin.dashboard", section="people"))
+    database = get_db()
+    quotas.set_defaults(database, sites, sources)
+    database.commit()
+    describe = lambda n, noun: "unlimited " + noun + "s" if n == 0 else f"{n} {noun}{'' if n == 1 else 's'}"
+    flash(
+        f"Default limits saved: {describe(sites, 'site')} and {describe(sources, 'source')} per person.",
+        "success",
+    )
+    return redirect(url_for("admin.dashboard", section="people"))
+
+
+@bp.get("/system/metrics")
+@login_required
+def system_metrics_json():
+    if not is_admin():
+        abort(403)
+    response = jsonify(system_metrics.collect(current_app))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.post("/sources/check-all")
+@login_required
+def check_all_sources():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    count = database.execute("SELECT COUNT(*) FROM repositories").fetchone()[0]
+    if current_app.config["AUTO_REFRESH_ENABLED"]:
+        # The background checker picks these up on its next poll, so the
+        # request returns immediately even with many repositories.
+        database.execute(
+            "UPDATE repositories SET next_refresh_at = CURRENT_TIMESTAMP"
+        )
+        database.commit()
+        flash(
+            f"Checking {count} source{'' if count == 1 else 's'} for updates. "
+            "Results appear here within a minute.",
+            "success",
+        )
+    else:
+        manager = current_app.extensions["repository_refresh_manager"]
+        for row in database.execute("SELECT id FROM repositories").fetchall():
+            manager.refresh(row["id"], wait=False)
+        flash(f"Checked {count} source{'' if count == 1 else 's'} for updates.", "success")
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
 @bp.post("/updates/check")
 @login_required
 def check_program_update():
@@ -889,9 +1031,17 @@ def update_user(user_id):
         if not delegated_permissions <= g.permissions:
             abort(403)
 
+    max_sites, max_sources = user["max_sites"], user["max_sources"]
+    if is_admin() and "max_sites" in request.form:
+        try:
+            max_sites = quotas.parse_limit(request.form.get("max_sites"), allow_blank=True)
+            max_sources = quotas.parse_limit(request.form.get("max_sources"), allow_blank=True)
+        except ValueError as exc:
+            flash(str(exc) if "between" in str(exc) else "Limits must be whole numbers.", "error")
+            return redirect(url_for("admin.dashboard", section="people"))
     database.execute(
-        "UPDATE users SET is_active = ?, is_admin = ? WHERE id = ?",
-        (int(active), int(admin), user_id),
+        "UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ? WHERE id = ?",
+        (int(active), int(admin), max_sites, max_sources, user_id),
     )
     database.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
     database.executemany(

@@ -139,6 +139,7 @@ class RepositoryRefreshManager:
                             sites,
                             staging,
                         ),
+                        max_bytes=self.app.config.get("MAX_REPOSITORY_BYTES") or None,
                     )
                     staged = True
                     pending_commit = repository_commit(pending)
@@ -166,6 +167,30 @@ class RepositoryRefreshManager:
                     return RefreshResult("error", message)
 
                 next_run = self._next_run(repository["auto_refresh_minutes"])
+                dismissed = (
+                    repository["update_mode"] != "auto"
+                    and "dismissed_commit" in repository.keys()
+                    and repository["dismissed_commit"] == pending_commit
+                )
+                if dismissed:
+                    # The owner already discarded this exact revision; don't
+                    # nag again until something newer is pushed.
+                    remove_repository_path(pending)
+                    database.execute(
+                        """
+                        UPDATE repositories
+                        SET update_state = 'idle', update_error = NULL, error = NULL,
+                            last_checked_at = CURRENT_TIMESTAMP,
+                            next_refresh_at = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (next_run, repository_id),
+                    )
+                    database.commit()
+                    return RefreshResult(
+                        "current",
+                        "No new commits since the update you discarded.",
+                    )
                 if pending_commit == current_commit:
                     remove_repository_path(pending)
                     database.execute(
@@ -237,6 +262,7 @@ class RepositoryRefreshManager:
                     """
                     UPDATE repositories
                     SET status = 'ready', pending_path = NULL,
+                        dismissed_commit = pending_commit,
                         pending_commit = NULL, pending_at = NULL, error = NULL,
                         update_state = 'idle', update_error = NULL,
                         updated_at = CURRENT_TIMESTAMP
