@@ -253,7 +253,10 @@ class RuntimeManager:
             )
             try:
                 self._write_all_nginx_configs(database)
-                self._restart_nginx()
+                # Graceful reload, never a stop/start: the dashboard itself is
+                # often proxied through this Nginx, and a hard stop would cut
+                # off the very request that asked to stop the site (502).
+                self._reload_nginx()
             except RuntimeErrorDetail:
                 database.rollback()
                 try:
@@ -471,7 +474,8 @@ class RuntimeManager:
         pid_file = root / "nginx.pid"
         self._run_nginx(("-t",))
         if self._nginx_is_running(pid_file):
-            self._run_nginx(("-s", "stop"))
+            # "quit" lets in-flight requests finish, unlike "stop".
+            self._run_nginx(("-s", "quit"))
             deadline = time.monotonic() + 10
             while self._nginx_is_running(pid_file) and time.monotonic() < deadline:
                 time.sleep(0.1)

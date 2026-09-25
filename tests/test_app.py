@@ -2730,7 +2730,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(site["status"], "running")
         self.assertEqual(site["runtime_backend"], "nginx")
 
-    def test_nginx_stop_removes_route_and_restarts_gateway(self):
+    def test_nginx_stop_removes_route_with_graceful_reload(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "nginx-stop-success"
         repository_root.mkdir()
@@ -2754,14 +2754,19 @@ class WebManagerTestCase(unittest.TestCase):
                 (Path(self.app.config["NGINX_ROOT"]) / "conf.d").glob("*.conf")
             )
             self.assertEqual(len(config_files), 1)
-            with patch.object(runtime, "_restart_nginx") as restart:
+            with patch.object(runtime, "_reload_nginx") as reload, patch.object(
+                runtime, "_restart_nginx"
+            ) as restart:
                 runtime.stop_site(site_id)
             site = get_db().execute(
                 "SELECT * FROM sites WHERE id = ?",
                 (site_id,),
             ).fetchone()
 
-        restart.assert_called_once_with()
+        # A graceful reload keeps the dashboard request (often proxied through
+        # this same Nginx) alive; a hard restart caused a 502.
+        reload.assert_called_once_with()
+        restart.assert_not_called()
         self.assertEqual(site["status"], "stopped")
         self.assertFalse(config_files[0].exists())
 
