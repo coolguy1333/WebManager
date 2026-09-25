@@ -3740,6 +3740,35 @@ class SecurityRegressionTests(unittest.TestCase):
         custom = "# my own config\nserver { }"
         self.assertEqual(upgrade_legacy_site_config(custom), custom)
 
+    def test_stopped_site_addresses_show_temporarily_unavailable_page(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "paused-site" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        site_id = self.add_site(user_id, repository_id, root, status="stopped")
+        runtime = self.app.extensions["runtime_manager"]
+        conf_dir = Path(self.app.config["NGINX_ROOT"]) / "conf.d"
+        with self.app.app_context():
+            runtime.sync_nginx_configs()
+            paused = list(conf_dir.glob("*.paused.conf"))
+            self.assertEqual(len(paused), 1)
+            text = paused[0].read_text(encoding="utf-8")
+            self.assertIn("Site temporarily unavailable", text)
+            self.assertIn("return 503", text)
+            # Once the site runs again the placeholder is removed.
+            get_db().execute("UPDATE sites SET status = 'running' WHERE id = ?", (site_id,))
+            get_db().commit()
+            runtime.sync_nginx_configs()
+        self.assertEqual(list(conf_dir.glob("*.paused.conf")), [])
+        self.assertEqual(len(list(conf_dir.glob("*.conf"))), 1)
+
+    def test_paused_config_rejects_unsafe_hostnames(self):
+        from webmanager.nginx import build_paused_site_config
+        with self.assertRaises(NginxConfigError):
+            build_paused_site_config(["evil.example; include /etc/passwd"], 8090)
+        self.assertEqual(build_paused_site_config([], 8090), "")
+
 
 if __name__ == "__main__":
     unittest.main()

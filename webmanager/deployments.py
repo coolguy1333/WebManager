@@ -406,6 +406,18 @@ def validate_site_bindings(
             )
 
 
+def refresh_routing():
+    """Rewrite Nginx configs and reload so addresses match the database."""
+    runtime = current_app.extensions["runtime_manager"]
+    try:
+        if runtime.nginx_binary:
+            runtime.apply_nginx_configs()
+        else:
+            runtime.sync_nginx_configs()
+    except RuntimeErrorDetail as exc:
+        current_app.logger.warning("Could not refresh Nginx routing: %s", exc)
+
+
 def repository_path_is_managed(path: str | Path) -> bool:
     root = Path(current_app.config["REPOSITORY_ROOT"]).resolve()
     candidate = Path(path).resolve()
@@ -1363,7 +1375,10 @@ def site_settings(site_id):
                         flash("Site settings saved and the site restarted.", "success")
                 else:
                     try:
-                        runtime.sync_nginx_configs()
+                        if runtime.nginx_binary:
+                            runtime.apply_nginx_configs()
+                        else:
+                            runtime.sync_nginx_configs()
                     except RuntimeErrorDetail as exc:
                         flash(f"Settings saved, but Nginx sync failed: {exc}", "warning")
                     else:
@@ -1510,6 +1525,7 @@ def delete_site(site_id):
     database = get_db()
     database.execute("DELETE FROM sites WHERE id = ?", (site_id,))
     database.commit()
+    refresh_routing()
     flash(f"{site['name']} was deleted.", "success")
     return action_redirect("deployments.dashboard", view="sites")
 
@@ -1540,6 +1556,7 @@ def delete_repository(repository_id):
             (repository_id,),
         )
         database.commit()
+        refresh_routing()
         if repository["pending_path"]:
             pending = Path(repository["pending_path"])
             if repository_path_is_managed(pending):

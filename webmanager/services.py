@@ -12,6 +12,7 @@ from .domains import site_hostnames
 from .nginx import (
     NginxConfigError,
     build_main_config,
+    build_paused_site_config,
     route_site_config,
     upgrade_legacy_site_config,
     validate_site_config,
@@ -365,6 +366,31 @@ class RuntimeManager:
                 f"{site['id']}-{site['slug']}.conf"
                 for site in active
             }
+            gateway_port = self.app.config["SITE_GATEWAY_PORT"]
+            active_ids = {site["id"] for site in active}
+            active_hostnames = set()
+            for site in active:
+                active_hostnames.update(site_hostnames(database, site))
+            paused_configs = {}
+            for site in database.execute("SELECT * FROM sites").fetchall():
+                if site["id"] in active_ids:
+                    continue
+                # Stopped sites keep their addresses with a friendly
+                # "temporarily unavailable" page instead of a bare 404.
+                names = [
+                    name
+                    for name in site_hostnames(database, site)
+                    if name not in active_hostnames
+                ]
+                try:
+                    placeholder = build_paused_site_config(names, gateway_port)
+                except NginxConfigError:
+                    continue
+                if placeholder:
+                    filename = f"{site['id']}-{site['slug']}.paused.conf"
+                    paused_configs[filename] = placeholder
+                    active_hostnames.update(names)
+            expected_configs.update(paused_configs)
 
             for old_config in config_dir.glob("*.conf"):
                 if old_config.name not in expected_configs:
@@ -402,6 +428,9 @@ class RuntimeManager:
                     continue
                 path = config_dir / f"{site['id']}-{site['slug']}.conf"
                 path.write_text(site["nginx_config"], encoding="utf-8")
+
+            for filename, placeholder in paused_configs.items():
+                (config_dir / filename).write_text(placeholder, encoding="utf-8")
 
             (root / "nginx.conf").write_text(
                 build_main_config(
