@@ -597,6 +597,31 @@ if (metricsPanel) {
     fill.classList.toggle("hot", percent >= 90);
   };
   const live = metricsPanel.querySelector("[data-metrics-live]");
+  const meshLive = document.querySelector("[data-mesh-live]");
+  const setMesh = (row, name, value) => {
+    const el = row.querySelector(`[data-mesh-stat="${name}"]`);
+    if (el && value !== null && value !== undefined) el.textContent = value;
+  };
+  const refreshMesh = (peers) => {
+    if (!Array.isArray(peers)) return;
+    const byUrl = new Map(peers.map((peer) => [peer.url, peer]));
+    document.querySelectorAll("[data-mesh-row]").forEach((row) => {
+      const peer = byUrl.get(row.dataset.peerUrl);
+      if (!peer) return;
+      const statusCell = row.querySelector('[data-mesh-stat="status"]');
+      if (statusCell) {
+        statusCell.innerHTML = peer.reachable
+          ? '<span class="badge badge-success"><span class="dot"></span>Online</span>'
+          : `<span class="badge badge-danger" title="${peer.error ? String(peer.error).replace(/"/g, "&quot;") : ""}"><span class="dot"></span>Unreachable</span>`;
+      }
+      setMesh(row, "version", peer.version || "—");
+      setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
+      setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
+      setMesh(row, "cpu", peer.cpu_percent !== null && peer.cpu_percent !== undefined ? `${peer.cpu_percent}%` : "—");
+      setMesh(row, "memory", peer.memory_percent !== null && peer.memory_percent !== undefined ? `${peer.memory_percent}%` : "—");
+      setMesh(row, "disk", peer.disk_percent !== null && peer.disk_percent !== undefined ? `${peer.disk_percent}%` : "—");
+    });
+  };
   const refresh = async () => {
     if (document.hidden) return;
     try {
@@ -626,12 +651,69 @@ if (metricsPanel) {
           ? `${Math.floor(m.uptime / 86400)}d ${Math.floor((m.uptime % 86400) / 3600)}h`
           : `${Math.floor(m.uptime / 3600)}h ${Math.floor((m.uptime % 3600) / 60)}m`);
       }
+      refreshMesh(m.mesh);
       live?.classList.remove("stale");
+      meshLive?.classList.remove("stale");
     } catch {
       live?.classList.add("stale");
+      meshLive?.classList.add("stale");
     }
   };
-  window.setInterval(refresh, 5000);
+  refresh();
+  window.setInterval(refresh, 2000);
+}
+
+// ---------- Apps: live container usage (list views) ----------
+const appsLive = document.querySelector("[data-apps-live]");
+if (appsLive) {
+  const refreshAppsList = async () => {
+    if (document.hidden) return;
+    try {
+      const response = await fetch(appsLive.dataset.appsStatsUrl, { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(String(response.status));
+      const stats = await response.json();
+      appsLive.querySelectorAll("[data-app-row]").forEach((row) => {
+        const stat = stats[row.dataset.siteId];
+        const cpu = row.querySelector('[data-stat="cpu"]');
+        const memory = row.querySelector('[data-stat="memory"]');
+        const net = row.querySelector('[data-stat="net"]');
+        if (cpu) cpu.textContent = stat && stat.cpu_percent !== null && stat.cpu_percent !== undefined ? `${stat.cpu_percent}%` : "—";
+        if (memory) memory.textContent = stat ? `${stat.memory_used} / ${stat.memory_limit}` : "—";
+        if (net) net.textContent = stat ? `↓ ${stat.net_rx} ↑ ${stat.net_tx}` : "—";
+      });
+    } catch {
+      // Leave the last known values on screen; try again next tick.
+    }
+  };
+  window.setInterval(refreshAppsList, 2000);
+}
+
+// ---------- App page: live container status & usage ----------
+const appStatus = document.querySelector("[data-app-status]");
+if (appStatus) {
+  const refreshAppStatus = async () => {
+    if (document.hidden) return;
+    try {
+      const response = await fetch(appStatus.dataset.appStatusUrl, { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(String(response.status));
+      const data = await response.json();
+      const set = (name, value) => {
+        const el = appStatus.querySelector(`[data-app-stat="${name}"]`);
+        if (el) el.textContent = value;
+      };
+      if (data.status) set("status", data.status.charAt(0).toUpperCase() + data.status.slice(1));
+      set("restarts", data.restarts !== null && data.restarts !== undefined ? data.restarts : "—");
+      const stat = data.stats;
+      set("cpu", stat && stat.cpu_percent !== null && stat.cpu_percent !== undefined ? `${stat.cpu_percent}%` : "—");
+      set("memory", stat ? `${stat.memory_used} / ${stat.memory_limit}` : "—");
+      set("net", stat ? `↓ ${stat.net_rx} ↑ ${stat.net_tx}` : "—");
+      const hint = appStatus.querySelector('[data-app-stat="hint"]');
+      if (hint) hint.textContent = stat ? "CPU, memory and network refresh every 2 seconds while this page is open." : "";
+    } catch {
+      // Leave the last known values on screen; try again next tick.
+    }
+  };
+  window.setInterval(refreshAppStatus, 2000);
 }
 
 // Reload while an app is building/starting so the page reflects the result.

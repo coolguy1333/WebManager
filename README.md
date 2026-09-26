@@ -428,9 +428,15 @@ super administrator.
 Disabled users are signed out on their next request and cannot complete Google
 sign-in until an administrator reactivates them.
 
-The main navigation separates **Sites** from **Sources**. Sites is the live
-deployment inventory. Sources contains repository setup, folder deployment,
-manual update checks, approval, and automatic update policy.
+The main navigation separates **Sites** from **Sources** (and, once an
+administrator turns app hosting on, **Apps**). Sites is the live static-site
+inventory; Apps is the equivalent list for containers, with live CPU/memory
+usage per app. Sources contains repository setup, folder deployment, manual
+update checks, approval, and automatic update policy. Super admins also see
+an **App hosting** page under Administration listing every app across every
+user (their own Apps page only shows apps they can see). A **Docs** link is
+always available with the app contract, `webmanager.json` reference, and a
+troubleshooting table.
 
 ### Admin-managed deployment domains
 
@@ -706,12 +712,41 @@ permission can deploy a folder that contains a `Dockerfile` and a
 `webmanager.json`. Each app runs in its own hardened Docker container behind
 WebManager's Nginx, keeps data in a `/data` volume that is backed up before
 every restart, and has a **Variables** page for its settings (secrets are
-encrypted). Failed updates roll back automatically.
+encrypted). Failed updates roll back automatically. Containers can reach the
+internet but not your LAN or the cloud metadata address (blocked by default).
+
+Every app's page and the **Apps** / **App hosting** nav pages show live CPU,
+memory, and network usage (from `docker stats`), refreshed every 2 seconds.
 
 Enabling it gives WebManager root-equivalent access to Docker. Read
-[docs/APP_HOSTING.md](docs/APP_HOSTING.md) for the security model, the exact
-requirements an app repository must meet, and operations (backups, logs,
-troubleshooting).
+[docs/APP_HOSTING.md](docs/APP_HOSTING.md) or the in-app **Docs** page for the
+security model, the exact requirements an app repository must meet, and
+operations (backups, logs, troubleshooting).
+
+## Multi-server mesh (optional)
+
+Run WebManager on more than one server and have them keep track of each
+other, using the same leaderless peer-federation pattern as
+[Uptime-Monitor](https://github.com/coolguy1333/Uptime-Monitor)'s
+multi-server mode: no leader, no shared database, no distributed deployment.
+Each server keeps hosting and updating its own sites and apps exactly as it
+would standalone; the mesh only adds visibility, via a **Servers** panel on
+the System page showing which of its siblings are up and how busy they are.
+
+Set these on **each** server in `/etc/webmanager/webmanager.env` (list the
+other servers' *dashboard* addresses, not a hosted site's address), then
+`sudo systemctl restart webmanager`:
+
+```bash
+WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com  # the *other* servers
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere
+```
+
+Every server independently polls every URL in `WEBMANAGER_PEERS` every 20
+seconds at `/mesh/status`, authenticated with `WEBMANAGER_PEER_TOKEN` as a
+bearer token. That endpoint exposes only aggregate counts (sites/apps
+running, CPU/memory/disk percent) — never site names, hostnames, or
+repository details. See the in-app **Docs** page for the full reference.
 
 ## Private Git repositories
 

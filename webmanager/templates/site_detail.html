@@ -3,11 +3,11 @@
 {% block content %}
 <header class="page-header">
   <div>
-    <a class="back-link" href="{{ url_for('deployments.dashboard', view='sites') }}">{{ ui.icon('arrow-left', 14) }}Sites</a>
+    <a class="back-link" href="{{ url_for('deployments.dashboard', view='apps' if app is not none else 'sites') }}">{{ ui.icon('arrow-left', 14) }}{{ "Apps" if app is not none else "Sites" }}</a>
     <div class="page-title">
       <h1>{{ site.name }}</h1>
       {{ ui.status_badge(site.status, attention=attention_reasons) }}
-      {% if app is not none %}<span class="badge badge-accent">{{ ui.icon('cpu', 11) }} App</span>{% endif %}
+      {% if app is not none %}<span class="badge badge-accent">{{ ui.icon('box', 11) }} App</span>{% endif %}
       {% if not can_manage %}<span class="badge">Read only</span>{% endif %}
     </div>
     <p>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}</p>
@@ -164,7 +164,7 @@
 </section>
 
 {% if app is not none %}
-<section class="card mb-16">
+<section class="card mb-16" data-app-status data-app-status-url="{{ url_for('deployments.site_status_json', site_id=site.id) }}">
   <div class="card-header">
     <div><h2>Container</h2><p>{% if app.available %}Runs isolated with a read-only filesystem; data lives in <code>/data</code>.{% else %}{{ app.message }}{% endif %}</p></div>
     {% if can_manage %}<a class="btn btn-sm" href="{{ url_for('deployments.app_variables', site_id=site.id) }}">{{ ui.icon('code', 14) }}Variables</a>{% endif %}
@@ -172,13 +172,17 @@
   {% if app.available %}
   <div class="card-body stack">
     <dl class="facts">
-      <div><dt>Container</dt><dd>{{ (app.status or "not created")|capitalize }}</dd></div>
+      <div><dt>Container</dt><dd data-app-stat="status">{{ (app.status or "not created")|capitalize }}</dd></div>
       <div><dt>Started</dt><dd>{{ ui.when(app.started_at[:19]|replace('T', ' ')) if app.started_at and app.status == 'running' else "—" }}</dd></div>
-      <div><dt>Restarts</dt><dd>{{ app.restarts if app.restarts is not none else "—" }}</dd></div>
+      <div><dt>Restarts</dt><dd data-app-stat="restarts">{{ app.restarts if app.restarts is not none else "—" }}</dd></div>
       <div><dt>Memory limit</dt><dd>{{ site.app_memory_mb or (app_manifest.memory_mb if app_manifest else "—") }} MB</dd></div>
       <div><dt>Health check</dt><dd><code>{{ app_manifest.health if app_manifest else "—" }}</code></dd></div>
       <div><dt>Data volume</dt><dd><code>{{ app.volume }}</code></dd></div>
+      <div><dt>CPU</dt><dd data-app-stat="cpu">{{ (app.stats.cpu_percent ~ "%") if app.stats and app.stats.cpu_percent is not none else "—" }}</dd></div>
+      <div><dt>Memory in use</dt><dd data-app-stat="memory">{% if app.stats %}{{ app.stats.memory_used }} / {{ app.stats.memory_limit }}{% else %}—{% endif %}</dd></div>
+      <div><dt>Network I/O</dt><dd data-app-stat="net">{% if app.stats %}↓ {{ app.stats.net_rx }} ↑ {{ app.stats.net_tx }}{% else %}—{% endif %}</dd></div>
     </dl>
+    <p class="hint" data-app-stat="hint">{% if app.stats %}CPU, memory and network refresh every 2 seconds while this page is open.{% endif %}</p>
     {% if site.last_error and site.status in ["error", "running"] %}
     <div>
       <h3 class="mb-16">Last start failure</h3>

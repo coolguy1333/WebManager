@@ -411,6 +411,58 @@ class ContainerRuntime:
         result = self._run(["logs", "--tail", str(tail), "--timestamps", name], timeout=30, check=False)
         return (result.stdout + result.stderr).strip()
 
+    def running_app_names(self) -> list[str]:
+        """Names of every running WebManager app container, for stats_many()."""
+        result = self._run(
+            ["ps", "--filter", "label=webmanager.app", "--filter", "status=running", "--format", "{{.Names}}"],
+            timeout=15,
+            check=False,
+        )
+        return [name for name in result.stdout.split() if name]
+
+    def stats_many(self, names: list[str]) -> dict[str, dict]:
+        """One-shot CPU/memory/network snapshot for running containers, keyed by name.
+
+        Uses a single ``docker stats`` call for all of them; missing/stopped
+        containers are silently absent from the result.
+        """
+        if not names:
+            return {}
+        result = self._run(
+            [
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}",
+                *names,
+            ],
+            timeout=15,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {}
+        stats = {}
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 7:
+                continue
+            name, cpu, mem_usage, mem_percent, net_io, block_io, pids = fields
+            mem_used, _, mem_limit = mem_usage.partition(" / ")
+            net_rx, _, net_tx = net_io.partition(" / ")
+            block_read, _, block_write = block_io.partition(" / ")
+            stats[name] = {
+                "cpu_percent": _parse_percent(cpu),
+                "memory_percent": _parse_percent(mem_percent),
+                "memory_used": mem_used.strip(),
+                "memory_limit": mem_limit.strip(),
+                "net_rx": net_rx.strip(),
+                "net_tx": net_tx.strip(),
+                "block_read": block_read.strip(),
+                "block_write": block_write.strip(),
+                "pids": int(pids) if pids.strip().isdigit() else None,
+            }
+        return stats
+
     def backup_data(self, name: str, destination: Path) -> Path | None:
         """Copy /data out of a (running or stopped) container as a tar file."""
         destination.mkdir(parents=True, exist_ok=True)
@@ -434,6 +486,13 @@ class ContainerRuntime:
         for old in backups[:-BACKUPS_TO_KEEP]:
             old.unlink(missing_ok=True)
         return target
+
+
+def _parse_percent(text: str) -> float | None:
+    try:
+        return round(float(text.strip().rstrip("%")), 1)
+    except ValueError:
+        return None
 
 
 def config_hash(image: str, env: dict, memory_mb: int, cpus: float, host_port: int) -> str:

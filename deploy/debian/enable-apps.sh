@@ -6,14 +6,22 @@
 #   sudo bash deploy/debian/enable-apps.sh --disable  # turn it off again
 #
 # Enabling installs Docker if needed, lets the webmanager service use it,
-# blocks containers from the cloud metadata address, and sets
-# WEBMANAGER_APPS_ENABLED=1. See docs/APP_HOSTING.md.
+# blocks containers from reaching the cloud metadata address and your LAN
+# (internet access only), and sets WEBMANAGER_APPS_ENABLED=1. See
+# docs/APP_HOSTING.md.
 set -Eeuo pipefail
 
 CONFIG_FILE=/etc/webmanager/webmanager.env
 DROPIN_DIR=/etc/systemd/system/webmanager.service.d
 DROPIN_FILE=$DROPIN_DIR/apps.conf
 FIREWALL_UNIT=/etc/systemd/system/webmanager-app-firewall.service
+
+# Destinations app containers may not reach: the cloud metadata address and
+# all private/link-local ranges (RFC 1918 + RFC 3927). Internet addresses are
+# left open. If an app legitimately needs one specific LAN host, add a higher
+# priority ACCEPT rule for it, e.g.:
+#   iptables -I DOCKER-USER -d 192.168.1.50/32 -j ACCEPT
+BLOCKED_RANGES="169.254.169.254/32 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
 
 ASSUME_YES=0
 DISABLE=0
@@ -69,7 +77,9 @@ App hosting runs other people's code in containers on this server.
     Access to Docker is equivalent to root on this machine, so anyone who
     can take over WebManager could take over the server.
   * Containers are hardened (read-only filesystem, no capabilities,
-    memory/CPU/process limits) but can reach the network, including your LAN.
+    memory/CPU/process limits). They can reach the internet but not the
+    cloud metadata address or your LAN; only the published port on
+    127.0.0.1 connects them to WebManager's Nginx.
 
 Use a dedicated VM or LXC container for WebManager if that is a concern,
 and only grant "Host apps" to people you trust.
@@ -99,27 +109,39 @@ SupplementaryGroups=docker
 EOF
 
 # Block containers from the cloud metadata service (it can hand out
-# credentials for the whole machine on AWS/GCP/Azure/etc.).
-cat >"$FIREWALL_UNIT" <<'EOF'
-[Unit]
-Description=WebManager app firewall (block cloud metadata from containers)
-After=docker.service
-PartOf=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP'
-ExecStop=/bin/sh -c 'iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || true'
-
-[Install]
-WantedBy=docker.service
-EOF
+# credentials for the whole machine on AWS/GCP/Azure/etc.) and from every
+# private/link-local address range, so apps can reach the internet but not
+# your LAN or the host's other services. Each range gets its own idempotent
+# insert/delete so re-running this script or restarting the unit is safe.
+{
+    echo "[Unit]"
+    echo "Description=WebManager app firewall (internet-only containers)"
+    echo "After=docker.service"
+    echo "PartOf=docker.service"
+    echo
+    echo "[Service]"
+    echo "Type=oneshot"
+    echo "RemainAfterExit=yes"
+    for range in $BLOCKED_RANGES; do
+        printf 'ExecStart=/bin/sh -c '\''iptables -C DOCKER-USER -d %s -j DROP 2>/dev/null || iptables -I DOCKER-USER -d %s -j DROP'\''\n' "$range" "$range"
+    done
+    for range in $BLOCKED_RANGES; do
+        printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -d %s -j DROP 2>/dev/null || true'\''\n' "$range"
+    done
+    echo
+    echo "[Install]"
+    echo "WantedBy=docker.service"
+} >"$FIREWALL_UNIT"
 
 set_env WEBMANAGER_APPS_ENABLED 1
 systemctl daemon-reload
-if ! systemctl enable --now webmanager-app-firewall.service; then
-    echo "Warning: could not add the metadata firewall rule. See docs/APP_HOSTING.md." >&2
+# "restart" (not "enable --now") so re-running this script also re-applies
+# the rule set for anyone upgrading from an older version of this unit that
+# only blocked the metadata address; a already-active oneshot unit would
+# otherwise skip ExecStart on a plain start.
+systemctl enable webmanager-app-firewall.service
+if ! systemctl restart webmanager-app-firewall.service; then
+    echo "Warning: could not add the app firewall rules. See docs/APP_HOSTING.md." >&2
 fi
 systemctl restart webmanager
 

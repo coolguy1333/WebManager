@@ -42,9 +42,14 @@ The script explains the risk and asks first. Then it:
    `/etc/systemd/system/webmanager.service.d/apps.conf` with
    `SupplementaryGroups=docker`),
 3. installs `webmanager-app-firewall.service`, which blocks containers from
-   the cloud metadata address `169.254.169.254`,
+   reaching the cloud metadata address and every private/link-local IP range
+   — apps can reach the internet, not your LAN or the host's other services,
 4. sets `WEBMANAGER_APPS_ENABLED=1` in `/etc/webmanager/webmanager.env` and
    restarts WebManager.
+
+Re-running the script (for example after upgrading WebManager) re-applies the
+firewall rule set, so it also picks up new blocked ranges on existing
+installs.
 
 Check **System** in WebManager: *App hosting* should say **On**. Then allow
 people to deploy apps:
@@ -89,23 +94,35 @@ Secrets entered in the dashboard are encrypted in WebManager's database and
 passed to the container through a temporary `0600` file, so they never appear
 in process lists.
 
+**Network: internet only, by default.** `enable-apps.sh` installs
+`webmanager-app-firewall.service`, which blocks every app container from
+reaching:
+
+- the cloud metadata address `169.254.169.254` (it can hand out credentials
+  for the whole machine on AWS/GCP/Azure/etc.),
+- all of `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918) and
+  `169.254.0.0/16` (link-local) — your LAN, and any service on the host that
+  listens on all interfaces (SSH, Nginx on other ports, another database, …).
+
+Outbound internet traffic (webhooks, package installs, HTTP checks) is left
+open. If one specific app legitimately needs a LAN address (an internal API,
+a mail relay), add a higher-priority `ACCEPT` rule for just that host, above
+the `DROP` rules the unit installs:
+
+```bash
+sudo iptables -I DOCKER-USER -d 192.168.1.50/32 -j ACCEPT
+```
+
+Make it persistent the same way as `webmanager-app-firewall.service`
+(a systemd unit, or your distribution's persistent iptables rules file) —
+otherwise it's lost on reboot.
+
 **What is not isolated.** Be clear about these before turning it on:
 
 - **Docker access is root-equivalent.** The `webmanager` service account can
   control Docker, so a bug that lets someone run code as WebManager would give
   them the whole server. Run WebManager in a dedicated VM or LXC container if
   that matters to you.
-- **Outbound network is open.** Apps can reach the internet (webhooks, HTTP
-  checks) and also your **LAN** and any service on the host that listens on
-  all interfaces (for example SSH, or Nginx on ports 80/8080). Only the cloud
-  metadata address is blocked. To block your LAN too, add rules to Docker's
-  `DOCKER-USER` chain, for example:
-
-  ```bash
-  sudo iptables -I DOCKER-USER -d 192.168.0.0/16 -j DROP
-  ```
-
-  (Make it persistent the same way as `webmanager-app-firewall.service`.)
 - **Only grant *Host apps* to people you trust** to run code on this machine.
   Static sites never run code; apps do.
 

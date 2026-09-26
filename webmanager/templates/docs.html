@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Docs</h1>
+    <p>How WebManager hosts sites and apps, and what to check when something goes wrong.</p>
+  </div>
+</header>
+
+<nav class="card mb-24" aria-label="On this page">
+  <div class="card-body">
+    <ul class="doc-toc">
+      <li><a href="#sites-vs-apps">Sites vs. apps</a></li>
+      <li><a href="#sites">Hosting a static site</a></li>
+      {% if apps_enabled %}<li><a href="#app-hosting">App hosting</a></li>
+      <li><a href="#manifest">webmanager.json reference</a></li>{% endif %}
+      <li><a href="#updates">Git sources &amp; updates</a></li>
+      <li><a href="#mesh">Multi-server mesh</a></li>
+      <li><a href="#troubleshooting">Troubleshooting</a></li>
+    </ul>
+  </div>
+</nav>
+
+<section class="card mb-16" id="sites-vs-apps">
+  <div class="card-body prose">
+    <h2>Sites vs. apps</h2>
+    <p>WebManager hosts two kinds of deployments, both from a Git repository:</p>
+    <ul>
+      <li><strong>Sites</strong> serve static files (HTML, a built SPA, …) directly. No server process, no data, nothing to configure beyond an index page.</li>
+      <li><strong>Apps</strong>{% if not apps_enabled %} (turned off on this installation){% endif %} run their own server in a container: they can accept logins, keep a database, and expose settings you edit in WebManager instead of a config file.</li>
+    </ul>
+    <p>They're managed in separate places: <a href="{{ url_for('deployments.dashboard', view='sites') }}">Sites</a> and{% if apps_enabled %} <a href="{{ url_for('deployments.dashboard', view='apps') }}">Apps</a>{% else %} Apps (once an administrator turns app hosting on){% endif %} in the sidebar. Both are deployed the same way: connect a repository under <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a>, then pick the folder to publish.</p>
+  </div>
+</section>
+
+<section class="card mb-16" id="sites">
+  <div class="card-body prose">
+    <h2>Hosting a static site</h2>
+    <p>A folder is deployable as a site if it has an index page (usually <code>index.html</code>). WebManager finds candidate folders for you when you connect a repository — pick one, choose an address, and it's live.</p>
+    <ul>
+      <li>New commits are checked on a schedule; you choose whether they're installed automatically or need your approval (per source, under Sources).</li>
+      <li>A site with no matching index page or a hosting failure shows under <strong>Needs attention</strong> with the reason.</li>
+      <li>Single-page apps can turn on SPA fallback (unknown paths serve the index page) in Settings.</li>
+    </ul>
+  </div>
+</section>
+
+{% if apps_enabled %}
+<section class="card mb-16" id="app-hosting">
+  <div class="card-body prose">
+    <h2>App hosting</h2>
+    <p>An app is a repository that runs its own server in a hardened container: read-only filesystem outside <code>/data</code>, no Linux capabilities, memory/CPU/process limits, and network access to the internet but not your LAN or the cloud metadata address.</p>
+    <h3>What a repository needs</h3>
+    <p>In the folder you deploy (or its root):</p>
+    <table class="table">
+      <thead><tr><th>File</th><th>Required</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>Dockerfile</code></td><td>Yes</td><td>Builds and runs the app; the folder is the build context.</td></tr>
+        <tr><td><code>webmanager.json</code></td><td>Yes</td><td>Health check path, memory limit, and the settings shown on the Variables page.</td></tr>
+        <tr><td><code>.dockerignore</code></td><td>Recommended</td><td>Keep <code>.git</code>, <code>node_modules</code>, <code>data/</code>, <code>.env</code> out of the build.</td></tr>
+      </tbody>
+    </table>
+    <p>WebManager <strong>refuses to deploy a folder that contains a <code>.env</code> file</strong> — commit no secrets; enter them under Variables instead.</p>
+    <h3>The app contract</h3>
+    <p>An app must:</p>
+    <ol>
+      <li>Listen on <code>0.0.0.0:$PORT</code> (always <code>8080</code> inside the container).</li>
+      <li>Keep all persistent data under <code>$DATA_DIR</code> (<code>/data</code>) — the only writable, backed-up path. Make it owned by the app's user in the Dockerfile.</li>
+      <li>Use file-based storage there (SQLite, JSON, …); separate database servers aren't provided.</li>
+      <li>Answer its health check with <code>2xx</code>/<code>3xx</code> within the start timeout (60s by default).</li>
+      <li>Read configuration from environment variables listed in <code>webmanager.json</code>.</li>
+      <li>Run as a non-root <code>USER</code> and stop cleanly on <code>SIGTERM</code>.</li>
+      <li>Log to stdout/stderr and honor <code>X-Forwarded-*</code> / <code>PUBLIC_URL</code> behind the proxy.</li>
+    </ol>
+    <p>It must not need privileged mode, host networking, extra capabilities, devices, the Docker socket, or more than one port.</p>
+    <h3>Variables WebManager always sets</h3>
+    <table class="table">
+      <thead><tr><th>Variable</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td><code>PORT</code></td><td><code>8080</code></td></tr>
+        <tr><td><code>HOST</code></td><td><code>0.0.0.0</code></td></tr>
+        <tr><td><code>DATA_DIR</code></td><td><code>/data</code></td></tr>
+        <tr><td><code>PUBLIC_URL</code></td><td>The app's main address, e.g. <code>https://status.example.com</code></td></tr>
+        <tr><td><code>TRUST_PROXY</code></td><td><code>true</code></td></tr>
+        <tr><td><code>WEBMANAGER_APP_ID</code></td><td>The app's numeric ID in WebManager</td></tr>
+      </tbody>
+    </table>
+    <h3>Editing settings</h3>
+    <p>Each app's <strong>Variables</strong> page is built from its <code>webmanager.json</code>. Fields marked <code>secret</code> are write-only: encrypted at rest, and never shown again once saved — leave one blank to keep its value, or tick <em>Remove saved value</em>. Saving restarts the app with the new values.</p>
+    <h3>Restarts, updates, and rollback</h3>
+    <p>A restart, a settings change, or a new commit backs up <code>/data</code>, stops the running container, and starts the new one. If it fails its health check, the previous version is <strong>restored automatically</strong> and the app is flagged <strong>Needs attention</strong> with the failure and new logs; visitors briefly see "Site temporarily unavailable" during the switch. Data backups (last 3) live under the app's page.</p>
+    <h3>Limits</h3>
+    <ul>
+      <li>Deploying apps needs the <strong>Host apps</strong> permission (or super admin), granted under People &amp; access → Teams.</li>
+      <li>Each person has a max-apps limit (People &amp; access → Default limits); an app also counts toward their site limit.</li>
+      <li>Request bodies up to 25&nbsp;MB; responses must start within 300 seconds.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="card mb-16" id="manifest">
+  <div class="card-body prose">
+    <h2><code>webmanager.json</code> reference</h2>
+    <pre><code>{
+  "type": "app",
+  "health": "/api/health",
+  "memory_mb": 256,
+  "env": [
+    {
+      "name": "ADMIN_PASSWORD",
+      "description": "Password for the admin account.",
+      "secret": true,
+      "required": true
+    },
+    {
+      "name": "SITE_TITLE",
+      "description": "Title shown on the status page.",
+      "default": "Uptime Monitor"
+    },
+    {
+      "name": "PUBLIC_DASHBOARD",
+      "description": "Show the dashboard without signing in.",
+      "default": "true",
+      "choices": ["true", "false"]
+    }
+  ]
+}</code></pre>
+    <table class="table">
+      <thead><tr><th>Field</th><th>Required</th><th>Rules</th></tr></thead>
+      <tbody>
+        <tr><td><code>type</code></td><td>Yes</td><td>Must be <code>"app"</code>.</td></tr>
+        <tr><td><code>health</code></td><td>Yes</td><td>A path starting with <code>/</code>.</td></tr>
+        <tr><td><code>memory_mb</code></td><td>No</td><td>Whole number, 64–4096. Defaults to the installation's default (usually 256).</td></tr>
+        <tr><td><code>env</code></td><td>No</td><td>Up to 100 settings shown on the Variables page.</td></tr>
+      </tbody>
+    </table>
+    <p>Each <code>env</code> entry: <code>name</code> (UPPER_SNAKE_CASE, unique), <code>description</code>, <code>secret</code> (write-only once saved), <code>required</code> (the app won't start without a value or a <code>default</code>), <code>default</code>, and <code>choices</code> (shown as a dropdown).</p>
+  </div>
+</section>
+{% endif %}
+
+<section class="card mb-16" id="updates">
+  <div class="card-body prose">
+    <h2>Git sources &amp; updates</h2>
+    <p>Every site and app comes from a connected Git source. Under Sources, choose per repository whether new commits are:</p>
+    <ul>
+      <li><strong>Installed automatically</strong> — checked, tested, and activated on a schedule you set, or</li>
+      <li><strong>Approved by you</strong> — checked on the same schedule, but held as "Update ready" until you approve or discard it.</li>
+    </ul>
+    <p>A pending or failed update shows on the source, and on every site/app it affects, until resolved.</p>
+  </div>
+</section>
+
+<section class="card mb-16" id="mesh">
+  <div class="card-body prose">
+    <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}</h2>
+    <p>Run WebManager on more than one server and have them keep track of each other — the same leaderless "peer federation" pattern used by <a href="https://github.com/coolguy1333/Uptime-Monitor" target="_blank" rel="noopener noreferrer">Uptime-Monitor</a>'s multi-server mode.</p>
+    <p><strong>There is no leader, no shared database, and no distributed deployment.</strong> Each server keeps hosting and updating its own sites and apps exactly as it would alone. The mesh only adds visibility: every server independently polls its siblings every 20 seconds and shows the result — who's up, and how busy — in a <strong>Servers</strong> panel on the System page. One server going down never takes the others' visibility into the group down with it.</p>
+    <h3>Setting it up</h3>
+    <p>On <strong>each</strong> server, in <code>/etc/webmanager/webmanager.env</code> (use each server's dashboard address — the one you sign in to, not a hosted site's address):</p>
+    <pre><code>WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
+    <ul>
+      <li><code>WEBMANAGER_PEERS</code> lists the <strong>other</strong> servers in the group — never this one's own address. Each server's list is the rest of the group.</li>
+      <li><code>WEBMANAGER_PEER_TOKEN</code> is a shared secret, <strong>the same value on every server</strong>, sent as <code>Authorization: Bearer &lt;token&gt;</code>. Without it, <code>/mesh/status</code> is public and unauthenticated — it never exposes site names, hostnames, or repository details, only aggregate counts and resource usage, but setting a token is still strongly recommended.</li>
+    </ul>
+    <p>Restart WebManager on each server after editing (<code>sudo systemctl restart webmanager</code>). No database, load balancer, or shared storage is needed between them, and no new port needs opening: <code>/mesh/status</code> is served on the same address and port as this dashboard.</p>
+    <h3>What's shared, and what isn't</h3>
+    <table class="table">
+      <thead><tr><th>Shared across the mesh</th><th>Stays local to each server</th></tr></thead>
+      <tbody>
+        <tr><td>Liveness (online/unreachable) and version</td><td>Sites, apps, Git sources, and their data</td></tr>
+        <tr><td>Site/app counts and how many are running</td><td>Users, teams, and permissions</td></tr>
+        <tr><td>CPU, memory, and disk usage percentages</td><td>Domains, TLS, and Nginx configuration</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card mb-16" id="troubleshooting">
+  <div class="card-body prose">
+    <h2>Troubleshooting</h2>
+    <table class="table">
+      <thead><tr><th>Symptom</th><th>What to check</th></tr></thead>
+      <tbody>
+        <tr><td>Site shows <strong>Needs attention</strong></td><td>Read the reason on the site's page — usually a missing index file, a missing folder, or a failed source update check.</td></tr>
+        <tr><td>Visitors see "Site temporarily unavailable"</td><td>The site/app is stopped, or (for apps) mid-restart. It clears itself once the new container passes its health check.</td></tr>
+        <tr><td>A source update won't apply</td><td>Check <strong>Update check failed</strong> on the source for the error; "Check now" retries immediately.</td></tr>
+        {% if apps_enabled %}
+        <tr><td>System says <strong>App hosting: Off</strong></td><td><code>WEBMANAGER_APPS_ENABLED=1</code> must be set and WebManager restarted; Docker must be running and reachable. See <code>docs/APP_HOSTING.md</code> in the repository, or ask an administrator to re-run <code>enable-apps.sh</code>.</td></tr>
+        <tr><td>"The container runtime isn't reachable"</td><td>The WebManager service account can't talk to Docker yet — an administrator needs to re-run <code>enable-apps.sh</code> on the server.</td></tr>
+        <tr><td>App build fails</td><td>Read <strong>Build log</strong> on the app's page. The base image must be downloadable from the server.</td></tr>
+        <tr><td>"…didn't pass its health check"</td><td>Check the app logs on its page. Common causes: listening on the wrong host/port, <code>/data</code> not writable, or a required variable still unset.</td></tr>
+        <tr><td>"Saved app settings could not be decrypted"</td><td>The server's secret key changed since the values were saved. Re-enter them under Variables.</td></tr>
+        <tr><td>App restarts repeatedly</td><td>Check the restart count on the app's page — usually it's being killed for using more memory than its limit; raise <code>memory_mb</code>.</td></tr>
+        <tr><td>Deploying is greyed out for a folder</td><td>It's missing a <code>Dockerfile</code> or a valid <code>webmanager.json</code> — the reason is shown on the folder picker.</td></tr>
+        {% endif %}
+        <tr><td>Can't see a site/app someone else owns</td><td>Ask an administrator to grant you view or manage access under People &amp; access, or add you to a pool.</td></tr>
+        <tr><td>A server shows "Unreachable" in the Servers panel</td><td>Check that server's <code>WEBMANAGER_PEERS</code>/<code>WEBMANAGER_PEER_TOKEN</code>, that it's reachable over HTTPS from the others, and that its own firewall allows the connection.</td></tr>
+        <tr><td>"WEBMANAGER_PEER_TOKEN is not set" warning</td><td>Set the same <code>WEBMANAGER_PEER_TOKEN</code> value in <code>/etc/webmanager/webmanager.env</code> on every server and restart each one.</td></tr>
+      </tbody>
+    </table>
+    {% if not can_host_apps and apps_enabled %}
+    <p class="hint">You don't currently have the "Host apps" permission — that's why deploying an app isn't available to you.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

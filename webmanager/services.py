@@ -287,6 +287,7 @@ class RuntimeManager:
             return {"available": False, "status": None, "logs": "", "message": self.apps_status()[1]}
         name = runtime.container_name(site["id"])
         info = runtime.inspect(name)
+        running = info is not None and info["State"]["Status"] == "running"
         backups = sorted(
             (Path(self.app.instance_path) / "app-backups" / str(site["id"])).glob("data-*.tar"),
             reverse=True,
@@ -300,6 +301,37 @@ class RuntimeManager:
             "logs": runtime.logs(name, 200) if info else "",
             "volume": runtime.volume_name(site["id"]),
             "backups": [backup.name for backup in backups],
+            "stats": runtime.stats_many([name]).get(name) if running else None,
+        }
+
+    def app_status(self, site) -> dict:
+        """Cheap container status/usage snapshot for the app page's 2-second
+        poll — unlike app_details(), it skips fetching logs and backups."""
+        runtime = self.container_runtime
+        if runtime is None:
+            return {"status": None, "restarts": None, "stats": None}
+        name = runtime.container_name(site["id"])
+        info = runtime.inspect(name)
+        running = info is not None and info["State"]["Status"] == "running"
+        return {
+            "status": info["State"]["Status"] if info else None,
+            "restarts": info.get("RestartCount") if info else None,
+            "stats": runtime.stats_many([name]).get(name) if running else None,
+        }
+
+    def stats_for_sites(self, site_ids: list[int]) -> dict[int, dict]:
+        """Live CPU/memory/network snapshot for many apps in one docker call."""
+        runtime = self.container_runtime
+        if runtime is None or not site_ids:
+            return {}
+        name_by_site = {site_id: runtime.container_name(site_id) for site_id in site_ids}
+        running = set(runtime.running_app_names())
+        names = [name for name in name_by_site.values() if name in running]
+        raw = runtime.stats_many(names)
+        return {
+            site_id: raw[name]
+            for site_id, name in name_by_site.items()
+            if name in raw
         }
 
     @property

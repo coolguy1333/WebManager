@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1343,6 +1344,38 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertFalse(
             Path(self.app.config["PROGRAM_UPDATE_REQUEST_FILE"]).exists()
         )
+
+    def test_ago_filter_handles_updater_timestamp_with_and_without_utc_suffix(self):
+        # deploy/debian/update.sh used to write "YYYY-MM-DD HH:MM:SS UTC",
+        # which datetime.fromisoformat() can't parse; that silently made
+        # every check look stale and printed the raw timestamp instead of a
+        # relative time. Both the current (no suffix) and legacy (" UTC")
+        # formats must render as relative text.
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ago = self.app.jinja_env.filters["ago"]
+        self.assertEqual(ago(now), "just now")
+        self.assertEqual(ago(f"{now} UTC"), "just now")
+
+    def test_auto_request_program_check_respects_a_recent_check(self):
+        from webmanager.admin import _auto_request_program_check
+
+        with self.app.test_request_context():
+            recent = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self.assertFalse(
+                _auto_request_program_check({"state": "current", "checked_at": recent})
+            )
+            self.assertFalse(
+                Path(self.app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"]).exists()
+            )
+
+            self.assertTrue(
+                _auto_request_program_check(
+                    {"state": "current", "checked_at": "2020-01-01 00:00:00"}
+                )
+            )
+            self.assertTrue(
+                Path(self.app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"]).exists()
+            )
 
     def test_disabled_user_session_is_rejected(self):
         user_id = self.add_user("disabled", is_active=False)
