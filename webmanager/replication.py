@@ -44,7 +44,11 @@ _DO_NOT_FORWARD_REQUEST_HEADERS = {"host", "content-length", "connection"}
 _DO_NOT_FORWARD_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding"}
 # Endpoints that manage the replica itself (not the mirrored config) and so
 # must always run locally, never be forwarded to the primary.
-_LOCAL_ONLY_ENDPOINTS = {"admin.sync_replication", "admin.sync_data_replication"}
+_LOCAL_ONLY_ENDPOINTS = {
+    "admin.sync_replication",
+    "admin.sync_data_replication",
+    "admin.promote_replica",
+}
 
 bp = Blueprint("replication", __name__)
 
@@ -113,6 +117,15 @@ class ReplicationManager:
         thread = self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=5)
+
+    def promote(self):
+        """Stop mirroring and become a primary, in memory, right away. The
+        admin must also clear WEBMANAGER_REPLICA_OF and restart WebManager
+        for this to survive a restart - until then, a restart re-reads the
+        old config and this server goes back to being a replica."""
+        self.stop()
+        self.primary_url = ""
+        self._stop_event = threading.Event()
 
     def _run(self):
         self.sync_once()

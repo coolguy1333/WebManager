@@ -307,6 +307,62 @@ class ReplicationAdminPanelTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
 
+class PromoteToPrimaryTests(unittest.TestCase):
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown = base.WebManagerTestCase.tearDown
+    add_user = base.WebManagerTestCase.add_user
+    login_user = base.WebManagerTestCase.login_user
+    csrf = base.WebManagerTestCase.csrf
+
+    def setUp(self):
+        self.setUp_base()
+
+    def test_promote_stops_mirroring_and_reports_not_yet_durable(self):
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        manager = self.app.extensions["replication_manager"]
+        data_manager = self.app.extensions["data_replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret"
+        data_manager.primary_url = "https://primary.example"
+        data_manager.token = "s3cret"
+
+        response = self.client.post(
+            "/admin/replication/promote",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"now the primary", response.data)
+        self.assertIn(b"WEBMANAGER_REPLICA_OF", response.data)
+        self.assertFalse(manager.is_replica)
+        self.assertFalse(data_manager.is_replica)
+        self.assertEqual(self.app.config["REPLICA_OF"], "")
+
+        # A write no longer gets forwarded anywhere - it just runs locally.
+        with patch.object(replication.urllib.request, "urlopen") as urlopen:
+            self.client.post("/admin/updates/check", data={"_csrf_token": self.csrf()})
+        urlopen.assert_not_called()
+
+    def test_promote_is_a_no_op_on_an_existing_primary(self):
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.post(
+            "/admin/replication/promote",
+            data={"_csrf_token": self.csrf()},
+            follow_redirects=True,
+        )
+        self.assertIn(b"already a primary", response.data)
+
+    def test_promote_requires_admin(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        response = self.client.post(
+            "/admin/replication/promote", data={"_csrf_token": self.csrf()}
+        )
+        self.assertEqual(response.status_code, 403)
+
+
 class ReplicaStartupTests(unittest.TestCase):
     def test_replica_requires_a_peer_token(self):
         with tempfile.TemporaryDirectory() as tmp:

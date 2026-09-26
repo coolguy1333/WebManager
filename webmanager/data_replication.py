@@ -83,6 +83,13 @@ class DataReplicationManager:
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=10)
 
+    def promote(self):
+        """Stop mirroring data, in memory, right away. See
+        ReplicationManager.promote() for the config-persistence caveat."""
+        self.stop()
+        self.primary_url = ""
+        self._stop_event = threading.Event()
+
     def _run(self):
         self.sync_once()
         while not self._stop_event.wait(DATA_POLL_SECONDS):

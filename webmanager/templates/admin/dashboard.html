@@ -289,6 +289,10 @@
         {{ ui.csrf() }}
         <button class="btn" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 14) }}Sync data now</button>
       </form>
+      <form method="post" action="{{ url_for('admin.promote_replica') }}" data-loading data-confirm="Promote this server to primary? It will start serving its sites and apps immediately from its last-synced data, using {{ replication.data_last_sync_at or 'no' }} data synced so far. This only takes effect on THIS server right now - you must also update its own configuration afterward (see the message this shows) or it reverts on restart. Only do this if the primary is actually down or being retired.">
+        {{ ui.csrf() }}
+        <button class="btn btn-danger-outline" type="submit" data-loading-text="Promoting…">Promote to primary</button>
+      </form>
     </div>
   </div>
 </section>

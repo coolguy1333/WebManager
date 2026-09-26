@@ -932,6 +932,41 @@ def sync_replication():
     return redirect(url_for("admin.dashboard", section="updates"))
 
 
+@bp.post("/replication/promote")
+@login_required
+def promote_replica():
+    """Fail over: this replica stops mirroring and starts serving sites and
+    apps itself, using its last-synced data. In-memory only - see the
+    flashed message for what makes it durable across a restart."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["replication_manager"]
+    data_manager = current_app.extensions["data_replication_manager"]
+    if not manager.is_replica:
+        flash("This server is already a primary.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+
+    manager.promote()
+    data_manager.promote()
+    current_app.config["REPLICA_OF"] = ""
+    current_app.extensions["runtime_manager"].restore_sites(include_apps=True)
+    if current_app.config["AUTO_REFRESH_ENABLED"]:
+        current_app.extensions["repository_refresh_manager"].start()
+
+    flash(
+        "This server is now the primary and is serving its sites and apps. "
+        "To make this permanent, remove WEBMANAGER_REPLICA_OF from "
+        "/etc/webmanager/webmanager.env and restart WebManager - otherwise "
+        "it reverts to being a replica on the next restart. If the old "
+        "primary comes back online, point it at this server (set its own "
+        "WEBMANAGER_REPLICA_OF) or take it offline, so only one server "
+        "accepts writes.",
+        "warning",
+    )
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
 @bp.post("/replication/sync-data")
 @login_required
 def sync_data_replication():
