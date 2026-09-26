@@ -7,8 +7,9 @@ from pathlib import Path
 from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, auth, db, deployments, domains, mesh
+from . import admin, auth, db, deployments, domains, mesh, replication
 from .repository_refresh import RepositoryRefreshManager
+from .replication import ReplicationError, ReplicationManager
 from .services import RuntimeManager
 
 
@@ -100,6 +101,7 @@ def create_app(test_config=None):
         ),
         MESH_PEERS=os.environ.get("WEBMANAGER_PEERS", "").strip(),
         MESH_TOKEN=os.environ.get("WEBMANAGER_PEER_TOKEN", "").strip(),
+        REPLICA_OF=os.environ.get("WEBMANAGER_REPLICA_OF", "").strip().rstrip("/"),
     )
 
     if test_config:
@@ -119,8 +121,36 @@ def create_app(test_config=None):
             "WEBMANAGER_SITE_GATEWAY_PORT must be outside the site port range."
         )
 
+    if app.config["REPLICA_OF"] and not app.config["MESH_TOKEN"]:
+        raise RuntimeError(
+            "WEBMANAGER_REPLICA_OF requires WEBMANAGER_PEER_TOKEN to be set "
+            "(the same shared secret configured on the primary)."
+        )
+
     if not app.config["SECRET_KEY"]:
-        app.config["SECRET_KEY"] = _load_or_create_secret(instance_path)
+        if app.config["REPLICA_OF"]:
+            secret_path = instance_path / "secret.key"
+            try:
+                app.config["SECRET_KEY"] = replication.fetch_secret_key(
+                    app.config["REPLICA_OF"], app.config["MESH_TOKEN"]
+                )
+            except ReplicationError as exc:
+                if secret_path.exists():
+                    # Already paired once before; keep working with the last
+                    # known key until the primary is reachable again.
+                    app.config["SECRET_KEY"] = secret_path.read_text(encoding="utf-8").strip()
+                else:
+                    raise RuntimeError(
+                        "This is a new replica (WEBMANAGER_REPLICA_OF is set) and its "
+                        f"primary could not be reached to fetch the shared secret key: {exc} "
+                        "The primary must be reachable the first time a replica starts."
+                    ) from exc
+            else:
+                secret_path.write_text(app.config["SECRET_KEY"], encoding="utf-8")
+                if os.name != "nt":
+                    secret_path.chmod(0o600)
+        else:
+            app.config["SECRET_KEY"] = _load_or_create_secret(instance_path)
 
     if app.config["TRUST_PROXY"]:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -134,6 +164,10 @@ def create_app(test_config=None):
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
     app.register_blueprint(mesh.bp)
+    app.register_blueprint(replication.bp)
+    replication_manager = ReplicationManager(app, app.config["REPLICA_OF"], app.config["MESH_TOKEN"])
+    app.extensions["replication_manager"] = replication_manager
+    replication.register_write_forwarding(app)
 
     @app.template_filter("ago")
     def relative_time(value):
@@ -236,10 +270,21 @@ def create_app(test_config=None):
     app.extensions["mesh_hub"] = mesh_hub
 
     if not app.config.get("TESTING"):
-        runtime.restore_sites()
-        runtime.restore_gateway()
-        if app.config["AUTO_REFRESH_ENABLED"]:
-            refresh_manager.start()
+        if replication_manager.is_replica:
+            # A replica mirrors config immediately; it doesn't yet have
+            # this site/app data locally (see webmanager/replication.py),
+            # so it doesn't try to run or update anything on its own.
+            app.logger.info(
+                "This server is a replica of %s. It will forward writes "
+                "there and mirror its database.",
+                replication_manager.primary_url,
+            )
+            replication_manager.start()
+        else:
+            runtime.restore_sites()
+            runtime.restore_gateway()
+            if app.config["AUTO_REFRESH_ENABLED"]:
+                refresh_manager.start()
         if peer_urls:
             if not app.config["MESH_TOKEN"]:
                 app.logger.warning(

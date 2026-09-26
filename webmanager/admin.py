@@ -283,6 +283,7 @@ def dashboard():
             else None
         ),
         mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
+        replication=(_replication_status() if active_section == "updates" else None),
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -892,6 +893,39 @@ def _auto_request_program_check(status):
     except OSError:
         return False
     return True
+
+
+def _replication_status():
+    manager = current_app.extensions["replication_manager"]
+    last_sync_at = None
+    if manager.last_sync_at:
+        last_sync_at = datetime.fromtimestamp(
+            manager.last_sync_at, tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "is_replica": manager.is_replica,
+        "primary_url": manager.primary_url,
+        "last_sync_at": last_sync_at,
+        "last_error": manager.last_error,
+        "token_configured": bool(manager.token),
+    }
+
+
+@bp.post("/replication/sync")
+@login_required
+def sync_replication():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["replication_manager"]
+    if not manager.is_replica:
+        flash("This server is not a replica; there is nothing to sync.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+    if manager.sync_once():
+        flash("Synced the latest config from the primary.", "success")
+    else:
+        flash(f"Could not sync from the primary: {manager.last_error}", "error")
+    return redirect(url_for("admin.dashboard", section="updates"))
 
 
 def _source_update_summary(database):

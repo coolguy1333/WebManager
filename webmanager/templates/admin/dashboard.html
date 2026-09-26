@@ -254,6 +254,40 @@
   </div>
 </section>
 
+{# ---------- Replication ---------- #}
+{% if replication.is_replica %}
+<section class="card mb-24">
+  <div class="card-header">
+    <div><h2>Replication</h2><p>This server mirrors <code>{{ replication.primary_url }}</code>. Writes made here are sent there automatically.</p></div>
+    <span class="badge badge-accent">Replica</span>
+  </div>
+  <div class="card-body stack">
+    {% if not replication.token_configured %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong><code>WEBMANAGER_PEER_TOKEN</code> is not set.</strong> This replica cannot authenticate to its primary at all.</div></div>
+    {% elif replication.last_error %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Last sync failed</strong>{{ replication.last_error }}</div></div>
+    {% endif %}
+    <dl class="facts">
+      <div><dt>Primary</dt><dd><code>{{ replication.primary_url }}</code></dd></div>
+      <div><dt>Last synced</dt><dd>{{ ui.when(replication.last_sync_at) }}</dd></div>
+    </dl>
+  </div>
+  <div class="card-footer end">
+    <form method="post" action="{{ url_for('admin.sync_replication') }}" data-loading>
+      {{ ui.csrf() }}
+      <button class="btn" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 14) }}Sync now</button>
+    </form>
+  </div>
+</section>
+{% else %}
+<section class="card mb-24">
+  <div class="card-header">
+    <div><h2>Replication</h2><p>This server is the primary: the source of truth for shared config in its mesh. Other servers can mirror it by setting <code>WEBMANAGER_REPLICA_OF</code> to this server's address.</p></div>
+    <span class="badge badge-success">Primary</span>
+  </div>
+</section>
+{% endif %}
+
 {# ---------- Mesh: other servers ---------- #}
 <section class="mb-24" data-mesh>
   <div class="section-title">

@@ -180,6 +180,15 @@ class MeshHub:
             )
         return results
 
+    def authorize_sensitive(self, authorization_header: str, ip: str) -> bool:
+        """Like authorize_incoming(), but for endpoints that must never be
+        public: the secret key, a full database snapshot, site/app data.
+        Refuses outright with no token configured, instead of allowing
+        public access the way the plain status endpoint does."""
+        if self._token_hash is None:
+            return False
+        return self.authorize_incoming(authorization_header, ip)
+
     def authorize_incoming(self, authorization_header: str, ip: str) -> bool:
         """Authenticates an inbound GET /mesh/status. With no token configured
         the endpoint is public (like /healthz) and this always returns True.
@@ -214,5 +223,20 @@ def mesh_status():
     if not hub.authorize_incoming(request.headers.get("Authorization", ""), request.remote_addr or ""):
         return jsonify({"error": "Invalid or missing peer token"}), 401
     response = jsonify(local_status(current_app))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.get("/mesh/secret-key")
+def mesh_secret_key():
+    """Lets a replica fetch this server's session-signing key so cookies
+    validate on every node in the mesh. Unlike /mesh/status this is never
+    public: it always requires WEBMANAGER_PEER_TOKEN, on both ends."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None:
+        return jsonify({"error": "Mesh federation is not available."}), 404
+    if not hub.authorize_sensitive(request.headers.get("Authorization", ""), request.remote_addr or ""):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+    response = current_app.response_class(current_app.config["SECRET_KEY"], mimetype="text/plain")
     response.headers["Cache-Control"] = "no-store"
     return response
