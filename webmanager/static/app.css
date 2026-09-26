@@ -465,6 +465,7 @@ details > summary::-webkit-details-marker { display: none; }
 .sites-list .list-head, .sites-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) 140px minmax(0, 1fr) 170px; }
 .apps-list .list-head, .apps-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 130px 80px minmax(0, 1fr) 170px; }
 .admin-apps-list .list-head, .admin-apps-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 130px 70px minmax(0, 1fr) minmax(0, 1.3fr) 110px; }
+.mesh-list .list-head, .mesh-list .list-row { grid-template-columns: minmax(0, 1.8fr) 130px 90px minmax(0, 1fr) minmax(0, 1fr) 70px 80px 70px; }
 .site-name { display: flex; flex-direction: column; min-width: 0; }
 .site-name a { color: var(--text); font-weight: 620; font-size: 0.95rem; }
 .site-name small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -791,8 +792,8 @@ fieldset.field legend { margin-bottom: 6px; }
 }
 
 @media (max-width: 960px) {
-  .apps-list .list-head, .admin-apps-list .list-head { display: none; }
-  .apps-list .list-row, .admin-apps-list .list-row {
+  .apps-list .list-head, .admin-apps-list .list-head, .mesh-list .list-head { display: none; }
+  .apps-list .list-row, .admin-apps-list .list-row, .mesh-list .list-row {
     grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 14px 16px;
   }
   .apps-list .row-actions, .admin-apps-list .row-actions { justify-content: flex-start; margin-top: 4px; }

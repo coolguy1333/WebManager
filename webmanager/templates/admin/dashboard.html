@@ -254,6 +254,56 @@
   </div>
 </section>
 
+{# ---------- Mesh: other servers ---------- #}
+<section class="mb-24" data-mesh>
+  <div class="section-title">
+    <div><h2>Servers</h2><p>Other WebManager instances configured to federate with this one. Each server hosts its own sites and apps independently; this only shows who's up.</p></div>
+    {% if mesh_entries %}<span class="badge" data-mesh-live>{{ ui.icon('activity', 12) }} Live</span>{% endif %}
+  </div>
+  {% if mesh_entries %}
+  {% if not mesh_token_configured %}
+  <div class="alert warning mb-16">{{ ui.icon('alert') }}<div class="alert-body"><strong><code>WEBMANAGER_PEER_TOKEN</code> is not set.</strong> <code>/mesh/status</code> is public and unauthenticated. Set the same token on every server in the group.</div></div>
+  {% endif %}
+  <div class="list mesh-list" role="table" aria-label="Servers">
+    <div class="list-head" role="row">
+      <span role="columnheader">Server</span>
+      <span role="columnheader">Status</span>
+      <span role="columnheader">Version</span>
+      <span role="columnheader">Sites</span>
+      <span role="columnheader">Apps</span>
+      <span role="columnheader">CPU</span>
+      <span role="columnheader">Memory</span>
+      <span role="columnheader">Disk</span>
+    </div>
+    {% for peer in mesh_entries %}
+    <div class="list-row" role="row" data-mesh-row data-peer-url="{{ peer.url }}">
+      <div class="site-name" role="cell">
+        <a href="{{ peer.url }}" target="_blank" rel="noopener noreferrer">{{ peer.hostname }}{{ ui.icon('external', 12) }}</a>
+        <small>{{ peer.url }}</small>
+      </div>
+      <div role="cell" data-mesh-stat="status">
+        {% if peer.reachable %}<span class="badge badge-success"><span class="dot"></span>Online</span>
+        {% elif peer.checked_at %}<span class="badge badge-danger" title="{{ peer.error }}"><span class="dot"></span>Unreachable</span>
+        {% else %}<span class="badge">Checking…</span>{% endif %}
+      </div>
+      <div role="cell" data-mesh-stat="version">{{ peer.version or "—" }}</div>
+      <div role="cell" data-mesh-stat="sites">{% if peer.sites %}{{ peer.sites.running }}/{{ peer.sites.total }} running{% else %}—{% endif %}</div>
+      <div role="cell" data-mesh-stat="apps">{% if peer.apps %}{{ peer.apps.running }}/{{ peer.apps.total }} running{% elif peer.apps_enabled == false %}Off{% else %}—{% endif %}</div>
+      <div role="cell" data-mesh-stat="cpu">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>
+      <div role="cell" data-mesh-stat="memory">{{ (peer.memory_percent ~ "%") if peer.memory_percent is not none else "—" }}</div>
+      <div role="cell" data-mesh-stat="disk">{{ (peer.disk_percent ~ "%") if peer.disk_percent is not none else "—" }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <section class="card empty">
+    <span class="record-icon">{{ ui.icon('link', 22) }}</span>
+    <h2>No other servers configured</h2>
+    <p>Set <code>WEBMANAGER_PEERS</code> (the other servers' addresses) and <code>WEBMANAGER_PEER_TOKEN</code> (a shared secret, the same on every server) in <code>/etc/webmanager/webmanager.env</code> on each server, then restart WebManager. See <a href="{{ url_for('deployments.docs') }}#mesh">Docs</a>.</p>
+  </section>
+  {% endif %}
+</section>
+
 {# ---------- WebManager update ---------- #}
 <section class="card mb-24">
   <div class="card-header">

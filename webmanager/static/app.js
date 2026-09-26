@@ -597,6 +597,31 @@ if (metricsPanel) {
     fill.classList.toggle("hot", percent >= 90);
   };
   const live = metricsPanel.querySelector("[data-metrics-live]");
+  const meshLive = document.querySelector("[data-mesh-live]");
+  const setMesh = (row, name, value) => {
+    const el = row.querySelector(`[data-mesh-stat="${name}"]`);
+    if (el && value !== null && value !== undefined) el.textContent = value;
+  };
+  const refreshMesh = (peers) => {
+    if (!Array.isArray(peers)) return;
+    const byUrl = new Map(peers.map((peer) => [peer.url, peer]));
+    document.querySelectorAll("[data-mesh-row]").forEach((row) => {
+      const peer = byUrl.get(row.dataset.peerUrl);
+      if (!peer) return;
+      const statusCell = row.querySelector('[data-mesh-stat="status"]');
+      if (statusCell) {
+        statusCell.innerHTML = peer.reachable
+          ? '<span class="badge badge-success"><span class="dot"></span>Online</span>'
+          : `<span class="badge badge-danger" title="${peer.error ? String(peer.error).replace(/"/g, "&quot;") : ""}"><span class="dot"></span>Unreachable</span>`;
+      }
+      setMesh(row, "version", peer.version || "—");
+      setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
+      setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
+      setMesh(row, "cpu", peer.cpu_percent !== null && peer.cpu_percent !== undefined ? `${peer.cpu_percent}%` : "—");
+      setMesh(row, "memory", peer.memory_percent !== null && peer.memory_percent !== undefined ? `${peer.memory_percent}%` : "—");
+      setMesh(row, "disk", peer.disk_percent !== null && peer.disk_percent !== undefined ? `${peer.disk_percent}%` : "—");
+    });
+  };
   const refresh = async () => {
     if (document.hidden) return;
     try {
@@ -626,9 +651,12 @@ if (metricsPanel) {
           ? `${Math.floor(m.uptime / 86400)}d ${Math.floor((m.uptime % 86400) / 3600)}h`
           : `${Math.floor(m.uptime / 3600)}h ${Math.floor((m.uptime % 3600) / 60)}m`);
       }
+      refreshMesh(m.mesh);
       live?.classList.remove("stale");
+      meshLive?.classList.remove("stale");
     } catch {
       live?.classList.add("stale");
+      meshLive?.classList.add("stale");
     }
   };
   refresh();

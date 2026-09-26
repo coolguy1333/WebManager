@@ -16,6 +16,7 @@
       {% if apps_enabled %}<li><a href="#app-hosting">App hosting</a></li>
       <li><a href="#manifest">webmanager.json reference</a></li>{% endif %}
       <li><a href="#updates">Git sources &amp; updates</a></li>
+      <li><a href="#mesh">Multi-server mesh</a></li>
       <li><a href="#troubleshooting">Troubleshooting</a></li>
     </ul>
   </div>
@@ -151,6 +152,32 @@
   </div>
 </section>
 
+<section class="card mb-16" id="mesh">
+  <div class="card-body prose">
+    <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}</h2>
+    <p>Run WebManager on more than one server and have them keep track of each other — the same leaderless "peer federation" pattern used by <a href="https://github.com/coolguy1333/Uptime-Monitor" target="_blank" rel="noopener noreferrer">Uptime-Monitor</a>'s multi-server mode.</p>
+    <p><strong>There is no leader, no shared database, and no distributed deployment.</strong> Each server keeps hosting and updating its own sites and apps exactly as it would alone. The mesh only adds visibility: every server independently polls its siblings every 20 seconds and shows the result — who's up, and how busy — in a <strong>Servers</strong> panel on the System page. One server going down never takes the others' visibility into the group down with it.</p>
+    <h3>Setting it up</h3>
+    <p>On <strong>each</strong> server, in <code>/etc/webmanager/webmanager.env</code> (use each server's dashboard address — the one you sign in to, not a hosted site's address):</p>
+    <pre><code>WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
+    <ul>
+      <li><code>WEBMANAGER_PEERS</code> lists the <strong>other</strong> servers in the group — never this one's own address. Each server's list is the rest of the group.</li>
+      <li><code>WEBMANAGER_PEER_TOKEN</code> is a shared secret, <strong>the same value on every server</strong>, sent as <code>Authorization: Bearer &lt;token&gt;</code>. Without it, <code>/mesh/status</code> is public and unauthenticated — it never exposes site names, hostnames, or repository details, only aggregate counts and resource usage, but setting a token is still strongly recommended.</li>
+    </ul>
+    <p>Restart WebManager on each server after editing (<code>sudo systemctl restart webmanager</code>). No database, load balancer, or shared storage is needed between them, and no new port needs opening: <code>/mesh/status</code> is served on the same address and port as this dashboard.</p>
+    <h3>What's shared, and what isn't</h3>
+    <table class="table">
+      <thead><tr><th>Shared across the mesh</th><th>Stays local to each server</th></tr></thead>
+      <tbody>
+        <tr><td>Liveness (online/unreachable) and version</td><td>Sites, apps, Git sources, and their data</td></tr>
+        <tr><td>Site/app counts and how many are running</td><td>Users, teams, and permissions</td></tr>
+        <tr><td>CPU, memory, and disk usage percentages</td><td>Domains, TLS, and Nginx configuration</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section class="card mb-16" id="troubleshooting">
   <div class="card-body prose">
     <h2>Troubleshooting</h2>
@@ -170,6 +197,8 @@
         <tr><td>Deploying is greyed out for a folder</td><td>It's missing a <code>Dockerfile</code> or a valid <code>webmanager.json</code> — the reason is shown on the folder picker.</td></tr>
         {% endif %}
         <tr><td>Can't see a site/app someone else owns</td><td>Ask an administrator to grant you view or manage access under People &amp; access, or add you to a pool.</td></tr>
+        <tr><td>A server shows "Unreachable" in the Servers panel</td><td>Check that server's <code>WEBMANAGER_PEERS</code>/<code>WEBMANAGER_PEER_TOKEN</code>, that it's reachable over HTTPS from the others, and that its own firewall allows the connection.</td></tr>
+        <tr><td>"WEBMANAGER_PEER_TOKEN is not set" warning</td><td>Set the same <code>WEBMANAGER_PEER_TOKEN</code> value in <code>/etc/webmanager/webmanager.env</code> on every server and restart each one.</td></tr>
       </tbody>
     </table>
     {% if not can_host_apps and apps_enabled %}

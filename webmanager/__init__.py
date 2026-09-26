@@ -7,7 +7,7 @@ from pathlib import Path
 from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, auth, db, deployments
+from . import admin, auth, db, deployments, domains, mesh
 from .repository_refresh import RepositoryRefreshManager
 from .services import RuntimeManager
 
@@ -98,6 +98,8 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/check",
         ),
+        MESH_PEERS=os.environ.get("WEBMANAGER_PEERS", "").strip(),
+        MESH_TOKEN=os.environ.get("WEBMANAGER_PEER_TOKEN", "").strip(),
     )
 
     if test_config:
@@ -131,6 +133,7 @@ def create_app(test_config=None):
     app.register_blueprint(auth.bp)
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(mesh.bp)
 
     @app.template_filter("ago")
     def relative_time(value):
@@ -138,7 +141,7 @@ def create_app(test_config=None):
         if not value:
             return ""
         try:
-            moment = datetime.fromisoformat(str(value).replace("Z", ""))
+            moment = datetime.fromisoformat(str(value).removesuffix(" UTC").replace("Z", ""))
         except ValueError:
             return str(value)
         if moment.tzinfo is None:
@@ -209,11 +212,42 @@ def create_app(test_config=None):
     runtime.migrate_site_configs()
     refresh_manager = RepositoryRefreshManager(app)
     app.extensions["repository_refresh_manager"] = refresh_manager
+
+    peer_urls = [url.strip().rstrip("/") for url in app.config["MESH_PEERS"].split(",") if url.strip()]
+    invalid_peer_urls = [url for url in peer_urls if not url.startswith(("http://", "https://"))]
+    if invalid_peer_urls:
+        peer_urls = [url for url in peer_urls if url not in invalid_peer_urls]
+        app.logger.warning(
+            "Ignoring invalid entries in WEBMANAGER_PEERS (must start with http:// "
+            "or https://): %s",
+            ", ".join(invalid_peer_urls),
+        )
+    if peer_urls:
+        try:
+            with app.app_context():
+                self_host = domains.dashboard_hostname()
+        except Exception:  # pragma: no cover - DB not ready yet is not fatal here
+            self_host = ""
+        if self_host:
+            from urllib.parse import urlsplit
+
+            peer_urls = [url for url in peer_urls if urlsplit(url).hostname != self_host]
+    mesh_hub = mesh.MeshHub(app, peer_urls, app.config["MESH_TOKEN"])
+    app.extensions["mesh_hub"] = mesh_hub
+
     if not app.config.get("TESTING"):
         runtime.restore_sites()
         runtime.restore_gateway()
         if app.config["AUTO_REFRESH_ENABLED"]:
             refresh_manager.start()
+        if peer_urls:
+            if not app.config["MESH_TOKEN"]:
+                app.logger.warning(
+                    "WEBMANAGER_PEERS is set without WEBMANAGER_PEER_TOKEN - "
+                    "/mesh/status is public and unauthenticated. Set "
+                    "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
+                )
+            mesh_hub.start()
 
     @app.errorhandler(404)
     def not_found(_error):

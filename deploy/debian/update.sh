@@ -52,7 +52,10 @@ payload = {
     "available_commit": available or None,
     "update_available": bool(available and available != installed),
     "message": message,
-    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    # No "UTC"/"Z" suffix: matches the plain "YYYY-MM-DD HH:MM:SS" convention
+    # used for every other stored timestamp, which the "ago" filter and
+    # admin._auto_request_program_check() parse with datetime.fromisoformat().
+    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle)

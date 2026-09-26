@@ -277,6 +277,12 @@ def dashboard():
             if active_section == "updates"
             else None
         ),
+        mesh_entries=(
+            current_app.extensions["mesh_hub"].entries()
+            if active_section == "updates"
+            else None
+        ),
+        mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -868,7 +874,9 @@ def _auto_request_program_check(status):
     stale = True
     if checked_at:
         try:
-            moment = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+            moment = datetime.fromisoformat(
+                str(checked_at).removesuffix(" UTC").replace("Z", "+00:00")
+            )
             if moment.tzinfo is None:
                 moment = moment.replace(tzinfo=timezone.utc)
             stale = datetime.now(timezone.utc) - moment > AUTO_CHECK_AFTER
@@ -943,7 +951,9 @@ def update_default_limits():
 def system_metrics_json():
     if not is_admin():
         abort(403)
-    response = jsonify(system_metrics.collect(current_app))
+    payload = system_metrics.collect(current_app)
+    payload["mesh"] = current_app.extensions["mesh_hub"].entries()
+    response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store"
     return response
 

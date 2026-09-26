@@ -723,6 +723,31 @@ Enabling it gives WebManager root-equivalent access to Docker. Read
 security model, the exact requirements an app repository must meet, and
 operations (backups, logs, troubleshooting).
 
+## Multi-server mesh (optional)
+
+Run WebManager on more than one server and have them keep track of each
+other, using the same leaderless peer-federation pattern as
+[Uptime-Monitor](https://github.com/coolguy1333/Uptime-Monitor)'s
+multi-server mode: no leader, no shared database, no distributed deployment.
+Each server keeps hosting and updating its own sites and apps exactly as it
+would standalone; the mesh only adds visibility, via a **Servers** panel on
+the System page showing which of its siblings are up and how busy they are.
+
+Set these on **each** server in `/etc/webmanager/webmanager.env` (list the
+other servers' *dashboard* addresses, not a hosted site's address), then
+`sudo systemctl restart webmanager`:
+
+```bash
+WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com  # the *other* servers
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere
+```
+
+Every server independently polls every URL in `WEBMANAGER_PEERS` every 20
+seconds at `/mesh/status`, authenticated with `WEBMANAGER_PEER_TOKEN` as a
+bearer token. That endpoint exposes only aggregate counts (sites/apps
+running, CPU/memory/disk percent) — never site names, hostnames, or
+repository details. See the in-app **Docs** page for the full reference.
+
 ## Private Git repositories
 
 SSH deploy keys are the recommended way to access private repositories.
