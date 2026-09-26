@@ -242,6 +242,11 @@ def create_app(test_config=None):
 
         return {"static_asset": static_asset}
 
+    @app.context_processor
+    def replication_role():
+        manager = app.extensions.get("replication_manager")
+        return {"is_replica": bool(manager and manager.is_replica)}
+
     with app.app_context():
         db.init_db()
 

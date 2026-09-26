@@ -543,6 +543,8 @@ sudo -u webmanager env \
 
 At the next matching Google sign-in, the old user record is upgraded in place. Its repositories, deployments, ports, and configurations remain attached to the same user ID.
 
+If this server is part of a [mesh](#multi-server-mesh-optional), run this command on the **primary** only — a replica's database is overwritten by the next sync, so a row created directly on a replica would simply disappear.
+
 ## Deploy a website
 
 ### 1. Prepare the repository

@@ -189,15 +189,35 @@ class WriteForwardingTests(unittest.TestCase):
             )
             with patch.object(replication.urllib.request, "urlopen", return_value=primary_response) as urlopen:
                 response = self.client.post(
-                    "/admin/updates/check", data={"_csrf_token": self.csrf()}
+                    "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
                 )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.data, b'{"ok": true}')
             self.assertEqual(response.headers.get("Set-Cookie"), "example=1")
             self.assertTrue(urlopen.called)
             forwarded_request = urlopen.call_args[0][0]
-            self.assertEqual(forwarded_request.full_url, "https://primary.example/admin/updates/check")
+            self.assertEqual(forwarded_request.full_url, "https://primary.example/admin/sources/check-all")
             self.assertEqual(forwarded_request.get_method(), "POST")
+        finally:
+            manager.primary_url = ""
+            manager.token = ""
+
+    def test_replica_does_not_forward_its_own_program_update_actions(self):
+        # WebManager's self-update is a per-machine install; forwarding it
+        # would update the primary's checkout while telling this admin it
+        # happened here.
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret"
+        try:
+            with patch.object(replication.urllib.request, "urlopen") as urlopen:
+                response = self.client.post(
+                    "/admin/updates/check", data={"_csrf_token": self.csrf()}
+                )
+            self.assertIn(response.status_code, (302, 303))
+            urlopen.assert_not_called()
         finally:
             manager.primary_url = ""
             manager.token = ""
@@ -228,7 +248,7 @@ class WriteForwardingTests(unittest.TestCase):
                 side_effect=replication.urllib.error.URLError("Connection refused"),
             ):
                 response = self.client.post(
-                    "/admin/updates/check", data={"_csrf_token": self.csrf()}
+                    "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
                 )
             self.assertEqual(response.status_code, 502)
         finally:
@@ -245,6 +265,23 @@ class ReplicationAdminPanelTests(unittest.TestCase):
 
     def setUp(self):
         self.setUp_base()
+
+    def test_sidebar_shows_a_replica_indicator_on_every_page(self):
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        try:
+            response = self.client.get("/")
+            self.assertIn(b"Replica", response.data)
+        finally:
+            manager.primary_url = ""
+
+    def test_sidebar_has_no_replica_indicator_on_a_primary(self):
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        response = self.client.get("/")
+        self.assertNotIn(b"\xc2\xb7 Replica", response.data)
 
     def test_system_page_shows_primary_by_default(self):
         admin_id = self.add_user("root", is_admin=True)
@@ -361,6 +398,134 @@ class PromoteToPrimaryTests(unittest.TestCase):
             "/admin/replication/promote", data={"_csrf_token": self.csrf()}
         )
         self.assertEqual(response.status_code, 403)
+
+
+class GoogleSignInOnReplicaTests(unittest.TestCase):
+    """A replica must never write its own database - including the user
+    row Google sign-in creates/touches on every login (see auth.py's
+    google_callback and replication.find_or_create_user_via_primary)."""
+
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown = base.WebManagerTestCase.tearDown
+    google_claims = base.WebManagerTestCase.google_claims
+    google_callback = base.WebManagerTestCase.google_callback
+
+    def setUp(self):
+        self.setUp_base()
+        self.app.config["GOOGLE_CLIENT_ID"] = "test-client.apps.googleusercontent.com"
+        self.app.config["GOOGLE_CLIENT_SECRET"] = "test-client-secret"
+
+    def _user_count(self):
+        from webmanager.db import get_db
+
+        with self.app.app_context():
+            return get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def test_new_sign_in_on_a_replica_asks_the_primary_instead_of_writing_locally(self):
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret"
+        try:
+            before = self._user_count()
+            primary_response = _FakeHTTPResponse(b'{"user_id": 77}')
+            with patch.object(
+                replication.urllib.request, "urlopen", return_value=primary_response
+            ) as urlopen:
+                response = self.google_callback()
+            self.assertEqual(response.status_code, 302)
+            forwarded_request = urlopen.call_args[0][0]
+            self.assertEqual(
+                forwarded_request.full_url, "https://primary.example/replication/find-or-create-user"
+            )
+            # No local row was created; the replica only used the id primary gave back.
+            self.assertEqual(self._user_count(), before)
+            with self.client.session_transaction() as session:
+                self.assertEqual(session["user_id"], 77)
+        finally:
+            manager.primary_url = ""
+            manager.token = ""
+
+    def test_sign_in_on_a_replica_fails_cleanly_when_primary_is_unreachable(self):
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret"
+        try:
+            before = self._user_count()
+            with patch.object(
+                replication.urllib.request,
+                "urlopen",
+                side_effect=replication.urllib.error.URLError("no route"),
+            ):
+                response = self.google_callback()
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("/auth/login", response.headers["Location"])
+            self.assertEqual(self._user_count(), before)
+            with self.client.session_transaction() as session:
+                self.assertNotIn("user_id", session)
+        finally:
+            manager.primary_url = ""
+            manager.token = ""
+
+    def test_sign_in_on_a_primary_still_writes_locally_as_before(self):
+        before = self._user_count()
+        response = self.google_callback()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self._user_count(), before + 1)
+
+
+class FindOrCreateUserEndpointTests(unittest.TestCase):
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown = base.WebManagerTestCase.tearDown
+    google_claims = base.WebManagerTestCase.google_claims
+
+    def setUp(self):
+        self.setUp_base()
+
+    def test_requires_a_token(self):
+        response = self.client.post(
+            "/replication/find-or-create-user", json=self.google_claims()
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_rejects_missing_claims(self):
+        hub = self.app.extensions["mesh_hub"]
+        hub.token = "s3cret"
+        from webmanager.mesh import _hash_token
+
+        hub._token_hash = _hash_token("s3cret")
+        try:
+            response = self.client.post(
+                "/replication/find-or-create-user",
+                json={"sub": "x"},  # missing email
+                headers={"Authorization": "Bearer s3cret"},
+            )
+            self.assertEqual(response.status_code, 400)
+        finally:
+            hub.token = ""
+            hub._token_hash = None
+
+    def test_creates_a_user_and_returns_its_id_with_the_right_token(self):
+        hub = self.app.extensions["mesh_hub"]
+        hub.token = "s3cret"
+        from webmanager.mesh import _hash_token
+
+        hub._token_hash = _hash_token("s3cret")
+        try:
+            response = self.client.post(
+                "/replication/find-or-create-user",
+                json=self.google_claims(),
+                headers={"Authorization": "Bearer s3cret"},
+            )
+            self.assertEqual(response.status_code, 200)
+            user_id = response.get_json()["user_id"]
+            from webmanager.db import get_db
+
+            with self.app.app_context():
+                row = get_db().execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+            self.assertEqual(row["email"], "alice@example.com")
+        finally:
+            hub.token = ""
+            hub._token_hash = None
 
 
 class ReplicaStartupTests(unittest.TestCase):

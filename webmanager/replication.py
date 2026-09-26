@@ -23,6 +23,7 @@ separately - see webmanager/data_replication.py.
 """
 
 import atexit
+import json
 import os
 import shutil
 import sqlite3
@@ -48,6 +49,12 @@ _LOCAL_ONLY_ENDPOINTS = {
     "admin.sync_replication",
     "admin.sync_data_replication",
     "admin.promote_replica",
+    # WebManager's own program update is a per-machine install (each
+    # server updates its own /opt/webmanager checkout), never the shared
+    # config - forwarding it would update the primary while telling the
+    # admin it happened here.
+    "admin.check_program_update",
+    "admin.install_program_update",
 }
 
 bp = Blueprint("replication", __name__)
@@ -72,6 +79,36 @@ def fetch_secret_key(primary_url: str, token: str, timeout: float = 10) -> str:
     if not key:
         raise ReplicationError(f"{primary_url} returned an empty secret key.")
     return key
+
+
+def find_or_create_user_via_primary(manager, claims: dict) -> int:
+    """A replica must never write its own database - but Google sign-in
+    creates or updates a user row on every login. Ask the primary to do
+    that write instead and hand back the resulting user_id, which the
+    replica can safely put in the session (the row itself arrives on the
+    next database sync). Raises ReplicationError on any failure."""
+    body = json.dumps(claims).encode("utf-8")
+    req = urllib.request.Request(
+        f"{manager.primary_url}/replication/find-or-create-user",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {manager.token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ReplicationError(f"The primary rejected the sign-in: {detail}") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise ReplicationError(f"Could not reach primary {manager.primary_url}: {exc}") from exc
+    user_id = payload.get("user_id")
+    if not isinstance(user_id, int):
+        raise ReplicationError("Primary returned an unexpected response.")
+    return user_id
 
 
 def _validate_snapshot(path):
@@ -230,6 +267,30 @@ def register_write_forwarding(app):
         if request.endpoint == "static" or request.endpoint in _LOCAL_ONLY_ENDPOINTS:
             return None
         return manager.forward_current_request()
+
+
+@bp.post("/replication/find-or-create-user")
+def find_or_create_user():
+    """Performs the one database write a replica cannot safely avoid on its
+    own: Google sign-in creates or touches a user row on every login. A
+    replica calls this on its primary instead of writing locally (see
+    auth.google_callback and find_or_create_user_via_primary above)."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None or not hub.authorize_sensitive(
+        request.headers.get("Authorization", ""), request.remote_addr or ""
+    ):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+
+    from .auth import _find_or_create_user
+
+    claims = request.get_json(silent=True)
+    if not isinstance(claims, dict) or not claims.get("sub") or not claims.get("email"):
+        return jsonify({"error": "Missing or invalid claims."}), 400
+    try:
+        user_id = _find_or_create_user(claims)
+    except (ValueError, KeyError, sqlite3.IntegrityError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"user_id": user_id})
 
 
 @bp.get("/replication/db-snapshot")
