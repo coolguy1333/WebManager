@@ -4,8 +4,13 @@
 <header class="page-header">
   <div>
     <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ ui.icon('arrow-left', 14) }}{{ site.name }}</a>
+    {% if site.kind == "app" %}
+    <h1>App settings</h1>
+    <p>Name and public addresses. Variables are edited separately.</p>
+    {% else %}
     <h1>Site settings</h1>
     <p>Name, public addresses, source folder, and runtime behaviour.</p>
+    {% endif %}
   </div>
 </header>
 
@@ -85,6 +90,12 @@
   </section>
   {% endif %}
 
+  {% if site.kind == "app" %}
+  <section class="card">
+    <div class="card-header"><div><h2>App</h2><p>Built from <code>{{ site.folder if site.folder != "." else "/" }}</code> in <strong>{{ site.repository_name }}</strong>. To change the folder, delete this app and deploy it again.</p></div></div>
+    <div class="card-body"><a class="btn btn-sm" href="{{ url_for('deployments.app_variables', site_id=site.id) }}">{{ ui.icon('code', 14) }}Edit variables</a></div>
+  </section>
+  {% else %}
   <section class="card">
     <div class="card-header">
       <div><h2>Source folder</h2><p>Which folder of <strong>{{ site.repository_name }}</strong> this site serves.</p></div>
@@ -125,7 +136,13 @@
     </div>
   </details>
 
+  {% endif %}
+
+  {% if site.kind == "app" %}
+  <div class="alert info">{{ ui.icon('info') }}<div class="alert-body">Saving updates the app's addresses. If it's running, it restarts with the new <code>PUBLIC_URL</code>.</div></div>
+  {% else %}
   <div class="alert warning">{{ ui.icon('info') }}<div class="alert-body">Saving regenerates this site's Nginx configuration, replacing any manual edits.</div></div>
+  {% endif %}
 
   <div class="sticky-bar">
     <div><strong>Save changes</strong><small>Changes are validated first. Running sites restart automatically.</small></div>

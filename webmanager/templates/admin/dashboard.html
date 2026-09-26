@@ -23,13 +23,14 @@
 {% macro limit_text(n) %}{{ "unlimited" if not n else n }}{% endmacro %}
 {% if super_admin %}
 <details class="card disclosure mb-16">
-  <summary>{{ ui.icon('settings') }}Default limits<small>· {{ limit_text(quota_defaults.sites) }} site{{ "" if quota_defaults.sites == 1 else "s" }} and {{ limit_text(quota_defaults.sources) }} source{{ "" if quota_defaults.sources == 1 else "s" }} per person</small><span class="chev">{{ ui.icon('chevron') }}</span></summary>
+  <summary>{{ ui.icon('settings') }}Default limits<small>· {{ limit_text(quota_defaults.sites) }} site{{ "" if quota_defaults.sites == 1 else "s" }} and {{ limit_text(quota_defaults.sources) }} source{{ "" if quota_defaults.sources == 1 else "s" }}{% if config.APPS_ENABLED %}, {{ limit_text(quota_defaults.apps) }} app{{ "" if quota_defaults.apps == 1 else "s" }}{% endif %} per person</small><span class="chev">{{ ui.icon('chevron') }}</span></summary>
   <form class="card-body stack" method="post" action="{{ url_for('admin.update_default_limits') }}" data-loading>
     {{ ui.csrf() }}
     <p class="muted">Applies to everyone without a personal limit. Super admins are never limited. Use 0 for unlimited. Existing sites are never removed; people over a new limit just can't add more.</p>
     <div class="form-row">
       <label class="field"><span>Max sites per person</span><input type="number" name="max_sites" min="0" max="10000" value="{{ quota_defaults.sites }}" required></label>
       <label class="field"><span>Max Git sources per person</span><input type="number" name="max_sources" min="0" max="10000" value="{{ quota_defaults.sources }}" required></label>
+      {% if config.APPS_ENABLED %}<label class="field"><span>Max apps per person</span><input type="number" name="max_apps" min="0" max="10000" value="{{ quota_defaults.apps }}" required></label>{% endif %}
       <button class="btn btn-primary" type="submit">Save defaults</button>
     </div>
   </form>
@@ -53,7 +54,7 @@
         <strong>{{ user.display_name or user.username }}</strong>
         {% set site_limit = none if user.is_admin else (user.max_sites if user.max_sites is not none else quota_defaults.sites) %}
         {% set source_limit = none if user.is_admin else (user.max_sources if user.max_sources is not none else quota_defaults.sources) %}
-        <small>{{ user.email or user.username }} · {{ usage[user.id].sites }}{% if site_limit %}/{{ site_limit }}{% endif %} sites · {{ usage[user.id].sources }}{% if source_limit %}/{{ source_limit }}{% endif %} sources · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
+        <small>{{ user.email or user.username }} · {{ usage[user.id].sites }}{% if site_limit %}/{{ site_limit }}{% endif %} sites · {{ usage[user.id].sources }}{% if source_limit %}/{{ source_limit }}{% endif %} sources{% if config.APPS_ENABLED and (usage[user.id].apps or not user.is_admin) %}{% set app_limit = none if user.is_admin else (user.max_apps if user.max_apps is not none else quota_defaults.apps) %} · {{ usage[user.id].apps }}{% if app_limit %}/{{ app_limit }}{% endif %} apps{% endif %} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
       </span>
       <span class="record-tags">
         {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% endif %}
@@ -82,6 +83,7 @@
         <div class="form-row">
           <label class="field"><span>Max sites</span><input type="number" name="max_sites" min="0" max="10000" value="{{ user.max_sites if user.max_sites is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sites) }})"></label>
           <label class="field"><span>Max Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="{{ user.max_sources if user.max_sources is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sources) }})"></label>
+          {% if config.APPS_ENABLED %}<label class="field"><span>Max apps</span><input type="number" name="max_apps" min="0" max="10000" value="{{ user.max_apps if user.max_apps is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.apps) }})"></label>{% endif %}
         </div>
       </fieldset>
       {% endif %}
@@ -246,6 +248,7 @@
         <div><dt>Nginx data &amp; access log</dt><dd>{{ bytes(metrics.storage.nginx) }}</dd></div>
         <div><dt>Database</dt><dd>{{ bytes(metrics.storage.database) }}</dd></div>
         <div><dt>Data directory</dt><dd><code>{{ metrics.disk.path if metrics.disk else "n/a" }}</code></dd></div>
+        {% if app_hosting %}<div><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% else %}<span class="badge">Off</span> {{ app_hosting[1] }}{% endif %}</dd></div>{% endif %}
       </dl>
     </div>
   </div>

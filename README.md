@@ -1,6 +1,6 @@
 # WebManager for Debian Linux
 
-WebManager is a self-hosted control panel for deploying static websites from Git repositories.
+WebManager is a self-hosted control panel for deploying static websites from Git repositories. Optionally, it can also run server apps (Node, Python, …) in hardened containers; see [App hosting](docs/APP_HOSTING.md).
 
 ![WebManager logo](webmanager/static/logo.svg)
 
@@ -56,7 +56,7 @@ Then:
 1. Sign in with Google.
 2. Paste a Git repository URL.
 3. Select one or more folders containing an index page.
-4. Click **Deploy selected sites**.
+4. Click **Deploy N sites** (or **Deploy as an app** for an app repository).
 
 WebManager starts automatically now and after every reboot.
 
@@ -105,6 +105,7 @@ Everything below is optional reference material for custom networking, private r
 - [Verify the installation](#verify-the-installation)
 - [First-time setup](#first-time-setup)
 - [Deploy a website](#deploy-a-website)
+- [App hosting (optional)](#app-hosting-optional)
 - [Repository requirements](#repository-requirements)
 - [Private Git repositories](#private-git-repositories)
 - [Firewall setup](#firewall-setup)
@@ -138,14 +139,18 @@ Everything below is optional reference material for custom networking, private r
 - Editable site name, hostname slug, source folder, port, and fallback settings
 - Per-site traffic analytics from structured Nginx logs
 - Site pools with team access and optional individual exceptions
-- Per-person limits on sites and Git sources (defaults: 3 sites, 2 sources; super admins unlimited)
+- Per-person limits on sites, Git sources, and apps (defaults: 3 sites, 2 sources, 1 app; 0 = unlimited; super admins unlimited)
 - Source updates are always checked; install automatically every N minutes, hours, or days, or approve each one
 - Analytics page with traffic charts for every site you can see (admins see all sites)
 - System page with live CPU, memory, and disk usage plus WebManager and site update status
 - Custom 404 pages: add a `404.html` to a site's folder, or visitors see a clean built-in page
+- Friendly built-in pages for unknown hostnames ("No site here") and stopped sites ("Site temporarily unavailable")
+- Optional app hosting: run a repository with a `Dockerfile` and `webmanager.json` as a hardened container with dashboard-edited, encrypted variables ([details](docs/APP_HOSTING.md))
+- Root-domain hosting, per-site domain aliases, and a deployment-domain blocklist
+- Multiple dashboard hostnames (one primary plus aliases)
+- Repository URL guard for non-admins (blocks this server's own and link-local/metadata addresses; LAN Git servers stay allowed) and a repository size cap
 - Immediate start, stop, restart, update, and delete controls
 - Validated site updates with owner approval or automatic application
-- Per-repository Git update-check intervals
 - GitHub update checks with super-admin-approved installation
 - Debian systemd service
 - Waitress application server
@@ -195,7 +200,7 @@ The default installation uses:
 | `5000/tcp` | `127.0.0.1` | Internal Waitress dashboard server |
 | `8080/tcp` | All interfaces | Public Nginx dashboard endpoint |
 | `8090/tcp` | `127.0.0.1` | Internal hostname-routing gateway |
-| `8100-8999/tcp` | `127.0.0.1` | Per-site internal endpoints |
+| `8100-8999/tcp` | `127.0.0.1` (sites without a public domain: all interfaces) | Per-site internal endpoints and app containers |
 
 Port `5000` should not be exposed publicly. Debian's system Nginx forwards dashboard traffic from port `8080` to `127.0.0.1:5000`.
 
@@ -230,7 +235,7 @@ server must have the exact `server_name web.mhsit.club`. Setup derives that
 name from the Google callback URL so the exact dashboard route takes priority
 over the wildcard site route.
 
-Super admins can add more interface hostnames under **Admin > Domains >
+Super admins can add more interface hostnames under **Domains >
 Dashboard domains**. One is Primary and the others are aliases. For each
 hostname, add an exact Cloudflare Tunnel route to
 `http://localhost:8080` and add this URI to the existing Google OAuth web
@@ -244,7 +249,10 @@ Google sign-in returns to the same approved dashboard hostname that initiated
 the login. Dashboard hostnames are reserved and cannot also host deployed
 sites.
 
-The internal site ports should not be opened in UFW or a cloud firewall.
+The internal site ports should not be opened in UFW or a cloud firewall when
+sites use a deployment domain. Only sites deployed without any domain are
+reached directly on their port; the installer opens `8100-8999` in UFW only
+when no deployment domain is configured.
 
 Before installation, check for port conflicts:
 
@@ -352,12 +360,17 @@ The first Google account that signs in becomes the initial **super
 administrator**. On an upgraded installation, the oldest existing account is
 promoted automatically if no administrator exists.
 
-Administrators have an **Admin** link in the navigation. The console separates
-tasks into **Overview**, **People**, **Teams**, **Access**, **Domains**, and
-**System** so only the controls for the selected task are displayed. Account, team, pool,
-and site editors stay collapsed until opened.
+Administrators see an **Administration** group in the sidebar:
 
-The admin console can:
+- **People & access**, with tabs **People**, **Teams**, **Site pools**, and
+  **Site exceptions**. Super admins also set **Default limits** here.
+- **Domains** (super admins): deployment domains, dashboard domains, and the
+  domain blocklist.
+- **System** (super admins): resource usage, app hosting status, WebManager
+  updates, and hosted-site update checks.
+
+Account, team, pool, and site editors stay collapsed until opened. The
+administration pages can:
 
 - Enable or disable user accounts
 - Promote additional super administrators
@@ -367,6 +380,7 @@ The admin console can:
 - Create pools for sites that share the same access
 - Grant View only or Can manage access to a pool or an individual site
 - Add multiple deployment domains and choose the default for new sites
+- Set how many sites, Git sources, and apps each person may own
 
 Available permissions:
 
@@ -377,6 +391,19 @@ Available permissions:
 | `Manage users` | Activate accounts and assign team memberships |
 | `Manage groups` | Create and edit teams |
 | `Manage pools and access` | Create pools and assign site access to people or teams |
+| `Host apps` | Deploy apps that run in containers (only when app hosting is on) |
+
+Teams can use a ready-made profile (Team only, All-site viewer, All-site
+manager, App hosts, Access administrator, Account administrator, Delegated
+administrator) or **Custom permissions**.
+
+### Limits
+
+Every person except super admins has limits on how many sites, Git sources,
+and apps they own. Defaults are 3 sites, 2 sources, and 1 app (apps also count
+as sites); 0 means unlimited. Change the defaults under **People & access >
+People > Default limits**, or override them for one person on their row.
+Lowering a limit never removes existing sites; it only blocks adding more.
 
 Each site can belong to one pool. Pool access and direct site access use two
 roles:
@@ -386,8 +413,8 @@ roles:
 | `View only` | See the site, inspect its details, and open it |
 | `Can manage` | View access plus start, stop, restart, edit Nginx configuration, and delete |
 
-Use **Admin > Access > Pool access** to assign normal site access. Use
-**Direct site access** only for exceptions. A direct site
+Use **People & access > Site pools** to assign normal site access. Use
+**Site exceptions** only for exceptions. A direct site
 grant is useful for an exception without exposing the whole pool. When several
 grants apply, the strongest role wins. Site ACLs do not grant repository
 control, so source updates and deployment settings remain with the repository
@@ -407,7 +434,7 @@ manual update checks, approval, and automatic update policy.
 
 ### Admin-managed deployment domains
 
-Super administrators can open **Admin > Domains** to add more base domains.
+Super administrators can open **Domains** to add more base domains.
 Existing sites keep their assigned domain. New deployments use the default
 domain unless the owner selects another configured domain, and a site's domain
 can be changed later from its settings page.
@@ -417,7 +444,7 @@ reserves only the exact dashboard hostname: subdomain deployments remain
 available, while root hosting at that exact address is blocked.
 
 A site may also use additional domain aliases. Choose one primary domain during
-deployment, then open **Site settings > Connected domains and aliases** to
+deployment, then open **Settings > Additional domains** on the site to
 configure each additional domain independently:
 
 - **Alternate address** uses the site slug on another domain, such as
@@ -436,7 +463,7 @@ and the WebManager dashboard hostname cannot be assigned to a site. Root mode
 can use multiple domains, such as both `example.com` and `example.net`, provided
 no other site owns either root.
 
-The deployment screen presents **Site subdomain** and **Domain root** as
+The deployment screen presents **Subdomain per site** and **Domain root** as
 separate address choices and previews the resulting URL. Root mode
 automatically limits the deployment to one selected folder and reports when
 another site already owns that domain root.
@@ -470,13 +497,15 @@ site detail page display the required Cloudflare configuration:
 
 System Nginx accepts candidate hostnames on port `8080`, but the internal
 loopback gateway serves only exact site hostnames stored by WebManager.
-Unconfigured hostnames return `404`.
+Unconfigured hostnames return `404` with a built-in "No site here" page. A
+stopped site keeps its hostname and returns `503` with a "Site temporarily
+unavailable" page.
 
 ### 3. Restrict who may sign in
 
 If both allowlists are left blank, any Google account with a verified email can
 create an active WebManager account. Setup requires explicit confirmation
-before enabling this unrestricted mode, and the admin page displays a warning
+before enabling this unrestricted mode, and **People & access** displays a warning
 while it remains enabled.
 
 To restrict access, run:
@@ -555,13 +584,14 @@ Choose the folder that should become the site's document root. Dependency and me
 
 ### 4. Configure the deployment
 
-Enter:
+Choose the domain and address style, then for each ticked folder enter:
 
 - A site name
-- An optional internal port
+- Its subdomain (the full address is previewed)
 - Whether single-page application fallback should be enabled
 
-If no port is entered, WebManager selects the first available port in the configured range.
+WebManager assigns the first free internal port in the configured range. It
+can be changed later under **Settings > Advanced**.
 
 With SPA fallback enabled, routes such as `/account/settings` load the selected index page when no matching file exists.
 
@@ -578,26 +608,22 @@ site detail page.
 
 ### Site source updates
 
-Each saved repository has an **Automatic updates** control under **Sources**.
+Every source is checked for new commits automatically. Open the source under
+**Sources** and choose under **Updates**:
 
-Enter an interval in minutes and select **Save**. WebManager accepts intervals
-from `5` minutes through `43200` minutes (30 days). Leave the field blank and
-save to disable scheduled checks while keeping the manual **Check now**
-button available.
-
-Choose one update mode:
-
-- **Owner approval** stages a validated revision without changing live files.
-  The repository owner reviews the affected sites and selects **Approve** or
+- **Ask me to approve** (default): WebManager checks every 15 minutes and
+  stages a validated revision without changing live files. The site is flagged
+  under **Needs attention** until the owner selects **Approve update** or
   **Discard**.
-- **Apply automatically** activates a validated revision immediately after a
-  manual or scheduled check.
+- **Install automatically**: WebManager checks, validates, and installs new
+  commits every N minutes, hours, or days (5 minutes to 30 days).
 
-The schedule is stored in SQLite and resumes after WebManager or Debian
-restarts. Sources shows whether updates are **Enabled**, **Disabled**,
-**Checking**, **Updating**, or **Failed**, plus the next scheduled check, last
-completed check, and last successfully applied update. An update interrupted
-by a WebManager restart is marked failed instead of remaining stuck.
+**Check now** runs a check immediately. The schedule is stored in SQLite and
+resumes after WebManager or Debian restarts. Sources shows the update state
+(**Approve updates**, **Auto every …**, **Checking**, **Updating**, or
+**Failed**) plus the last check and last applied update. An update interrupted
+by a WebManager restart is marked failed instead of remaining stuck. Setting
+`WEBMANAGER_AUTO_REFRESH_ENABLED=0` turns off all scheduled checks.
 
 Every check uses a fresh shallow clone in a separate pending directory. A
 failed clone or an update waiting for approval leaves the currently hosted
@@ -606,9 +632,10 @@ index file used by an existing deployment. Approved and automatic updates use
 an atomic directory swap, so every site sharing that repository moves to the
 same validated revision together.
 
-Stopping a site removes its hostname route and immediately restarts only the
-internal managed Nginx gateway. This prevents a graceful-reload worker from
-continuing to serve the stopped site through an existing keep-alive connection.
+Stopping a site swaps its route for the "Site temporarily unavailable" page
+and gracefully reloads the internal Nginx gateway. It never stops the gateway,
+so the dashboard request that asked for the stop (often proxied through the
+same Nginx) is not cut off.
 
 All browser actions use POST/Redirect/GET with a `303 See Other` response.
 Refreshing a result page or navigating back does not repeat start, stop,
@@ -622,6 +649,9 @@ The Sites summary counts only conditions WebManager can verify:
 - a site marked running without a hosting backend
 - a missing deployed folder or index page
 - a failed manual or automatic source update check
+- a source update waiting for approval
+- for apps: a failed start or update (including a rolled-back update) or a
+  missing `Dockerfile`
 
 Stopped sites are treated as intentionally stopped and are not counted. Every
 counted site shows its reason. DNS and certificate health are not guessed; the
@@ -630,7 +660,9 @@ verification commands.
 
 ## Repository requirements
 
-WebManager hosts static files. It does not currently run application build commands.
+WebManager hosts static files. It does not run build commands for static
+sites. Repositories that need a server process can be hosted as
+[apps](#app-hosting-optional) when an administrator has turned app hosting on.
 
 ### Supported directly
 
@@ -658,18 +690,28 @@ For a frontend framework, commit or publish its generated output folder to the G
 
 For example, a Vite project normally needs a committed or generated `dist/index.html`. WebManager should deploy `dist`, not the unbuilt source directory.
 
-### Not supported as application runtimes
+### Server apps
 
-This version does not launch:
+Node.js, Python, Go, and other server apps (including server-side rendered
+apps) are not run as static sites. They can be hosted as containers with
+[app hosting](#app-hosting-optional). Separate database servers and Docker
+Compose projects are not supported; apps store data in files (for example
+SQLite) in their `/data` volume.
 
-- Node.js servers
-- Python web applications
-- PHP applications
-- Databases
-- Docker Compose projects
-- Server-side rendered applications
+## App hosting (optional)
 
-It is specifically a static website manager.
+App hosting is off by default. When a super admin turns it on
+(`sudo bash deploy/debian/enable-apps.sh`), people with the **Host apps**
+permission can deploy a folder that contains a `Dockerfile` and a
+`webmanager.json`. Each app runs in its own hardened Docker container behind
+WebManager's Nginx, keeps data in a `/data` volume that is backed up before
+every restart, and has a **Variables** page for its settings (secrets are
+encrypted). Failed updates roll back automatically.
+
+Enabling it gives WebManager root-equivalent access to Docker. Read
+[docs/APP_HOSTING.md](docs/APP_HOSTING.md) for the security model, the exact
+requirements an app repository must meet, and operations (backups, logs,
+troubleshooting).
 
 ## Private Git repositories
 
@@ -763,9 +805,10 @@ The required public ports are:
 443/tcp
 ```
 
-Port `8080` is used only by the initial HTTP dashboard before automatic HTTPS
-configuration. Do not expose ports `5000`, `8090`, or `8100-8999`; they are
-loopback-only application and site endpoints.
+Port `8080` serves the HTTP dashboard (and, with Cloudflare Tunnel, every
+hosted hostname). Do not expose ports `5000` or `8090`. Ports `8100-8999` only
+need to be open if you deploy sites **without** a deployment domain; with a
+domain they are loopback-only, and app containers always are.
 
 ### UFW
 
@@ -783,6 +826,7 @@ Add the rules manually when needed:
 sudo ufw allow 8080/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+# Only if sites are deployed without a deployment domain:
 sudo ufw allow 8100:8999/tcp
 sudo ufw reload
 ```
@@ -802,7 +846,7 @@ Virtual servers from cloud providers may have a firewall outside Debian. Allow:
 
 - TCP `8080` for the dashboard
 - TCP `80` and `443` for the HTTPS dashboard
-- TCP `8100-8999` for deployed sites
+- TCP `8100-8999` only for sites deployed without a deployment domain
 
 Restrict dashboard port `8080` to trusted IP addresses when possible.
 
@@ -978,6 +1022,11 @@ WEBMANAGER_GOOGLE_ALLOWED_EMAILS=
 WEBMANAGER_AUTO_REFRESH_ENABLED=1
 WEBMANAGER_AUTO_REFRESH_POLL_SECONDS=30
 WEBMANAGER_MAX_REPOSITORY_MB=1024
+WEBMANAGER_APPS_ENABLED=0
+WEBMANAGER_CONTAINER_RUNTIME=
+WEBMANAGER_APP_DEFAULT_MEMORY_MB=256
+WEBMANAGER_APP_CPUS=0.5
+WEBMANAGER_APP_START_TIMEOUT=60
 WEBMANAGER_DEBUG=0
 PYTHONUNBUFFERED=1
 PYTHONDONTWRITEBYTECODE=1
@@ -985,6 +1034,8 @@ GIT_TERMINAL_PROMPT=0
 ```
 
 ### Application settings
+
+Defaults below are the values in the installed file.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -1007,7 +1058,19 @@ GIT_TERMINAL_PROMPT=0
 | `WEBMANAGER_AUTO_REFRESH_ENABLED` | `1` | Enables the background repository scheduler |
 | `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
 | `WEBMANAGER_MAX_REPOSITORY_MB` | `1024` | Largest repository checkout accepted; bigger clones are rejected |
+| `WEBMANAGER_APPS_ENABLED` | `0` | Turns on [app hosting](docs/APP_HOSTING.md); use `deploy/debian/enable-apps.sh` rather than editing by hand |
+| `WEBMANAGER_CONTAINER_RUNTIME` | empty | Container CLI for apps; empty auto-detects `docker`, then `podman` |
+| `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | `256` | Memory limit for apps that don't set `memory_mb` |
+| `WEBMANAGER_APP_CPUS` | `0.5` | CPU limit per app |
+| `WEBMANAGER_APP_START_TIMEOUT` | `60` | Seconds an app has to pass its health check |
 | `WEBMANAGER_DEBUG` | `0` | Flask debugging; keep disabled in production |
+
+The updater's handoff files can be moved with
+`WEBMANAGER_PROGRAM_UPDATE_STATUS_FILE`,
+`WEBMANAGER_PROGRAM_UPDATE_REQUEST_FILE`, and
+`WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE` (defaults under
+`/var/lib/webmanager-updater/`). Leave them alone unless you also change the
+updater units.
 
 After editing the file:
 
@@ -1123,6 +1186,8 @@ sudo systemctl reload nginx
     error.log
   logs/
   .ssh/
+  app-backups/      (app hosting: /data backups per app)
+  app-work/         (app hosting: short-lived files)
 
 /etc/webmanager/
   webmanager.env
@@ -1133,9 +1198,15 @@ sudo systemctl reload nginx
   webmanager-update.service
   webmanager-update.timer
   webmanager-update.path
+  webmanager.service.d/apps.conf        (app hosting only)
+  webmanager-app-firewall.service       (app hosting only)
 
 /usr/local/sbin/
   webmanager-update
+  webmanager-uninstall
+
+/etc/logrotate.d/
+  webmanager
 
 /var/lib/webmanager-updater/
   status.json
@@ -1341,6 +1412,12 @@ The data directory contains:
 
 Store backups securely.
 
+App data (for [app hosting](docs/APP_HOSTING.md)) lives in Docker volumes
+named `webmanager-app-<id>-data`, not in `/var/lib/webmanager`. The backup
+below includes the automatic copies in `app-backups/`; see
+[APP_HOSTING.md § Operations](docs/APP_HOSTING.md#7-operations) for a current
+copy of each volume.
+
 ### Create a backup
 
 Stop WebManager for a consistent SQLite and repository snapshot:
@@ -1402,11 +1479,11 @@ Keep `/var/lib/webmanager.before-restore` until the restored installation is con
 
 The Debian installer creates a systemd timer that checks the configured GitHub
 branch every 15 minutes. Checks never install code. When a newer commit is
-available, a super administrator must open **Admin**, review the exact commit,
+available, a super administrator must open **System**, review the exact commit,
 and select **Approve and install**.
 
 Setup runs the first check immediately. A super administrator can also select
-**Check now** in the Admin page; this asks the hardened systemd updater service
+**Check now** on the System page; this asks the hardened systemd updater service
 to run without granting the web process root access.
 
 When application requirements are unchanged, update validation reuses the
@@ -1462,7 +1539,8 @@ Before installing a new commit, the updater:
 2. Verifies that the URL is an HTTPS `github.com` repository.
 3. Rejects force-pushed or rewritten history.
 4. Requires approval for that exact 40-character commit from a super admin.
-5. Creates a clean virtual environment and runs the full test suite.
+5. Runs the full test suite, reusing the installed virtual environment when
+   requirements are unchanged and retrying in a clean one if that fails.
 6. Stops WebManager and backs up `/var/lib/webmanager`,
    `/etc/webmanager`, the installed application, and service definitions.
 7. Installs the candidate and waits for the health endpoint.
@@ -1592,8 +1670,9 @@ sudo webmanager-uninstall
 This removes:
 
 - `/opt/webmanager`
-- The systemd service
-- The dashboard Nginx configuration
+- The WebManager and updater systemd units, the updater script, and logrotate config
+- The dashboard and hosted-site Nginx configurations
+- The app hosting systemd drop-in and firewall unit, if present
 
 It preserves:
 
@@ -1604,7 +1683,9 @@ It preserves:
 
 ### Remove everything
 
-Warning: this permanently removes users, repositories, configurations, logs, and the database.
+Warning: this permanently removes users, repositories, configurations, logs,
+and the database, plus any app containers, images, and data volumes created by
+WebManager.
 
 ```bash
 sudo webmanager-uninstall --purge
@@ -1612,7 +1693,8 @@ sudo webmanager-uninstall --purge
 
 Create and verify a backup first.
 
-The uninstaller does not remove shared Debian packages such as Python, Git, or Nginx.
+The uninstaller does not remove shared Debian packages such as Python, Git,
+Nginx, or Docker.
 
 ## Development
 
@@ -1676,12 +1758,16 @@ Before exposing WebManager publicly:
 2. Set `WEBMANAGER_SESSION_COOKIE_SECURE=1`.
 3. Configure Google domain or email allowlists unless every Google account should be allowed.
 4. Restrict dashboard access by firewall or VPN when possible.
-5. Do not expose internal ports `5000`, `8090`, or `8100-8999`.
+5. Do not expose internal ports `5000` or `8090`; expose `8100-8999` only if
+   you deploy sites without a deployment domain.
 6. Use read-only SSH deploy keys for private repositories.
 7. Keep Debian, Nginx, Python packages, and WebManager updated.
 8. Back up `/var/lib/webmanager`.
 9. Store backups away from the server.
 10. Review Google OAuth consent-screen and test-user settings before production use.
+11. Leave app hosting off unless you need it. If you turn it on, grant **Host
+    apps** only to trusted people, and consider a dedicated VM and a LAN
+    firewall rule (see [APP_HOSTING.md](docs/APP_HOSTING.md#2-security-model-read-this-first)).
 
 The Nginx editor enforces each site's hostname, internal ports, document root,
 and symlink protection. It also rejects proxy, include, SSI, write, module, and

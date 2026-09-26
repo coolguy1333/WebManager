@@ -7,6 +7,7 @@
     <div class="page-title">
       <h1>{{ site.name }}</h1>
       {{ ui.status_badge(site.status, attention=attention_reasons) }}
+      {% if app is not none %}<span class="badge badge-accent">{{ ui.icon('cpu', 11) }} App</span>{% endif %}
       {% if not can_manage %}<span class="badge">Read only</span>{% endif %}
     </div>
     <p>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}</p>
@@ -14,6 +15,7 @@
   <div class="actions">
     {% if site.status == "running" %}<a class="btn" href="{{ public_url }}" target="_blank" rel="noopener noreferrer">{{ ui.icon('external', 14) }}Visit</a>{% endif %}
     {% if can_manage %}
+    {% if app is not none %}<a class="btn" href="{{ url_for('deployments.app_variables', site_id=site.id) }}">{{ ui.icon('code', 14) }}Variables</a>{% endif %}
     <a class="btn" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">{{ ui.icon('settings', 14) }}Settings</a>
     {% if site.status == "running" %}
     <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
@@ -34,6 +36,9 @@
   </div>
 </header>
 
+{% if site.status == "starting" %}
+<div class="alert info mb-16" data-auto-refresh="4">{{ ui.icon('refresh') }}<div class="alert-body"><strong>Building and starting…</strong>This can take a few minutes the first time. The page refreshes by itself.</div></div>
+{% endif %}
 {% if attention_reasons %}
 <div class="alert error mb-16">
   {{ ui.icon('alert') }}
@@ -158,6 +163,43 @@
   </div>
 </section>
 
+{% if app is not none %}
+<section class="card mb-16">
+  <div class="card-header">
+    <div><h2>Container</h2><p>{% if app.available %}Runs isolated with a read-only filesystem; data lives in <code>/data</code>.{% else %}{{ app.message }}{% endif %}</p></div>
+    {% if can_manage %}<a class="btn btn-sm" href="{{ url_for('deployments.app_variables', site_id=site.id) }}">{{ ui.icon('code', 14) }}Variables</a>{% endif %}
+  </div>
+  {% if app.available %}
+  <div class="card-body stack">
+    <dl class="facts">
+      <div><dt>Container</dt><dd>{{ (app.status or "not created")|capitalize }}</dd></div>
+      <div><dt>Started</dt><dd>{{ ui.when(app.started_at[:19]|replace('T', ' ')) if app.started_at and app.status == 'running' else "—" }}</dd></div>
+      <div><dt>Restarts</dt><dd>{{ app.restarts if app.restarts is not none else "—" }}</dd></div>
+      <div><dt>Memory limit</dt><dd>{{ site.app_memory_mb or (app_manifest.memory_mb if app_manifest else "—") }} MB</dd></div>
+      <div><dt>Health check</dt><dd><code>{{ app_manifest.health if app_manifest else "—" }}</code></dd></div>
+      <div><dt>Data volume</dt><dd><code>{{ app.volume }}</code></dd></div>
+    </dl>
+    {% if site.last_error and site.status in ["error", "running"] %}
+    <div>
+      <h3 class="mb-16">Last start failure</h3>
+      <pre><code>{{ site.last_error }}</code></pre>
+    </div>
+    {% endif %}
+    {% if app.backups %}<p class="hint">Data backups taken before each restart or update (newest first): {% for backup in app.backups %}<code>{{ backup }}</code>{{ ", " if not loop.last }}{% endfor %}. Stored in the WebManager data folder under <code>app-backups/{{ site.id }}/</code>.</p>{% endif %}
+    <div>
+      <h3 class="mb-16">App logs</h3>
+      {% if app.logs %}<pre><code>{{ app.logs }}</code></pre>{% else %}<p class="muted">No output yet.</p>{% endif %}
+    </div>
+    {% if site_log %}
+    <details class="inline-disclosure">
+      <summary>{{ ui.icon('code', 14) }}Build log</summary>
+      <pre class="mt-16"><code>{{ site_log }}</code></pre>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% else %}
 <details class="card disclosure mb-16">
   <summary>{{ ui.icon('activity') }}Runtime, routing &amp; logs<span class="chev">{{ ui.icon('chevron') }}</span></summary>
   <div class="card-body stack">
@@ -192,6 +234,8 @@
   </div>
 </details>
 
+{% endif %}
+{% if app is none %}
 <details class="card disclosure mb-24">
   <summary>{{ ui.icon('code') }}Nginx configuration <small>{{ "· managed Nginx" if nginx_available else "· built-in server active (Nginx not installed)" }}</small><span class="chev">{{ ui.icon('chevron') }}</span></summary>
   <div class="card-body stack">
@@ -199,14 +243,16 @@
     <pre><code>{{ site.nginx_config }}</code></pre>
   </div>
 </details>
+{% endif %}
 
 {% if can_manage %}
 <section class="card danger-zone">
   <div class="card-body">
-    <div><h3>Delete this site</h3><p>Stops and removes the deployment. The Git source stays connected.</p></div>
-    <form method="post" action="{{ url_for('deployments.delete_site', site_id=site.id) }}" data-confirm="Delete {{ site.name }}? This stops the site and removes it from WebManager." data-loading>
+    <div><h3>Delete this {{ "app" if app is not none else "site" }}</h3><p>Stops and removes the deployment. The Git source stays connected.{% if app is not none %} The app's data is kept unless you tick the box.{% endif %}</p></div>
+    <form class="actions" method="post" action="{{ url_for('deployments.delete_site', site_id=site.id) }}" data-confirm="Delete {{ site.name }}? This stops it and removes it from WebManager." data-loading>
       {{ ui.csrf() }}
-      <button class="btn btn-danger" type="submit" data-loading-text="Deleting…">{{ ui.icon('trash', 14) }}Delete site</button>
+      {% if app is not none %}<label class="check plain"><input type="checkbox" name="delete_data"><span>Also delete its data</span></label>{% endif %}
+      <button class="btn btn-danger" type="submit" data-loading-text="Deleting…">{{ ui.icon('trash', 14) }}Delete {{ "app" if site.kind == "app" else "site" }}</button>
     </form>
   </div>
 </section>

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ ui.icon('arrow-left', 14) }}{{ site.name }}</a>
+    <h1>Variables</h1>
+    <p>Settings passed to the app as environment variables. They come from the app's <code>webmanager.json</code>; secrets are encrypted and can't be viewed again once saved.</p>
+  </div>
+</header>
+
+{% if decrypt_error %}
+<div class="alert error mb-16">{{ ui.icon('alert') }}<div class="alert-body">{{ decrypt_error }}</div></div>
+{% endif %}
+
+{% if manifest_error %}
+<div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The app's webmanager.json has a problem</strong>{{ manifest_error }}</div></div>
+{% elif not manifest.env %}
+<section class="card empty">
+  <span class="record-icon">{{ ui.icon('settings', 22) }}</span>
+  <h2>No settings</h2>
+  <p>This app doesn't declare any variables in <code>webmanager.json</code>.</p>
+</section>
+{% else %}
+<form class="stack" method="post" data-loading autocomplete="off">
+  {{ ui.csrf() }}
+  <section class="card">
+    <div class="card-body">
+      {% for variable in manifest.env %}
+      {% set current = stored.get(variable.name, "") %}
+      <div class="var-row">
+        <div>
+          <label class="var-name" for="var-{{ variable.name }}">{{ variable.name }}</label>
+          <div class="var-meta">
+            {% if variable.required %}<span class="badge badge-warning">Required</span>{% endif %}
+            {% if variable.secret %}<span class="badge">{{ ui.icon('shield', 11) }} Secret</span>{% endif %}
+          </div>
+          {% if variable.description %}<p>{{ variable.description }}</p>{% endif %}
+        </div>
+        <div>
+          {% if variable.choices %}
+          <select id="var-{{ variable.name }}" name="var_{{ variable.name }}">
+            {% if not variable.required %}<option value="">Default{% if variable.default %} ({{ variable.default }}){% endif %}</option>{% endif %}
+            {% for choice in variable.choices %}<option value="{{ choice }}" {% if current == choice %}selected{% endif %}>{{ choice }}</option>{% endfor %}
+          </select>
+          {% elif variable.secret %}
+          <input id="var-{{ variable.name }}" type="password" name="var_{{ variable.name }}" value="" autocomplete="new-password" spellcheck="false" placeholder="{{ 'Leave blank to keep the saved value' if current else ('Not set' ~ (' — default is used' if variable.default else '')) }}">
+          <div class="secret-state">
+            {% if current %}<span>{{ ui.icon('check', 12) }} A value is saved</span>
+            <label class="check plain"><input type="checkbox" name="clear_{{ variable.name }}"><span>Remove saved value</span></label>
+            {% else %}<span>No value saved</span>{% endif %}
+          </div>
+          {% else %}
+          <input id="var-{{ variable.name }}" name="var_{{ variable.name }}" value="{{ current }}" spellcheck="false" placeholder="{{ ('Default: ' ~ variable.default) if variable.default else ('Required' if variable.required else 'Not set') }}">
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="alert info">{{ ui.icon('info') }}<div class="alert-body">WebManager also sets <code>PORT</code>, <code>HOST</code>, <code>DATA_DIR=/data</code>, <code>PUBLIC_URL</code>, <code>TRUST_PROXY=true</code> and <code>WEBMANAGER_APP_ID</code>. Those can't be changed here.</div></div>
+
+  <div class="sticky-bar">
+    <div><strong>Save variables</strong><small>The app restarts with the new values. If it fails its health check, the previous version keeps running.</small></div>
+    <div class="actions">
+      <a class="btn btn-ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
+      <button class="btn btn-primary" type="submit">Save and restart</button>
+    </div>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

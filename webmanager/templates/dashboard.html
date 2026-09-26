@@ -67,7 +67,7 @@
        data-group-status="{{ {'attention': 'Needs attention', 'running': 'Running', 'stopped': 'Stopped'}[row_status] }}"
        data-search="{{ (site.name ~ ' ' ~ site.repository_name ~ ' ' ~ site.folder ~ ' ' ~ (site.pool_name or '') ~ ' ' ~ (site.owner_name or '') ~ ' ' ~ (site.owner_email or '') ~ ' ' ~ (domain_info['items']|map(attribute='hostname')|join(' ')))|lower }}">
     <div class="site-name" role="cell">
-      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>
+      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>{% if site.kind == "app" %} <span class="badge badge-info">App</span>{% endif %}
       <small>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}{% if site.id not in manageable_site_ids %} · Read only{% endif %}</small>
     </div>
     <div class="site-domains col-domains" role="cell">

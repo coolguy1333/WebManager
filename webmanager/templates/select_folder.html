@@ -22,7 +22,60 @@
   </div>
 </header>
 
+{% for app_candidate in app_candidates %}
+<section class="card app-candidate mb-24">
+  <div class="card-header">
+    <div>
+      <h2>{{ ui.icon('cpu', 16) }} Deploy as an app</h2>
+      <p><code>{{ "/" if app_candidate.folder == "." else app_candidate.folder }}</code> has a <code>Dockerfile</code> and <code>webmanager.json</code>, so it can run as a server app with its own data and settings.</p>
+    </div>
+    <span class="badge badge-accent">App</span>
+  </div>
+  <div class="card-body stack">
+    {% if app_candidate.error %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>This app can't be deployed yet</strong>{{ app_candidate.error }} See the app requirements in <code>docs/APP_HOSTING.md</code>.</div></div>
+    {% elif not apps_enabled %}
+    <div class="alert info">{{ ui.icon('info') }}<div class="alert-body"><strong>App hosting is turned off on this server</strong>An administrator can enable it (see <code>docs/APP_HOSTING.md</code>). You can still publish static folders below.</div></div>
+    {% elif not can_host_apps %}
+    <div class="alert info">{{ ui.icon('info') }}<div class="alert-body"><strong>You don't have permission to host apps</strong>Ask an administrator to give you, or your team, the <em>Host apps</em> permission.</div></div>
+    {% elif not site_domains %}
+    <div class="alert info">{{ ui.icon('info') }}<div class="alert-body">Apps need a public domain. An administrator can add one under <strong>Domains</strong>.</div></div>
+    {% else %}
+    {% set manifest = app_candidate.manifest %}
+    <dl class="facts">
+      <div><dt>Health check</dt><dd><code>{{ manifest.health }}</code></dd></div>
+      <div><dt>Memory</dt><dd>{{ manifest.memory_mb }} MB</dd></div>
+      <div><dt>Settings</dt><dd>{{ manifest.env|length }} ({{ manifest.env|selectattr("required")|list|length }} required)</dd></div>
+      <div><dt>Data</dt><dd>Kept in <code>/data</code></dd></div>
+    </dl>
+    <form method="post" action="{{ url_for('deployments.deploy_app', repository_id=repository.id) }}" data-loading class="stack">
+      {{ ui.csrf() }}
+      <input type="hidden" name="folder" value="{{ app_candidate.folder }}">
+      <div class="form-grid">
+        <label class="field"><span>App name</span><input name="site_name" value="{{ suggested_name }}" maxlength="80" required></label>
+        <div class="field">
+          <span>Address</span>
+          <div class="hostname-row compact">
+            <input name="slug" value="{{ suggested_slug }}" maxlength="48" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" required aria-label="Subdomain" autocomplete="off" spellcheck="false">
+            <span class="hostname-dot" aria-hidden="true">.</span>
+            <select name="domain_id" aria-label="Domain">
+              {% for domain in site_domains %}<option value="{{ domain.id }}">{{ domain.name }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="record-actions">
+        <small class="muted">You'll be asked for any required settings before it starts. The first build can take a few minutes.</small>
+        <button class="btn btn-primary" type="submit">{{ ui.icon('play', 14) }}Deploy app</button>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endfor %}
+
 {% if candidates %}
+{% if app_candidates %}<h2 class="mb-16">Or publish static folders</h2>{% endif %}
 {% set remaining = none if g.user.is_admin else quota.sites.remaining %}
 {% if remaining is not none %}
 <div class="alert {{ 'error' if remaining == 0 else 'info' }} mb-16">{{ ui.icon('info') }}<div class="alert-body">{% if remaining == 0 %}<strong>Site limit reached</strong>You're using all {{ quota.sites.limit }} of your sites. Delete a site or ask an administrator to raise your limit.{% else %}You can deploy <strong>{{ remaining }}</strong> more site{{ "" if remaining == 1 else "s" }} ({{ quota.sites.used }} of {{ quota.sites.limit }} used).{% endif %}</div></div>
@@ -143,7 +196,7 @@
     <button class="btn btn-primary" type="submit" data-deploy-submit>{{ ui.icon('play', 14) }}Deploy <span data-deploy-label>1 site</span></button>
   </div>
 </form>
-{% else %}
+{% elif not app_candidates %}
 <section class="card empty">
   <span class="record-icon">{{ ui.icon('folder', 22) }}</span>
   <h2>No index page found</h2>

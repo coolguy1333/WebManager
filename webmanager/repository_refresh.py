@@ -405,7 +405,15 @@ class RepositoryRefreshManager:
         runtime = self.app.extensions.get("runtime_manager")
         if runtime:
             for site in affected_sites:
-                if site["status"] != "running":
+                if site["status"] not in ("running", "starting"):
+                    continue
+                if site["kind"] == "app":
+                    # Builds can take minutes: rebuild in the background so an
+                    # approval click (or the scheduler) never waits on docker.
+                    if not runtime.start_app_async(site["id"]):
+                        restart_failures.append(
+                            f"{site['name']}: it was busy starting; restart it to pick up the update"
+                        )
                     continue
                 try:
                     runtime.restart_site(site["id"])
@@ -430,7 +438,7 @@ class RepositoryRefreshManager:
     def _sites(database, repository_id):
         return database.execute(
             """
-            SELECT id, name, folder, index_file, status
+            SELECT id, name, folder, index_file, status, kind
             FROM sites
             WHERE repository_id = ?
             """,
@@ -446,6 +454,14 @@ class RepositoryRefreshManager:
                 raise GitError(
                     f"Update would remove the deployed folder for {site['name']}."
                 ) from exc
+            if "kind" in site.keys() and site["kind"] == "app":
+                from .apps import AppError, load_manifest
+
+                try:
+                    load_manifest(selected)
+                except AppError as exc:
+                    raise GitError(f"Update would break the app {site['name']}: {exc}") from exc
+                continue
             if not (selected / site["index_file"]).is_file():
                 raise GitError(
                     f"Update would remove {site['index_file']} from {site['name']}."

@@ -2211,7 +2211,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(refreshed.status_code, 200)
         stop.assert_called_once_with(site_id)
 
-    def test_invalid_site_settings_redirect_to_safe_get(self):
+    def test_invalid_site_settings_keep_the_users_edits(self):
         user_id = self.add_user("alice")
         repository_root = Path(self.temp_directory.name) / "settings-prg-repo"
         repository_root.mkdir()
@@ -2225,17 +2225,16 @@ class WebManagerTestCase(unittest.TestCase):
             data={
                 "_csrf_token": self.csrf(),
                 "name": "",
-                "slug": "demo",
+                "slug": "my-new-slug",
                 "folder": ".",
                 "port": "43100",
             },
         )
 
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(
-            response.headers["Location"],
-            f"/sites/{site_id}/settings",
-        )
+        # Invalid input re-shows the form with the user's edits kept.
+        self.assertEqual(response.status_code, 422)
+        self.assertIn(b'value="my-new-slug"', response.data)
+        self.assertIn(b"Site name is required", response.data)
 
     def test_failed_initial_repository_clone_is_reported_and_cleaned_up(self):
         user_id = self.add_user("alice")
@@ -3768,6 +3767,77 @@ class SecurityRegressionTests(unittest.TestCase):
         with self.assertRaises(NginxConfigError):
             build_paused_site_config(["evil.example; include /etc/passwd"], 8090)
         self.assertEqual(build_paused_site_config([], 8090), "")
+
+    def test_settings_refuse_a_subdomain_used_by_another_site(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "slug-clash" / "public"
+        root.mkdir(parents=True)
+        (root / "index.html").write_text("hi", encoding="utf-8")
+        repository_id = self.add_repository(user_id, root)
+        first = self.add_site(user_id, repository_id, root, port=43101)
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET slug = 'taken' WHERE id = ?", (first,))
+            database.commit()
+        second = self.add_site(user_id, repository_id, root, port=43102)
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET slug = 'mine' WHERE id = ?", (second,))
+            database.commit()
+        self.login_user(user_id)
+        response = self.client.post(
+            f"/sites/{second}/settings",
+            data={"_csrf_token": self.csrf(), "name": "Mine", "slug": "taken", "folder": "public", "port": "43102"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn(b"already used by", response.data)
+        with self.app.app_context():
+            slug = get_db().execute("SELECT slug FROM sites WHERE id = ?", (second,)).fetchone()[0]
+        self.assertEqual(slug, "mine")
+
+    def test_repository_urls_cannot_target_this_server_or_metadata(self):
+        from webmanager.git_service import check_repository_host
+        for url in (
+            "http://127.0.0.1:5000/x.git",
+            "https://localhost/x.git",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/x.git",
+            "git@127.0.0.1:me/x.git",
+            "http://0.0.0.0/x.git",
+        ):
+            with self.subTest(url=url), self.assertRaises(GitError):
+                check_repository_host(url)
+        check_repository_host("http://192.168.1.10/me/site.git")  # LAN Gitea is fine
+
+    def test_non_admin_cannot_connect_internal_repository(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        with patch("webmanager.deployments.clone_repository") as clone:
+            response = self.client.post(
+                "/repositories/inspect",
+                data={"_csrf_token": self.csrf(), "repository_url": "http://127.0.0.1:5000/x.git"},
+                follow_redirects=True,
+            )
+        clone.assert_not_called()
+        self.assertIn(b"points at this server", response.data)
+
+    def test_check_now_has_a_short_cooldown(self):
+        user_id = self.add_user("alice")
+        root = Path(self.temp_directory.name) / "cooldown" / "public"
+        root.mkdir(parents=True)
+        repository_id = self.add_repository(user_id, root)
+        with self.app.app_context():
+            get_db().execute("UPDATE repositories SET last_checked_at = CURRENT_TIMESTAMP WHERE id = ?", (repository_id,))
+            get_db().commit()
+        self.login_user(user_id)
+        with patch.object(self.app.extensions["repository_refresh_manager"], "refresh") as refresh:
+            response = self.client.post(
+                f"/repositories/{repository_id}/refresh",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+        refresh.assert_not_called()
+        self.assertIn(b"Checked a moment ago", response.data)
 
 
 if __name__ == "__main__":

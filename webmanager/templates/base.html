@@ -36,7 +36,7 @@
     <aside class="sidebar" id="sidebar" data-sidebar aria-label="Main navigation">
       <a class="brand" href="{{ url_for('deployments.dashboard') }}">
         <img src="{{ static_asset('logo-mark.svg') }}" alt="">
-        <span><strong>WebManager</strong><small>Static site hosting</small></span>
+        <span><strong>WebManager</strong><small>{{ "Site & app hosting" if config.APPS_ENABLED else "Static site hosting" }}</small></span>
       </a>
 
       <nav class="nav">

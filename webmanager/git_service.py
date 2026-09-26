@@ -1,6 +1,8 @@
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import subprocess
 import uuid
 from pathlib import Path, PurePosixPath
@@ -38,6 +40,44 @@ def validate_repo_url(url: str) -> str:
     if parsed.scheme not in {"http", "https", "ssh", "git"} or not parsed.hostname:
         raise GitError("Use an HTTP(S), SSH, or Git repository URL.")
     return url
+
+
+def repository_host(url: str) -> str:
+    if SCP_STYLE_RE.fullmatch(url):
+        return url.split("@", 1)[1].split(":", 1)[0].lower()
+    return (urlparse(url).hostname or "").lower()
+
+
+def check_repository_host(url: str):
+    """Refuse repository URLs that point at this server or cloud metadata.
+
+    LAN addresses (e.g. a Gitea box at 192.168.x.x) stay allowed; loopback,
+    link-local (169.254.x.x metadata endpoints), multicast and unspecified
+    addresses are rejected so a signed-in user can't make the server probe
+    itself.
+    """
+    host = repository_host(url).strip("[]")
+    if not host:
+        raise GitError("The repository URL has no host.")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise GitError("Repositories on this server itself can't be used.")
+    try:
+        addresses = {
+            info[4][0]
+            for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        }
+    except (socket.gaierror, UnicodeError, OSError):
+        # Unresolvable names can't reach anything; let Git report the error.
+        return
+    for address in addresses:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or (
+            ip.version == 6 and ip.ipv4_mapped and (ip.ipv4_mapped.is_loopback or ip.ipv4_mapped.is_link_local)
+        ):
+            raise GitError(
+                "That repository address points at this server or a reserved network "
+                "address, which isn't allowed."
+            )
 
 
 def display_repo_url(url: str) -> str:

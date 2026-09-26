@@ -344,7 +344,7 @@ label, .label { display: block; font-weight: 560; font-size: 0.85rem; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > span:first-child { font-weight: 560; font-size: 0.85rem; }
 .hint { color: var(--text-faint); font-size: 0.78rem; font-weight: 400; }
-input[type="text"], input[type="url"], input[type="number"], input[type="search"], input[type="email"],
+input[type="text"], input[type="url"], input[type="number"], input[type="search"], input[type="email"], input[type="password"],
 input:not([type]), select, textarea {
   width: 100%;
   min-height: 38px;
@@ -929,3 +929,19 @@ fieldset.field legend { margin-bottom: 6px; }
 .nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--warning); color: #1a1300; font-size: 0.7rem; font-weight: 700; display: inline-grid; place-items: center; }
 .stat.danger small { color: var(--text-muted); }
 .choice-list > p { grid-column: 1 / -1; }
+
+/* ---------- Apps ---------- */
+.app-candidate { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.hostname-row.compact { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.3fr); align-items: center; }
+.hostname-row.compact .hostname-dot { padding-top: 0; }
+.var-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; padding: 14px 0; align-items: start; }
+.var-row + .var-row { border-top: 1px solid var(--border); }
+.var-name { font-family: var(--mono); font-weight: 650; font-size: 0.88rem; }
+.var-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.var-row p { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
+.secret-state { font-size: 0.78rem; color: var(--text-muted); margin-top: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 860px) {
+  .var-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .hostname-row.compact { grid-template-columns: minmax(0, 1fr); }
+  .hostname-row.compact .hostname-dot { display: none; }
+}
