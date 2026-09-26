@@ -7,7 +7,8 @@ from pathlib import Path
 from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, auth, db, deployments, domains, mesh, replication
+from . import admin, auth, data_replication, db, deployments, domains, mesh, replication
+from .data_replication import DataReplicationManager
 from .repository_refresh import RepositoryRefreshManager
 from .replication import ReplicationError, ReplicationManager
 from .services import RuntimeManager
@@ -165,8 +166,11 @@ def create_app(test_config=None):
     app.register_blueprint(admin.bp)
     app.register_blueprint(mesh.bp)
     app.register_blueprint(replication.bp)
+    app.register_blueprint(data_replication.bp)
     replication_manager = ReplicationManager(app, app.config["REPLICA_OF"], app.config["MESH_TOKEN"])
     app.extensions["replication_manager"] = replication_manager
+    data_replication_manager = DataReplicationManager(app, app.config["REPLICA_OF"], app.config["MESH_TOKEN"])
+    app.extensions["data_replication_manager"] = data_replication_manager
     replication.register_write_forwarding(app)
 
     @app.template_filter("ago")
@@ -271,15 +275,17 @@ def create_app(test_config=None):
 
     if not app.config.get("TESTING"):
         if replication_manager.is_replica:
-            # A replica mirrors config immediately; it doesn't yet have
-            # this site/app data locally (see webmanager/replication.py),
-            # so it doesn't try to run or update anything on its own.
+            # A replica mirrors config and data on their own schedules; it
+            # doesn't start apps or run scheduled Git checks itself (see
+            # webmanager/replication.py and data_replication.py).
             app.logger.info(
                 "This server is a replica of %s. It will forward writes "
-                "there and mirror its database.",
+                "there and mirror its database and site/app data.",
                 replication_manager.primary_url,
             )
             replication_manager.start()
+            data_replication_manager.start()
+            runtime.restore_gateway()
         else:
             runtime.restore_sites()
             runtime.restore_gateway()

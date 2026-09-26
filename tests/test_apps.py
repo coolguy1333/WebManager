@@ -118,6 +118,13 @@ class FakeRuntime:
         self.calls.append(("backup", name))
         return None
 
+    def restore_data(self, volume_name, tar_path):
+        # Read eagerly: the real ContainerRuntime.restore_data() also
+        # consumes the file synchronously before returning, since the
+        # caller's scratch directory may be gone right after.
+        content = Path(tar_path).read_bytes()
+        self.calls.append(("restore_data", volume_name, content))
+
 
 class AppHostingTests(unittest.TestCase):
     setUp_base = base.WebManagerTestCase.setUp

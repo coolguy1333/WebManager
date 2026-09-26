@@ -895,19 +895,23 @@ def _auto_request_program_check(status):
     return True
 
 
+def _format_epoch(value):
+    if not value:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _replication_status():
     manager = current_app.extensions["replication_manager"]
-    last_sync_at = None
-    if manager.last_sync_at:
-        last_sync_at = datetime.fromtimestamp(
-            manager.last_sync_at, tz=timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S")
+    data_manager = current_app.extensions["data_replication_manager"]
     return {
         "is_replica": manager.is_replica,
         "primary_url": manager.primary_url,
-        "last_sync_at": last_sync_at,
+        "last_sync_at": _format_epoch(manager.last_sync_at),
         "last_error": manager.last_error,
         "token_configured": bool(manager.token),
+        "data_last_sync_at": _format_epoch(data_manager.last_sync_at),
+        "data_last_error": data_manager.last_error,
     }
 
 
@@ -925,6 +929,23 @@ def sync_replication():
         flash("Synced the latest config from the primary.", "success")
     else:
         flash(f"Could not sync from the primary: {manager.last_error}", "error")
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
+@bp.post("/replication/sync-data")
+@login_required
+def sync_data_replication():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["data_replication_manager"]
+    if not manager.is_replica:
+        flash("This server is not a replica; there is nothing to sync.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+    if manager.sync_once():
+        flash("Synced the latest site/app data from the primary.", "success")
+    else:
+        flash(f"Could not sync data from the primary: {manager.last_error}", "error")
     return redirect(url_for("admin.dashboard", section="updates"))
 
 

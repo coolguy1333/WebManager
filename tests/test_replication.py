@@ -266,7 +266,8 @@ class ReplicationAdminPanelTests(unittest.TestCase):
             self.assertIn(b"mirrors", response.data)
             self.assertIn(b"https://primary.example", response.data)
             self.assertIn(b"Connection refused", response.data)
-            self.assertIn(b"Sync now", response.data)
+            self.assertIn(b"Sync config now", response.data)
+            self.assertIn(b"Sync data now", response.data)
         finally:
             manager.primary_url = ""
             manager.token = ""

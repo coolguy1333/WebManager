@@ -264,19 +264,32 @@
   <div class="card-body stack">
     {% if not replication.token_configured %}
     <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong><code>WEBMANAGER_PEER_TOKEN</code> is not set.</strong> This replica cannot authenticate to its primary at all.</div></div>
-    {% elif replication.last_error %}
-    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Last sync failed</strong>{{ replication.last_error }}</div></div>
+    {% else %}
+      {% if replication.last_error %}
+      <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Config sync failed</strong>{{ replication.last_error }}</div></div>
+      {% endif %}
+      {% if replication.data_last_error %}
+      <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Data sync failed</strong>{{ replication.data_last_error }}</div></div>
+      {% endif %}
     {% endif %}
     <dl class="facts">
       <div><dt>Primary</dt><dd><code>{{ replication.primary_url }}</code></dd></div>
-      <div><dt>Last synced</dt><dd>{{ ui.when(replication.last_sync_at) }}</dd></div>
+      <div><dt>Config last synced</dt><dd>{{ ui.when(replication.last_sync_at) }}</dd></div>
+      <div><dt>Site/app data last synced</dt><dd>{{ ui.when(replication.data_last_sync_at) }}</dd></div>
     </dl>
+    <p class="hint">Static sites start serving as soon as their data is synced. Apps stay stopped here until this server is promoted to primary.</p>
   </div>
   <div class="card-footer end">
-    <form method="post" action="{{ url_for('admin.sync_replication') }}" data-loading>
-      {{ ui.csrf() }}
-      <button class="btn" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 14) }}Sync now</button>
-    </form>
+    <div class="actions">
+      <form method="post" action="{{ url_for('admin.sync_replication') }}" data-loading>
+        {{ ui.csrf() }}
+        <button class="btn" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 14) }}Sync config now</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.sync_data_replication') }}" data-loading>
+        {{ ui.csrf() }}
+        <button class="btn" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 14) }}Sync data now</button>
+      </form>
+    </div>
   </div>
 </section>
 {% else %}

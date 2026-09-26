@@ -44,7 +44,7 @@ _DO_NOT_FORWARD_REQUEST_HEADERS = {"host", "content-length", "connection"}
 _DO_NOT_FORWARD_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding"}
 # Endpoints that manage the replica itself (not the mirrored config) and so
 # must always run locally, never be forwarded to the primary.
-_LOCAL_ONLY_ENDPOINTS = {"admin.sync_replication"}
+_LOCAL_ONLY_ENDPOINTS = {"admin.sync_replication", "admin.sync_data_replication"}
 
 bp = Blueprint("replication", __name__)
 
@@ -212,7 +212,7 @@ def register_write_forwarding(app):
             return None
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return None
-        if request.blueprint in ("mesh", "replication"):
+        if request.blueprint in ("mesh", "replication", "data_replication"):
             return None
         if request.endpoint == "static" or request.endpoint in _LOCAL_ONLY_ENDPOINTS:
             return None
