@@ -5,7 +5,7 @@
 <header class="page-header">
   <div>
     <h1>Sites</h1>
-    <p>Everything you host, at a glance. Select a site to manage its addresses, updates, and runtime.</p>
+    <p>Static sites you host, at a glance. Select a site to manage its addresses, updates, and runtime.{% if apps_enabled %} Containers with their own server and data live under <a href="{{ url_for('deployments.dashboard', view='apps') }}">Apps</a>.{% endif %}</p>
   </div>
   <div class="actions">
     {% if quota.sites.limit %}<span class="badge {{ 'badge-warning' if quota.sites.full else '' }}" title="Your site limit">{{ quota.sites.used }} of {{ quota.sites.limit }} sites used</span>{% endif %}
@@ -67,7 +67,7 @@
        data-group-status="{{ {'attention': 'Needs attention', 'running': 'Running', 'stopped': 'Stopped'}[row_status] }}"
        data-search="{{ (site.name ~ ' ' ~ site.repository_name ~ ' ' ~ site.folder ~ ' ' ~ (site.pool_name or '') ~ ' ' ~ (site.owner_name or '') ~ ' ' ~ (site.owner_email or '') ~ ' ' ~ (domain_info['items']|map(attribute='hostname')|join(' ')))|lower }}">
     <div class="site-name" role="cell">
-      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>{% if site.kind == "app" %} <span class="badge badge-info">App</span>{% endif %}
+      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>
       <small>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}{% if site.id not in manageable_site_ids %} · Read only{% endif %}</small>
     </div>
     <div class="site-domains col-domains" role="cell">
@@ -100,6 +100,79 @@
   <h2>No sites yet</h2>
   <p>Connect a Git repository, pick the folder that contains your <code>index.html</code>, and WebManager will host it.</p>
   <div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Deploy your first site</a></div>
+</section>
+{% endif %}
+
+{% elif active_view == "apps" %}
+<header class="page-header">
+  <div>
+    <h1>Apps</h1>
+    <p>Repositories that run their own server and keep data, hosted in containers. Settings are edited under each app's Variables page.</p>
+  </div>
+  <div class="actions">
+    {% if quota.apps.limit %}<span class="badge {{ 'badge-warning' if quota.apps.full else '' }}" title="Your app limit">{{ quota.apps.used }} of {{ quota.apps.limit }} apps used</span>{% endif %}
+    {% if can_host_apps and not quota.apps.full %}
+    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Deploy an app</a>
+    {% elif quota.apps.full %}
+    <span class="btn btn-primary" aria-disabled="true" title="You've reached your app limit">{{ ui.icon('plus') }}Deploy an app</span>
+    {% endif %}
+  </div>
+</header>
+
+<section class="stats" aria-label="App summary">
+  <div class="stat"><span>Total apps</span><strong>{{ sites|length }}</strong></div>
+  <div class="stat success"><span>Running</span><strong>{{ summary.running }}</strong></div>
+  <div class="stat"><span>Stopped</span><strong>{{ summary.stopped }}</strong></div>
+  <div class="stat {% if summary.attention %}danger{% endif %}"><span>Needs attention</span><strong>{{ summary.attention }}</strong></div>
+</section>
+
+{% if not can_host_apps %}
+<div class="alert info mb-16">{{ ui.icon('info') }}<div class="alert-body">You don't have the "Host apps" permission yet, so you can view apps shared with you but can't deploy new ones. Ask an administrator.</div></div>
+{% endif %}
+
+{% if sites %}
+<div class="list apps-list" role="table" aria-label="Apps" data-apps-live data-apps-stats-url="{{ url_for('deployments.apps_stats_json') }}">
+  <div class="list-head" role="row">
+    <span role="columnheader">App</span>
+    <span role="columnheader" class="col-domains">Address</span>
+    <span role="columnheader" class="col-status">Status</span>
+    <span role="columnheader">CPU</span>
+    <span role="columnheader">Memory</span>
+    <span role="columnheader" class="visually-hidden">Actions</span>
+  </div>
+  {% for site in sites %}
+  {% set domain_info = site_domain_summaries[site.id] %}
+  {% set reasons = attention_reasons[site.id] %}
+  {% set app_stats = container_stats.get(site.id) %}
+  <div class="list-row" role="row" data-app-row data-site-id="{{ site.id }}">
+    <div class="site-name" role="cell">
+      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>
+      <small>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}{% if site.id not in manageable_site_ids %} · Read only{% endif %}</small>
+    </div>
+    <div class="site-domains col-domains" role="cell">
+      {% if domain_info.main %}
+      <a href="{{ domain_info.main.url }}" target="_blank" rel="noopener noreferrer">{{ domain_info.main.hostname }}{{ ui.icon('external', 12) }}</a>
+      {% else %}<span class="muted">No public domain</span>{% endif %}
+    </div>
+    <div class="col-status" role="cell">{{ ui.status_badge(site.status, attention=reasons) }}</div>
+    <div role="cell" data-stat="cpu">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
+    <div role="cell" data-stat="memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
+    <div class="row-actions col-actions" role="cell">
+      {% if site.status == "running" %}<a class="btn btn-sm btn-ghost" href="{{ site_public_url(site) }}" target="_blank" rel="noopener noreferrer" aria-label="Open {{ site.name }}">{{ ui.icon('external', 14) }}Open</a>{% endif %}
+      <a class="btn btn-sm" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ "Manage" if site.id in manageable_site_ids else "View" }}</a>
+    </div>
+    {% if reasons %}<div class="site-error" role="cell">{{ ui.icon('alert', 12) }} {{ reasons|join(" ") }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+<p class="hint mt-16">CPU and memory come from the container runtime and only appear for running apps; they refresh every 2 seconds while this page is open.</p>
+{% else %}
+<section class="card empty">
+  <span class="record-icon">{{ ui.icon('box', 22) }}</span>
+  <h2>No apps yet</h2>
+  <p>An app is a repository with its own <code>Dockerfile</code> and <code>webmanager.json</code>. Connect one under Sources, then pick a folder that has both.</p>
+  {% if can_host_apps %}<div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Connect a repository</a></div>{% endif %}
+  <p class="hint">See <a href="{{ url_for('deployments.docs') }}#app-hosting">Docs</a> for the full app contract.</p>
 </section>
 {% endif %}
 

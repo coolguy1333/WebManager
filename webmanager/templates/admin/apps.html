@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>App hosting</h1>
+    <p>Every app running on this server, across every person. For your own apps, use <a href="{{ url_for('deployments.dashboard', view='apps') }}">Apps</a> in the sidebar.</p>
+  </div>
+  <div class="actions">
+    <span class="badge {{ 'badge-success' if apps_ready else 'badge' }}">{{ "App hosting: On" if apps_ready else "App hosting: Off" }}</span>
+    <span class="badge">{{ apps|length }} app{{ "" if apps|length == 1 else "s" }}</span>
+  </div>
+</header>
+
+{% if not apps_ready %}
+<div class="alert warning mb-24">{{ ui.icon('alert') }}<div class="alert-body"><strong>{{ apps_message }}</strong> Usage figures below won't update until the container runtime is reachable. See <a href="{{ url_for('deployments.docs') }}#app-hosting">Docs</a>.</div></div>
+{% endif %}
+
+{% if apps %}
+<div class="list admin-apps-list" role="table" aria-label="Apps" data-apps-live data-apps-stats-url="{{ url_for('admin.apps_stats_json') }}">
+  <div class="list-head" role="row">
+    <span role="columnheader">App</span>
+    <span role="columnheader">Owner</span>
+    <span role="columnheader">Status</span>
+    <span role="columnheader">CPU</span>
+    <span role="columnheader">Memory</span>
+    <span role="columnheader">Network I/O</span>
+    <span role="columnheader" class="visually-hidden">Actions</span>
+  </div>
+  {% for site in apps %}
+  {% set app_stats = stats.get(site.id) %}
+  <div class="list-row" role="row" data-app-row data-site-id="{{ site.id }}">
+    <div class="site-name" role="cell">
+      <a href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ site.name }}</a>
+      <small>{{ site.repository_name }} / {{ "root" if site.folder == "." else site.folder }}</small>
+    </div>
+    <div class="row-meta" role="cell">{{ site.owner_name or site.owner_email }}</div>
+    <div role="cell">{{ ui.status_badge(site.status) }}</div>
+    <div role="cell" data-stat="cpu">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
+    <div role="cell" data-stat="memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
+    <div role="cell" data-stat="net">{% if app_stats %}↓ {{ app_stats.net_rx }} ↑ {{ app_stats.net_tx }}{% else %}—{% endif %}</div>
+    <div class="row-actions col-actions" role="cell">
+      <a class="btn btn-sm" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Manage</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<p class="hint mt-16">CPU, memory and network figures come from <code>docker stats</code> and only appear for running apps; they refresh every 2 seconds while this page is open.</p>
+{% else %}
+<section class="card empty">
+  <span class="record-icon">{{ ui.icon('box', 22) }}</span>
+  <h2>No apps deployed yet</h2>
+  <p>People with the "Host apps" permission can deploy a repository with a <code>Dockerfile</code> and <code>webmanager.json</code> as an app from their Sources page.</p>
+</section>
+{% endif %}
+{% endblock %}

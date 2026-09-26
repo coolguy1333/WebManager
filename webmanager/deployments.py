@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from flask import Blueprint, abort, current_app, flash, g, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, flash, g, jsonify, redirect, render_template, request, url_for
 
 from .access_control import (
     RESOURCE_MANAGE_ALL,
@@ -509,7 +509,9 @@ def owned_site(site_id: int, manage=False):
 def dashboard():
     database = get_db()
     active_view = request.args.get("view", "sites")
-    if active_view not in {"sites", "sources"}:
+    if active_view not in {"sites", "apps", "sources"}:
+        active_view = "sites"
+    if active_view == "apps" and not current_app.config.get("APPS_ENABLED"):
         active_view = "sites"
     show_all = has_permission(RESOURCE_VIEW_ALL) or has_permission(RESOURCE_MANAGE_ALL)
     sites = database.execute(
@@ -538,6 +540,10 @@ def dashboard():
             for site in sites
             if site["user_id"] == g.user["id"] or site["id"] in access_levels
         ]
+    if active_view == "apps":
+        sites = [site for site in sites if site["kind"] == "app"]
+    elif active_view == "sites":
+        sites = [site for site in sites if site["kind"] != "app"]
     manageable_site_ids = {
         site["id"]
         for site in sites
@@ -580,7 +586,7 @@ def dashboard():
     }
     return render_template(
         "dashboard.html",
-        title="Sites" if active_view == "sites" else "Sources",
+        title={"sites": "Sites", "apps": "Apps"}.get(active_view, "Sources"),
         sites=sites,
         repositories=repositories,
         port_min=current_app.config["SITE_PORT_MIN"],
@@ -601,6 +607,15 @@ def dashboard():
         auto_refresh_service_enabled=current_app.config["AUTO_REFRESH_ENABLED"],
         active_view=active_view,
         quota=quotas.summary(database, g.user["id"]),
+        apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
+        can_host_apps=can_host_apps(),
+        container_stats=(
+            current_app.extensions["runtime_manager"].stats_for_sites(
+                [site["id"] for site in sites]
+            )
+            if active_view == "apps"
+            else {}
+        ),
     )
 
 
@@ -1305,6 +1320,17 @@ def app_variables(site_id):
     ), (422 if errors else 200)
 
 
+@bp.get("/docs")
+@login_required
+def docs():
+    return render_template(
+        "docs.html",
+        title="Docs",
+        apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
+        can_host_apps=can_host_apps(),
+    )
+
+
 @bp.get("/sites/<int:site_id>")
 @login_required
 def site_detail(site_id):
@@ -1340,6 +1366,33 @@ def site_detail(site_id):
             30,
         ),
     )
+
+
+@bp.get("/sites/<int:site_id>/status.json")
+@login_required
+def site_status_json(site_id):
+    """Live container status/usage for the app page, polled every few seconds."""
+    site = owned_site(site_id)
+    if site["kind"] != "app":
+        abort(404)
+    runtime = current_app.extensions["runtime_manager"]
+    response = jsonify(runtime.app_status(site))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.get("/apps/stats.json")
+@login_required
+def apps_stats_json():
+    """Live CPU/memory for the signed-in user's Apps view, polled every few seconds."""
+    database = get_db()
+    sites, _show_all = visible_sites(database)
+    app_ids = [site["id"] for site in sites if site["kind"] == "app"]
+    runtime = current_app.extensions["runtime_manager"]
+    stats = runtime.stats_for_sites(app_ids)
+    response = jsonify({str(site_id): value for site_id, value in stats.items()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @bp.route("/sites/<int:site_id>/settings", methods=("GET", "POST"))
@@ -1817,7 +1870,7 @@ def delete_site(site_id):
     database.commit()
     refresh_routing()
     flash(f"{site['name']} was deleted.", "success")
-    return action_redirect("deployments.dashboard", view="sites")
+    return action_redirect("deployments.dashboard", view="apps" if site["kind"] == "app" else "sites")
 
 
 @bp.post("/repositories/<int:repository_id>/delete")

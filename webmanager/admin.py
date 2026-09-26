@@ -948,6 +948,56 @@ def system_metrics_json():
     return response
 
 
+@bp.get("/apps")
+@login_required
+def apps_dashboard():
+    """Every hosted app across every user, for admins. Distinct from a
+    person's own Apps view under Sites, which only shows their apps."""
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    runtime = current_app.extensions["runtime_manager"]
+    apps_rows = database.execute(
+        """
+        SELECT sites.*, repositories.name AS repository_name,
+               users.display_name AS owner_name, users.email AS owner_email
+        FROM sites
+        JOIN repositories ON repositories.id = sites.repository_id
+        JOIN users ON users.id = sites.user_id
+        WHERE sites.kind = 'app'
+        ORDER BY sites.created_at DESC
+        """
+    ).fetchall()
+    stats = runtime.stats_for_sites([row["id"] for row in apps_rows])
+    ready, message = runtime.apps_status()
+    return render_template(
+        "admin/apps.html",
+        title="App hosting",
+        active_section="apps",
+        apps=apps_rows,
+        stats=stats,
+        apps_ready=ready,
+        apps_message=message,
+    )
+
+
+@bp.get("/apps/stats.json")
+@login_required
+def apps_stats_json():
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    site_ids = [
+        row["id"]
+        for row in database.execute("SELECT id FROM sites WHERE kind = 'app'").fetchall()
+    ]
+    runtime = current_app.extensions["runtime_manager"]
+    stats = runtime.stats_for_sites(site_ids)
+    response = jsonify({str(site_id): value for site_id, value in stats.items()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @bp.post("/sources/check-all")
 @login_required
 def check_all_sources():

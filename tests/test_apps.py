@@ -94,6 +94,26 @@ class FakeRuntime:
     def logs(self, name, tail=200):
         return "listening on 8080"
 
+    def running_app_names(self):
+        return [name for name, container in self.containers.items() if container["status"] == "running"]
+
+    def stats_many(self, names):
+        return {
+            name: {
+                "cpu_percent": 1.2,
+                "memory_percent": 5.0,
+                "memory_used": "12MiB",
+                "memory_limit": "256MiB",
+                "net_rx": "1kB",
+                "net_tx": "2kB",
+                "block_read": "0B",
+                "block_write": "0B",
+                "pids": 3,
+            }
+            for name in names
+            if name in self.containers and self.containers[name]["status"] == "running"
+        }
+
     def backup_data(self, name, destination):
         self.calls.append(("backup", name))
         return None
@@ -496,6 +516,78 @@ class AppHostingTests(unittest.TestCase):
         self.assertEqual(result.status, "applied")
         start.assert_called_once_with(site_id)
         restart.assert_not_called()
+
+    # -- usage monitoring & separate sites/apps views -------------------------
+    def test_apps_view_only_lists_apps_and_sites_view_excludes_them(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        apps_page = self.client.get("/?view=apps")
+        self.assertIn(b"Status", apps_page.data)
+        self.assertIn(b"data-apps-live", apps_page.data)
+
+        sites_page = self.client.get("/?view=sites")
+        self.assertNotIn(b"Status</a>", sites_page.data)
+        self.assertIn(b"No sites yet", sites_page.data)
+
+    def test_per_app_status_json_reports_live_stats(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        response = self.client.get(f"/sites/{site_id}/status.json")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(data["stats"]["cpu_percent"], 1.2)
+
+    def test_apps_stats_json_is_scoped_to_visible_apps(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        response = self.client.get("/apps/stats.json")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data[str(site_id)]["memory_used"], "12MiB")
+
+    def test_admin_apps_dashboard_lists_every_app_with_usage(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        page = self.client.get("/admin/apps")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Status", page.data)
+        self.assertIn(b"alice@example.com", page.data)
+
+        stats = self.client.get("/admin/apps/stats.json")
+        self.assertEqual(stats.status_code, 200)
+        self.assertIn(str(site_id), stats.get_json())
+
+    def test_admin_apps_dashboard_is_admin_only(self):
+        user_id, repository_id = self.owner()
+        response = self.client.get("/admin/apps")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(user_id)
+
+    def test_docs_page_renders_app_hosting_section(self):
+        self.owner()
+        response = self.client.get("/docs")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"webmanager.json", response.data)
+        self.assertIn(b"App hosting", response.data)
 
 
 if __name__ == "__main__":
