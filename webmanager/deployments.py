@@ -844,6 +844,24 @@ def refresh_repository(repository_id):
     return action_redirect("deployments.dashboard", view="sources")
 
 
+@bp.post("/repositories/<int:repository_id>/updates/force")
+@login_required
+def force_repository_update(repository_id):
+    """Install the latest commit right away, skipping the safety checks that
+    left this source showing "Update check failed" - an explicit override,
+    not a normal check."""
+    validate_csrf()
+    owned_repository(repository_id, manage=True)
+    result = current_app.extensions["repository_refresh_manager"].force_update(repository_id)
+    if result.status in {"applied", "current"}:
+        flash(result.message, "success")
+    elif result.status == "busy":
+        flash(result.message, "warning")
+    else:
+        flash(f"Could not force the update through: {result.message}", "error")
+    return action_redirect("deployments.dashboard", view="sources")
+
+
 @bp.post("/repositories/<int:repository_id>/schedule")
 @login_required
 def schedule_repository_refresh(repository_id):

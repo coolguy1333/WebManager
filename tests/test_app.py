@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import socket
 import sqlite3
 import tempfile
@@ -2481,6 +2482,77 @@ class WebManagerTestCase(unittest.TestCase):
             self.assertEqual(repository["current_commit"], "b" * 40)
             self.assertIsNone(repository["pending_commit"])
             self.assertIsNotNone(repository["last_refreshed_at"])
+
+    def test_force_update_overrides_a_failed_safety_check(self):
+        user_id = self.add_user("alice")
+        repository_root = Path(self.temp_directory.name) / "force-update-repo"
+        repository_root.mkdir()
+        (repository_root / "index.html").write_text("old", encoding="utf-8")
+        repository_id = self.add_repository(user_id, repository_root)
+        self.add_site(user_id, repository_id, repository_root)
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE repositories SET local_path = ?, current_commit = ? WHERE id = ?",
+                (str(repository_root), "a" * 40, repository_id),
+            )
+            database.commit()
+
+        def clone_missing_index(_url, target, _branch, validate_staging, **_kwargs):
+            # The new commit doesn't have index.html; a real safety check
+            # would reject it, and would clean up its own staging directory
+            # (like the real clone_repository does) before raising.
+            target.mkdir(parents=True)
+            if validate_staging is not None:
+                try:
+                    validate_staging(target)
+                except GitError:
+                    shutil.rmtree(target)
+                    raise
+
+        manager = self.app.extensions["repository_refresh_manager"]
+        self.login_user(user_id)
+
+        with (
+            patch("webmanager.repository_refresh.clone_repository", side_effect=clone_missing_index),
+            patch("webmanager.repository_refresh.repository_commit", return_value="b" * 40),
+        ):
+            result = manager.refresh(repository_id)
+        self.assertEqual(result.status, "error")
+        self.assertIn("would remove", result.message)
+        self.assertEqual(
+            (repository_root / "index.html").read_text(encoding="utf-8"), "old"
+        )
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?", (repository_id,)
+            ).fetchone()
+            self.assertEqual(repository["update_state"], "failed")
+
+        sources_page = self.client.get("/?view=sources")
+        self.assertIn(b"Update check failed", sources_page.data)
+        self.assertIn(b"Force update anyway", sources_page.data)
+
+        with (
+            patch("webmanager.repository_refresh.clone_repository", side_effect=clone_missing_index),
+            patch("webmanager.repository_refresh.repository_commit", return_value="b" * 40),
+        ):
+            response = self.client.post(
+                f"/repositories/{repository_id}/updates/force",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"applied", response.data.lower())
+        self.assertFalse((repository_root / "index.html").exists())
+        with self.app.app_context():
+            repository = get_db().execute(
+                "SELECT * FROM repositories WHERE id = ?", (repository_id,)
+            ).fetchone()
+            self.assertEqual(repository["current_commit"], "b" * 40)
+            self.assertEqual(repository["update_state"], "idle")
+            self.assertIsNone(repository["error"])
+            self.assertIsNone(repository["pending_commit"])
 
     def test_automatic_update_mode_applies_validated_update(self):
         user_id = self.add_user("alice")

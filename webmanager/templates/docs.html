@@ -149,6 +149,7 @@
       <li><strong>Approved by you</strong> — checked on the same schedule, but held as "Update ready" until you approve or discard it.</li>
     </ul>
     <p>A pending or failed update shows on the source, and on every site/app it affects, until resolved.</p>
+    <p>A failed check normally means the new commit would break something (a missing folder, index page, or app manifest) and is refused automatically. If you're sure that's fine, <strong>Force update anyway</strong> on the source skips that safety check and installs the commit immediately — the affected site(s) may go missing or fail their health check until you push a fix.</p>
   </div>
 </section>
 
@@ -186,7 +187,7 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
       <tbody>
         <tr><td>Site shows <strong>Needs attention</strong></td><td>Read the reason on the site's page — usually a missing index file, a missing folder, or a failed source update check.</td></tr>
         <tr><td>Visitors see "Site temporarily unavailable"</td><td>The site/app is stopped, or (for apps) mid-restart. It clears itself once the new container passes its health check.</td></tr>
-        <tr><td>A source update won't apply</td><td>Check <strong>Update check failed</strong> on the source for the error; "Check now" retries immediately.</td></tr>
+        <tr><td>A source update won't apply</td><td>Check <strong>Update check failed</strong> on the source for the error; "Check now" retries immediately. If the new commit is intentionally missing something WebManager checks for, use <strong>Force update anyway</strong> to install it regardless.</td></tr>
         {% if apps_enabled %}
         <tr><td>System says <strong>App hosting: Off</strong></td><td><code>WEBMANAGER_APPS_ENABLED=1</code> must be set and WebManager restarted; Docker must be running and reachable. See <code>docs/APP_HOSTING.md</code> in the repository, or ask an administrator to re-run <code>enable-apps.sh</code>.</td></tr>
         <tr><td>"The container runtime isn't reachable"</td><td>The WebManager service account can't talk to Docker yet — an administrator needs to re-run <code>enable-apps.sh</code> on the server.</td></tr>

@@ -82,7 +82,12 @@ class RepositoryRefreshManager:
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=2)
 
-    def refresh(self, repository_id: int, wait: bool = True) -> RefreshResult:
+    def refresh(self, repository_id: int, wait: bool = True, force: bool = False) -> RefreshResult:
+        """Check for updates. ``force=True`` skips the safety checks in
+        ``_validate_sites`` (a missing deployed folder/index page/app
+        manifest) and installs the new commit immediately regardless of the
+        source's approval setting - an explicit override for a source stuck
+        in "Update check failed" that the owner wants to install anyway."""
         with self.repository_lock(repository_id, wait=wait) as acquired:
             if not acquired:
                 return RefreshResult("busy", "A refresh is already running.")
@@ -135,9 +140,10 @@ class RepositoryRefreshManager:
                         repository["url"],
                         pending,
                         repository["branch"],
-                        validate_staging=lambda staging: self._validate_sites(
-                            sites,
-                            staging,
+                        validate_staging=(
+                            None
+                            if force
+                            else lambda staging: self._validate_sites(sites, staging)
                         ),
                         max_bytes=self.app.config.get("MAX_REPOSITORY_BYTES") or None,
                     )
@@ -230,12 +236,18 @@ class RepositoryRefreshManager:
                     ),
                 )
                 database.commit()
-                if repository["update_mode"] == "auto":
-                    return self._apply_pending_locked(database, repository_id)
+                if force or repository["update_mode"] == "auto":
+                    return self._apply_pending_locked(database, repository_id, force=force)
                 return RefreshResult(
                     "available",
                     "A validated update is waiting for owner approval.",
                 )
+
+    def force_update(self, repository_id: int, wait: bool = True) -> RefreshResult:
+        """Re-check and install the latest commit right away, skipping the
+        safety checks (deployed folder/index page/app manifest) that left
+        this source stuck showing "Update check failed"."""
+        return self.refresh(repository_id, wait=wait, force=True)
 
     def apply_pending(self, repository_id: int, wait: bool = True) -> RefreshResult:
         with self.repository_lock(repository_id, wait=wait) as acquired:
@@ -339,7 +351,7 @@ class RepositoryRefreshManager:
         )
         database.commit()
 
-    def _apply_pending_locked(self, database, repository_id):
+    def _apply_pending_locked(self, database, repository_id, force=False):
         repository = database.execute(
             "SELECT * FROM repositories WHERE id = ?",
             (repository_id,),
@@ -366,7 +378,8 @@ class RepositoryRefreshManager:
         try:
             if pending.resolve() != expected_pending.resolve():
                 raise GitError("The staged repository path is invalid.")
-            self._validate_sites(affected_sites, pending)
+            if not force:
+                self._validate_sites(affected_sites, pending)
             commit = repository_commit(pending)
             if commit != repository["pending_commit"]:
                 raise GitError("The staged repository revision changed unexpectedly.")

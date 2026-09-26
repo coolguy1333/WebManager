@@ -241,7 +241,18 @@
       {% if repository.status == "error" and repository.error %}
       <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Repository could not be cloned</strong>{{ repository.error }}</div></div>
       {% elif update.state == "failed" %}
-      <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>Update check failed</strong>{{ update.error or "No error details were recorded." }}</div></div>
+      <div class="alert error">
+        {{ ui.icon('alert') }}
+        <div class="alert-body"><strong>Update check failed</strong>{{ update.error or "No error details were recorded." }}</div>
+        {% if can_edit %}
+        <div class="actions">
+          <form method="post" action="{{ url_for('deployments.force_repository_update', repository_id=repository.id) }}" data-loading data-confirm="Install the latest commit anyway? This skips the safety check above, so the affected site(s) may go missing or fail their health check until you fix the branch.">
+            {{ ui.csrf() }}
+            <button class="btn btn-sm btn-danger-outline" type="submit" data-loading-text="Forcing…">Force update anyway</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
       {% elif update.state == "checking" %}
       <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>Checking for updates</strong>Validating the latest repository revision.</div></div>
       {% elif update.state == "updating" %}
