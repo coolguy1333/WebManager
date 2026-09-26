@@ -284,6 +284,7 @@ ensure_env WEBMANAGER_MAX_REPOSITORY_MB "1024"
 ensure_env WEBMANAGER_APPS_ENABLED "0"
 ensure_env WEBMANAGER_PEERS ""
 ensure_env WEBMANAGER_PEER_TOKEN ""
+ensure_env WEBMANAGER_REPLICA_OF ""
 
 if [[ -n ${WEBMANAGER_INITIAL_SITE_BASE_DOMAIN:-} ]] \
     && ! grep -Eq '^WEBMANAGER_SITE_BASE_DOMAIN=.+$' "$CONFIG_DIR/webmanager.env"; then

@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app, g, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 DB_POLL_SECONDS = 15
 TIMEOUT_SECONDS = 30
@@ -240,12 +240,12 @@ def db_snapshot():
     ):
         return jsonify({"error": "Invalid or missing peer token"}), 401
 
-    from .db import get_db
+    from .db import close_db, get_db
 
     # Closing the request-scoped connection first avoids a needless
     # "database is locked" edge case if SQLite's own file lock is held
     # elsewhere on the same process at the moment of backup.
-    g.pop("db", None)
+    close_db()
     source = sqlite3.connect(current_app.config["DATABASE"])
     descriptor, temporary_name = tempfile.mkstemp(prefix="wm-db-snapshot-", suffix=".sqlite3")
     os.close(descriptor)

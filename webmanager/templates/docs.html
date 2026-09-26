@@ -155,9 +155,9 @@
 
 <section class="card mb-16" id="mesh">
   <div class="card-body prose">
-    <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}</h2>
-    <p>Run WebManager on more than one server and have them keep track of each other — the same leaderless "peer federation" pattern used by <a href="https://github.com/coolguy1333/Uptime-Monitor" target="_blank" rel="noopener noreferrer">Uptime-Monitor</a>'s multi-server mode.</p>
-    <p><strong>There is no leader, no shared database, and no distributed deployment.</strong> Each server keeps hosting and updating its own sites and apps exactly as it would alone. The mesh only adds visibility: every server independently polls its siblings every 20 seconds and shows the result — who's up, and how busy — in a <strong>Servers</strong> panel on the System page. One server going down never takes the others' visibility into the group down with it.</p>
+    <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}{% if replica_configured %} <span class="badge badge-accent">This server is a replica</span>{% endif %}</h2>
+    <p>Run WebManager on more than one server and have them keep track of each other — the same leaderless "peer federation" pattern used by <a href="https://github.com/coolguy1333/Uptime-Monitor" target="_blank" rel="noopener noreferrer">Uptime-Monitor</a>'s multi-server mode. By default this is visibility only: no leader, no shared database, no distributed deployment. Setting <code>WEBMANAGER_REPLICA_OF</code> turns it into real replication — see <a href="#replication">below</a>.</p>
+    <p>Each server keeps hosting and updating its own sites and apps exactly as it would alone. The base mesh only adds visibility: every server independently polls its siblings every 20 seconds and shows the result — who's up, and how busy — in a <strong>Servers</strong> panel on the System page. One server going down never takes the others' visibility into the group down with it.</p>
     <h3>Setting it up</h3>
     <p>On <strong>each</strong> server, in <code>/etc/webmanager/webmanager.env</code> (use each server's dashboard address — the one you sign in to, not a hosted site's address):</p>
     <pre><code>WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com
@@ -171,11 +171,31 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
     <table class="table">
       <thead><tr><th>Shared across the mesh</th><th>Stays local to each server</th></tr></thead>
       <tbody>
-        <tr><td>Liveness (online/unreachable) and version</td><td>Sites, apps, Git sources, and their data</td></tr>
-        <tr><td>Site/app counts and how many are running</td><td>Users, teams, and permissions</td></tr>
+        <tr><td>Liveness (online/unreachable) and version</td><td>Sites, apps, Git sources, and their data<sup>*</sup></td></tr>
+        <tr><td>Site/app counts and how many are running</td><td>Users, teams, and permissions<sup>*</sup></td></tr>
         <tr><td>CPU, memory, and disk usage percentages</td><td>Domains, TLS, and Nginx configuration</td></tr>
       </tbody>
     </table>
+    <p class="hint"><sup>*</sup> Unless replication is turned on for this server — see below.</p>
+
+    <h3 id="replication">Replication: turning a peer into a real replica</h3>
+    <p>The mesh above only shares status. Setting <code>WEBMANAGER_REPLICA_OF</code> on a server makes it an actual <strong>replica</strong> that mirrors a primary, not just aware of it:</p>
+    <pre><code>WEBMANAGER_REPLICA_OF=https://primary.example.com</code></pre>
+    <p>Leave it blank for a primary (the default — a standalone server is its own primary). On a replica:</p>
+    <ul>
+      <li><strong>Config</strong> (users, teams, permissions, domains, site/app definitions) mirrors the primary's database every 15 seconds, in full each time.</li>
+      <li><strong>Site/app data</strong> (Git checkouts, each app's own data volume) mirrors every 60 seconds, also in full each time — there's no incremental sync, so this is heavier the more data there is.</li>
+      <li>It fetches the primary's <code>SECRET_KEY</code> once, automatically, at startup (over the same token-authenticated channel) so a session works on every server in the group.</li>
+      <li><strong>It never writes its own database.</strong> A write it receives — from someone using its own address — is silently forwarded to the primary and the response relayed back, so every function works the same regardless of which server you're on. Reads are always served locally.</li>
+      <li>Once data is synced, it starts serving its <strong>static sites</strong> itself (safe: stateless files). <strong>Apps stay stopped.</strong> Running the same app against a volume that a sync round is about to wipe and restore would corrupt it.</li>
+    </ul>
+    <p>The System page's <strong>Replication</strong> panel shows the role, last sync times for both config and data, and manual <strong>Sync config now</strong> / <strong>Sync data now</strong> buttons.</p>
+    <h4>Failing over</h4>
+    <p>If the primary goes down, open a replica's System page and select <strong>Promote to primary</strong>. It immediately starts serving its own sites and apps from whatever it last synced, and starts its own scheduled Git update checks. This only changes the running process, in memory:</p>
+    <ul>
+      <li>To make it permanent, remove <code>WEBMANAGER_REPLICA_OF</code> from that server's <code>webmanager.env</code> and restart WebManager — otherwise a restart reverts it to a replica.</li>
+      <li>WebManager has no way to reach the old primary to tell it it's been superseded. If it comes back online on its own, point it at the new primary (set its own <code>WEBMANAGER_REPLICA_OF</code>) or take it offline — otherwise two servers may both accept writes at once.</li>
+    </ul>
   </div>
 </section>
 
@@ -200,6 +220,10 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
         <tr><td>Can't see a site/app someone else owns</td><td>Ask an administrator to grant you view or manage access under People &amp; access, or add you to a pool.</td></tr>
         <tr><td>A server shows "Unreachable" in the Servers panel</td><td>Check that server's <code>WEBMANAGER_PEERS</code>/<code>WEBMANAGER_PEER_TOKEN</code>, that it's reachable over HTTPS from the others, and that its own firewall allows the connection.</td></tr>
         <tr><td>"WEBMANAGER_PEER_TOKEN is not set" warning</td><td>Set the same <code>WEBMANAGER_PEER_TOKEN</code> value in <code>/etc/webmanager/webmanager.env</code> on every server and restart each one.</td></tr>
+        <tr><td>A replica won't start (fails at boot)</td><td>Its primary must be reachable the <em>first</em> time a replica starts, to fetch the shared secret key. Check <code>WEBMANAGER_REPLICA_OF</code> and <code>WEBMANAGER_PEER_TOKEN</code>, and that the primary's address is reachable from this server.</td></tr>
+        <tr><td>Replication panel shows "Config sync failed" / "Data sync failed"</td><td>Read the error shown — usually the primary is unreachable, or its token doesn't match. Use <strong>Sync config/data now</strong> to retry immediately after fixing it.</td></tr>
+        <tr><td>A replica's sites aren't updating</td><td>Check "Site/app data last synced" on the Replication panel; a large repository or app dataset can take a while each round. Use <strong>Sync data now</strong> to force an immediate retry.</td></tr>
+        <tr><td>Writes fail on a replica with a 502</td><td>Its primary is unreachable. Either restore the primary, or promote this replica if the primary is actually down for good.</td></tr>
       </tbody>
     </table>
     {% if not can_host_apps and apps_enabled %}

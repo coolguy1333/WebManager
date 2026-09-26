@@ -1347,6 +1347,7 @@ def docs():
         apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
         can_host_apps=can_host_apps(),
         mesh_configured=bool(current_app.extensions["mesh_hub"].urls),
+        replica_configured=current_app.extensions["replication_manager"].is_replica,
     )
 
 
