@@ -1592,10 +1592,14 @@ automatically if any later installation step fails.
 Replacement virtual environments are installed with traverse permissions for
 the unprivileged `webmanager` service account while remaining owned by root.
 
-On an existing installation, manual setup preserves an intentionally disabled
-updater timer/path and clears stale update request files after the application
-passes its health check. New installations still enable update checks by
-default when they are configured. A successful manual setup also replaces any
+Manual setup enables and starts the updater timer/path whenever updates are
+configured (`WEBMANAGER_UPDATE_ENABLED=1` in `/etc/webmanager/updater.env`),
+including on older installations where they were never enabled, and clears
+stale update request files after the application passes its health check. The
+System page also checks GitHub itself (`git ls-remote`, no privileges needed),
+so "Check now" reports the real result even when the updater is off; installing
+still needs the updater (`sudo systemctl enable --now webmanager-update.path
+webmanager-update.timer`). A successful manual setup also replaces any
 stale testing or installing status with the exact commit it installed.
 
 An updater-driven self-update never enables, disables, or starts its own timer

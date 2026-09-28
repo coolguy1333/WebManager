@@ -37,9 +37,12 @@ from . import quotas, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
+    live_checks_enabled,
     read_update_status,
     request_program_update,
     request_program_update_check,
+    run_live_check,
+    updater_active,
 )
 
 
@@ -284,6 +287,7 @@ def dashboard():
         ),
         mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
         replication=(_replication_status() if active_section == "updates" else None),
+        updater_is_active=(updater_active() if active_section == "updates" else None),
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -848,6 +852,15 @@ def install_program_update():
         flash("That update is no longer available. Wait for the next check.", "error")
         return redirect(url_for("admin.dashboard", section="updates"))
 
+    if updater_active() is False:
+        flash(
+            "This update can't be installed from here because the updater service is "
+            "switched off on this server. On the server, run: sudo systemctl enable --now "
+            "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then approve again.",
+            "error",
+        )
+        return redirect(url_for("admin.dashboard", section="updates"))
+
     try:
         request_program_update(commit)
     except (OSError, ValueError) as exc:
@@ -861,17 +874,21 @@ def install_program_update():
 
 
 AUTO_CHECK_AFTER = timedelta(hours=1)
+AUTO_RETRY_AFTER = timedelta(minutes=5)
 
 
 def _auto_request_program_check(status):
-    """Ask the updater for a fresh check when the last one is stale.
+    """Get a fresh update check going when the last one is stale.
 
     Opening the System page should never show hours-old update information.
-    Returns True when a check was requested.
+    WebManager asks GitHub itself in the background (so it works even when
+    the root updater service is off) and also leaves a request for the
+    updater when that is running. Returns True when a check is under way.
     """
     if status is None or status.get("state") in {"testing", "backing_up", "installing"}:
         return False
     checked_at = status.get("checked_at")
+    limit = AUTO_RETRY_AFTER if status.get("state") == "error" else AUTO_CHECK_AFTER
     stale = True
     if checked_at:
         try:
@@ -880,19 +897,25 @@ def _auto_request_program_check(status):
             )
             if moment.tzinfo is None:
                 moment = moment.replace(tzinfo=timezone.utc)
-            stale = datetime.now(timezone.utc) - moment > AUTO_CHECK_AFTER
+            stale = datetime.now(timezone.utc) - moment > limit
         except ValueError:
             stale = True
     if not stale:
         return False
-    request_file = Path(current_app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"])
-    if request_file.exists():
+    started = False
+    if live_checks_enabled():
+        run_live_check(current_app._get_current_object())
+        started = True
+    if updater_active() is not False:
+        request_file = Path(current_app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"])
+        if request_file.exists():
+            return True
+        try:
+            request_program_update_check()
+        except OSError:
+            return started
         return True
-    try:
-        request_program_update_check()
-    except OSError:
-        return False
-    return True
+    return started
 
 
 def _format_epoch(value):
@@ -1133,15 +1156,26 @@ def check_program_update():
     if not is_admin():
         abort(403)
 
-    try:
-        request_program_update_check()
-    except OSError as exc:
-        flash(f"Could not request an update check: {exc}", "error")
+    requested = False
+    error = None
+    if updater_active() is not False:
+        try:
+            request_program_update_check()
+            requested = True
+        except OSError as exc:
+            error = str(exc)
+    if live_checks_enabled():
+        result = run_live_check(current_app._get_current_object(), wait=True, timeout=15)
+        if result["state"] == "error":
+            flash(f"Update check failed: {result['message']}", "error")
+        elif result["state"] == "available":
+            flash("Update check requested. A new version is available: review and approve it below.", "success")
+        else:
+            flash("Update check requested. WebManager is up to date.", "success")
+    elif requested:
+        flash("Update check requested. Refresh this page in a few seconds.", "success")
     else:
-        flash(
-            "Update check requested. Refresh this page in a few seconds.",
-            "success",
-        )
+        flash(f"Could not request an update check: {error or 'the updater service is switched off.'}", "error")
     return redirect(url_for("admin.dashboard", section="updates"))
 
 

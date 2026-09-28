@@ -100,6 +100,8 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/check",
         ),
+        UPDATE_REPOSITORY=os.environ.get("WEBMANAGER_UPDATE_REPOSITORY", "").strip(),
+        UPDATE_BRANCH=os.environ.get("WEBMANAGER_UPDATE_BRANCH", "").strip(),
         MESH_PEERS=os.environ.get("WEBMANAGER_PEERS", "").strip(),
         MESH_TOKEN=os.environ.get("WEBMANAGER_PEER_TOKEN", "").strip(),
         REPLICA_OF=os.environ.get("WEBMANAGER_REPLICA_OF", "").strip().rstrip("/"),

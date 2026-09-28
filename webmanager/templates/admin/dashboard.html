@@ -365,7 +365,10 @@
     {% if update_status.update_available and update_status.state == 'available' %}
     <div class="alert warning">{{ ui.icon('download') }}<div class="alert-body"><strong>A new version of WebManager is available</strong>Commit <code>{{ update_status.available_commit[:12] }}</code>. It is tested and backed up before installing, and rolled back automatically if anything fails.</div></div>
     {% elif update_auto_requested %}
-    <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check was more than an hour ago{% else %}No check has run yet{% endif %}, so one has been requested. Refresh this page in a few seconds.</div></div>
+    <div class="alert info" data-auto-refresh="3">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check is out of date{% else %}No check has run yet{% endif %}, so WebManager is asking GitHub now. This page refreshes by itself.</div></div>
+    {% endif %}
+    {% if updater_is_active is sameas false %}
+    <div class="alert warning">{{ ui.icon('alert') }}<div class="alert-body"><strong>The updater service is switched off on this server.</strong>WebManager can still check GitHub, but it can't install an update from here. On the server run <code>sudo systemctl enable --now webmanager-update.path webmanager-update.timer</code> (or re-run <code>setup.sh</code>).</div></div>
     {% endif %}
     <p>{{ update_status.message }}</p>
     <dl class="facts">
