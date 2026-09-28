@@ -283,6 +283,7 @@ def dashboard():
             else None
         ),
         mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
+        replication=(_replication_status() if active_section == "updates" else None),
         google_access_unrestricted=not (
             current_app.config["GOOGLE_ALLOWED_DOMAINS"]
             or current_app.config["GOOGLE_ALLOWED_EMAILS"]
@@ -892,6 +893,95 @@ def _auto_request_program_check(status):
     except OSError:
         return False
     return True
+
+
+def _format_epoch(value):
+    if not value:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _replication_status():
+    manager = current_app.extensions["replication_manager"]
+    data_manager = current_app.extensions["data_replication_manager"]
+    return {
+        "is_replica": manager.is_replica,
+        "primary_url": manager.primary_url,
+        "last_sync_at": _format_epoch(manager.last_sync_at),
+        "last_error": manager.last_error,
+        "token_configured": bool(manager.token),
+        "data_last_sync_at": _format_epoch(data_manager.last_sync_at),
+        "data_last_error": data_manager.last_error,
+    }
+
+
+@bp.post("/replication/sync")
+@login_required
+def sync_replication():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["replication_manager"]
+    if not manager.is_replica:
+        flash("This server is not a replica; there is nothing to sync.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+    if manager.sync_once():
+        flash("Synced the latest config from the primary.", "success")
+    else:
+        flash(f"Could not sync from the primary: {manager.last_error}", "error")
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
+@bp.post("/replication/promote")
+@login_required
+def promote_replica():
+    """Fail over: this replica stops mirroring and starts serving sites and
+    apps itself, using its last-synced data. In-memory only - see the
+    flashed message for what makes it durable across a restart."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["replication_manager"]
+    data_manager = current_app.extensions["data_replication_manager"]
+    if not manager.is_replica:
+        flash("This server is already a primary.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+
+    manager.promote()
+    data_manager.promote()
+    current_app.config["REPLICA_OF"] = ""
+    current_app.extensions["runtime_manager"].restore_sites(include_apps=True)
+    if current_app.config["AUTO_REFRESH_ENABLED"]:
+        current_app.extensions["repository_refresh_manager"].start()
+
+    flash(
+        "This server is now the primary and is serving its sites and apps. "
+        "To make this permanent, remove WEBMANAGER_REPLICA_OF from "
+        "/etc/webmanager/webmanager.env and restart WebManager - otherwise "
+        "it reverts to being a replica on the next restart. If the old "
+        "primary comes back online, point it at this server (set its own "
+        "WEBMANAGER_REPLICA_OF) or take it offline, so only one server "
+        "accepts writes.",
+        "warning",
+    )
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
+@bp.post("/replication/sync-data")
+@login_required
+def sync_data_replication():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    manager = current_app.extensions["data_replication_manager"]
+    if not manager.is_replica:
+        flash("This server is not a replica; there is nothing to sync.", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+    if manager.sync_once():
+        flash("Synced the latest site/app data from the primary.", "success")
+    else:
+        flash(f"Could not sync data from the primary: {manager.last_error}", "error")
+    return redirect(url_for("admin.dashboard", section="updates"))
 
 
 def _source_update_summary(database):

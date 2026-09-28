@@ -543,6 +543,8 @@ sudo -u webmanager env \
 
 At the next matching Google sign-in, the old user record is upgraded in place. Its repositories, deployments, ports, and configurations remain attached to the same user ID.
 
+If this server is part of a [mesh](#multi-server-mesh-optional), run this command on the **primary** only — a replica's database is overwritten by the next sync, so a row created directly on a replica would simply disappear.
+
 ## Deploy a website
 
 ### 1. Prepare the repository
@@ -747,6 +749,41 @@ seconds at `/mesh/status`, authenticated with `WEBMANAGER_PEER_TOKEN` as a
 bearer token. That endpoint exposes only aggregate counts (sites/apps
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
+
+### Replication: turning peers into real replicas
+
+The mesh above is visibility only. Setting `WEBMANAGER_REPLICA_OF` on a
+server turns it into an actual **replica** of the named primary — not just
+aware of it, but mirroring it:
+
+```bash
+WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; blank = this server IS a primary
+```
+
+- It mirrors the primary's **database** (users, teams, permissions, domains,
+  site/app definitions) every 15 seconds, and its **site/app data** (Git
+  checkouts, each app's own data volume) every 60 seconds — both a full
+  re-sync each round, not incremental.
+- It fetches the primary's `SECRET_KEY` once at startup, so a session
+  works on every server in the group.
+- It never writes its own database: any write it receives (from someone
+  using its own address) is transparently forwarded to the primary and the
+  response relayed back, so every function works identically no matter
+  which server you're using.
+- Once its data is synced it starts serving its **static** sites itself
+  (safe — stateless files). **Apps stay stopped** on a replica: running
+  the same app against a volume that gets wiped and restored every sync
+  round would corrupt it.
+- If the primary goes down, **Promote to primary** on a replica's System
+  page fails it over immediately (serving its own sites and apps from its
+  last-synced data) — but only in memory. Making that permanent still
+  needs `WEBMANAGER_REPLICA_OF` cleared on that server and a restart, and
+  if the old primary comes back on its own it has no way to know it's been
+  superseded, so point it at the new primary (or take it offline) to avoid
+  two servers both accepting writes.
+
+See the in-app **Docs** page for the full setup, security model, and
+troubleshooting.
 
 ## Private Git repositories
 

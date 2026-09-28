@@ -487,6 +487,25 @@ class ContainerRuntime:
             old.unlink(missing_ok=True)
         return target
 
+    def restore_data(self, volume_name: str, tar_path: Path):
+        """Wipe and restore /data in a named volume from a tar file (as
+        produced by backup_data()/docker cp), using a throwaway container -
+        unlike backup_data(), this doesn't need the app's own container to
+        exist yet, which is what makes replicating a stopped app's data
+        possible."""
+        tar_path = tar_path.resolve()
+        self._run(
+            [
+                "run", "--rm",
+                "--volume", f"{volume_name}:{DATA_MOUNT}",
+                "--volume", f"{tar_path.parent}:/backup:ro",
+                "busybox",
+                "sh", "-c",
+                f"find {DATA_MOUNT} -mindepth 1 -delete; tar -xf /backup/{tar_path.name} -C /",
+            ],
+            timeout=300,
+        )
+
 
 def _parse_percent(text: str) -> float | None:
     try:

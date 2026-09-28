@@ -339,13 +339,18 @@ class RuntimeManager:
         configured = self.app.config["NGINX_BINARY"]
         return shutil.which(configured) or (configured if Path(configured).is_file() else None)
 
-    def restore_sites(self):
+    def restore_sites(self, include_apps: bool = True):
         with self.app.app_context():
             sites = get_db().execute(
                 "SELECT * FROM sites WHERE status IN ('running', 'starting')"
             ).fetchall()
             for site in sites:
                 if site["kind"] == "app":
+                    if not include_apps:
+                        # A data replica: apps stay stopped until it's
+                        # promoted, so nothing writes to data the next
+                        # sync round is about to overwrite.
+                        continue
                     # Usually instant (container already running with the same
                     # config), but may need a build, so don't block startup.
                     self.start_app_async(site["id"])

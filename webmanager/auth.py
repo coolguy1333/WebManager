@@ -252,7 +252,23 @@ def google_callback():
         if not _identity_is_allowed(claims):
             raise ValueError("This Google account is not allowed to use WebManager.")
 
-        user_id = _find_or_create_user(claims)
+        replication_manager = current_app.extensions["replication_manager"]
+        if replication_manager.is_replica:
+            # This server must never write its own database (the next sync
+            # would overwrite a locally-created user); ask the primary to
+            # do it instead.
+            from .replication import ReplicationError, find_or_create_user_via_primary
+
+            try:
+                user_id = find_or_create_user_via_primary(replication_manager, claims)
+            except ReplicationError as exc:
+                current_app.logger.warning("Sign-in could not reach the primary: %s", exc)
+                session.pop("google_oidc_nonce", None)
+                session.pop("post_login_next", None)
+                flash("Sign-in isn't available right now (the primary server could not be reached). Try again shortly.", "error")
+                return redirect(url_for("auth.login"))
+        else:
+            user_id = _find_or_create_user(claims)
     except OAuthError as exc:
         current_app.logger.warning("Google OAuth exchange failed: %s", exc)
         session.pop("google_oidc_nonce", None)
