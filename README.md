@@ -741,12 +741,12 @@ other servers' *dashboard* addresses, not a hosted site's address), then
 
 ```bash
 WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com  # the *other* servers
-WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere, 16+ chars (openssl rand -hex 24)
 ```
 
 Every server independently polls every URL in `WEBMANAGER_PEERS` every 20
 seconds at `/mesh/status`, authenticated with `WEBMANAGER_PEER_TOKEN` as a
-bearer token. That endpoint exposes only aggregate counts (sites/apps
+bearer token (tokens under 16 characters never unlock the replication endpoints, and peer URLs should be `https://`). That endpoint exposes only aggregate counts (sites/apps
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
 

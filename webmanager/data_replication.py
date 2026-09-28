@@ -13,6 +13,7 @@ about to overwrite.
 
 import atexit
 import os
+import posixpath
 import shutil
 import tarfile
 import tempfile
@@ -24,6 +25,7 @@ from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request
 
+from . import peer_http
 from .apps import AppError
 
 DATA_POLL_SECONDS = 60
@@ -34,11 +36,22 @@ APP_DATA_PREFIX = "app-data"
 bp = Blueprint("data_replication", __name__)
 
 
+def _link_stays_inside(relative: str, target: str) -> bool:
+    """A symlink is only kept when it is relative and, resolved from the
+    directory it lives in, stays inside the extracted tree."""
+    if not target or target.startswith("/"):
+        return False
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(relative), target))
+    return resolved != ".." and not resolved.startswith("../") and not posixpath.isabs(resolved)
+
+
 def _safe_members(members, strip_prefix: str):
-    """Members under strip_prefix/, with that prefix removed and the name
-    checked so extraction can never escape the target directory (a
-    defensive check, not primarily a trust boundary - this archive is only
-    ever produced by an authenticated peer)."""
+    """Members under strip_prefix/, with that prefix removed and checked so
+    extraction can never write outside the target directory: no absolute or
+    ".." names, only files/directories/contained symlinks (no hard links or
+    device nodes), and no setuid/setgid/sticky bits. The archive comes from
+    an authenticated peer, but a compromised or impersonated primary must
+    not be able to plant files elsewhere on this server."""
     safe = []
     for member in members:
         name = member.name
@@ -49,7 +62,15 @@ def _safe_members(members, strip_prefix: str):
         relative = name[len(strip_prefix) + 1 :]
         if not relative or relative.startswith("/") or ".." in Path(relative).parts:
             continue
+        if member.issym():
+            if not _link_stays_inside(relative, member.linkname):
+                continue
+        elif not (member.isfile() or member.isdir()):
+            continue
         member.name = relative
+        member.mode &= 0o755
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
         safe.append(member)
     return safe
 
@@ -100,7 +121,7 @@ class DataReplicationManager:
         admin action ("sync now") can trigger it on demand too."""
         try:
             self._pull_and_apply()
-        except (AppError, OSError, RuntimeError) as exc:
+        except (AppError, OSError, RuntimeError, tarfile.TarError) as exc:
             self.last_error = str(exc)
             self.app.logger.warning("Data replication: could not sync from primary: %s", exc)
             return False
@@ -121,7 +142,7 @@ class DataReplicationManager:
         temporary_path = Path(temporary_name)
         try:
             try:
-                with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
+                with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
                     if response.status != 200:
                         raise RuntimeError(f"Primary returned HTTP {response.status}.")
                     with open(temporary_path, "wb") as handle:
@@ -147,10 +168,26 @@ class DataReplicationManager:
                 if member.name.startswith(APP_DATA_PREFIX + "/") and member.name.endswith(".tar")
             ]
 
-            shutil.rmtree(repository_root, ignore_errors=True)
-            repository_root.mkdir(parents=True, exist_ok=True)
-            if repo_members:
-                archive.extractall(path=repository_root, members=repo_members)
+            # Build the new tree next to the live one and swap it in, so a
+            # failed extraction never leaves the sites with no files.
+            staging = repository_root.with_name(repository_root.name + ".incoming")
+            previous = repository_root.with_name(repository_root.name + ".previous")
+            shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(previous, ignore_errors=True)
+            staging.mkdir(parents=True)
+            try:
+                if repo_members:
+                    extra = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+                    archive.extractall(path=staging, members=repo_members, **extra)
+                if repository_root.exists():
+                    os.replace(repository_root, previous)
+                os.replace(staging, repository_root)
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                if not repository_root.exists() and previous.exists():
+                    os.replace(previous, repository_root)
+                raise
+            shutil.rmtree(previous, ignore_errors=True)
 
             if app_members and runtime is not None:
                 with tempfile.TemporaryDirectory(prefix="wm-app-restore-") as scratch:

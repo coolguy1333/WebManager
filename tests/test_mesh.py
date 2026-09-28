@@ -49,26 +49,26 @@ class MeshHubUnitTests(unittest.TestCase):
         self.assertTrue(hub.authorize_incoming("Bearer anything", "1.2.3.4"))
 
     def test_authorize_incoming_requires_the_exact_token(self):
-        hub = mesh.MeshHub(None, [], token="s3cret")
+        hub = mesh.MeshHub(None, [], token="s3cret-s3cret-s3cret")
         self.assertFalse(hub.authorize_incoming("", "1.2.3.4"))
         self.assertFalse(hub.authorize_incoming("Bearer wrong", "1.2.3.4"))
-        self.assertTrue(hub.authorize_incoming("Bearer s3cret", "1.2.3.4"))
+        self.assertTrue(hub.authorize_incoming("Bearer s3cret-s3cret-s3cret", "1.2.3.4"))
 
     def test_authorize_incoming_rate_limits_repeated_failures_per_ip(self):
-        hub = mesh.MeshHub(None, [], token="s3cret")
+        hub = mesh.MeshHub(None, [], token="s3cret-s3cret-s3cret")
         for _ in range(11):
             self.assertFalse(hub.authorize_incoming("Bearer wrong", "9.9.9.9"))
         # Locked out even with the right token now, until the window resets.
-        self.assertFalse(hub.authorize_incoming("Bearer s3cret", "9.9.9.9"))
+        self.assertFalse(hub.authorize_incoming("Bearer s3cret-s3cret-s3cret", "9.9.9.9"))
         # A different IP is unaffected.
-        self.assertTrue(hub.authorize_incoming("Bearer s3cret", "1.1.1.1"))
+        self.assertTrue(hub.authorize_incoming("Bearer s3cret-s3cret-s3cret", "1.1.1.1"))
 
     def test_authorize_incoming_sweeps_expired_failures_once_the_table_grows(self):
-        hub = mesh.MeshHub(None, [], token="s3cret")
+        hub = mesh.MeshHub(None, [], token="s3cret-s3cret-s3cret")
         # Fill past the sweep threshold with already-expired entries.
         past = mesh.time.time() - 1
         hub._fails = {f"1.2.3.{i}": {"count": 1, "reset": past} for i in range(mesh.MAX_TRACKED_FAILURES + 1)}
-        self.assertTrue(hub.authorize_incoming("Bearer s3cret", "9.9.9.9"))
+        self.assertTrue(hub.authorize_incoming("Bearer s3cret-s3cret-s3cret", "9.9.9.9"))
         self.assertLess(len(hub._fails), mesh.MAX_TRACKED_FAILURES)
 
     def test_urls_are_deduplicated_and_empty_entries_dropped(self):
@@ -112,10 +112,16 @@ class MeshEndpointTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["sites"], {"total": 1, "running": 1})
 
+    def test_short_tokens_never_unlock_sensitive_endpoints(self):
+        hub = mesh.MeshHub(None, [], token="short")
+        self.assertFalse(hub.authorize_sensitive("Bearer short", "1.2.3.4"))
+        strong = mesh.MeshHub(None, [], token="x" * mesh.MIN_TOKEN_LENGTH)
+        self.assertTrue(strong.authorize_sensitive("Bearer " + "x" * mesh.MIN_TOKEN_LENGTH, "1.2.3.4"))
+
     def test_status_endpoint_requires_configured_token(self):
         hub = self.app.extensions["mesh_hub"]
-        hub.token = "s3cret"
-        hub._token_hash = mesh._hash_token("s3cret")
+        hub.token = "s3cret-s3cret-s3cret"
+        hub._token_hash = mesh._hash_token("s3cret-s3cret-s3cret")
         try:
             self.assertEqual(self.client.get("/mesh/status").status_code, 401)
             self.assertEqual(
@@ -126,7 +132,7 @@ class MeshEndpointTests(unittest.TestCase):
             )
             self.assertEqual(
                 self.client.get(
-                    "/mesh/status", headers={"Authorization": "Bearer s3cret"}
+                    "/mesh/status", headers={"Authorization": "Bearer s3cret-s3cret-s3cret"}
                 ).status_code,
                 200,
             )
@@ -196,7 +202,7 @@ class MeshSelfExclusionTests(unittest.TestCase):
                     "LOG_ROOT": str(root / "logs"),
                     "GOOGLE_REDIRECT_URI": "https://webmanager.example/auth/google/callback",
                     "MESH_PEERS": "https://webmanager.example,https://sibling.example",
-                    "MESH_TOKEN": "shared-secret",
+                    "MESH_TOKEN": "shared-secret-0123456789",
                 }
             )
             self.assertEqual(app.extensions["mesh_hub"].urls, ["https://sibling.example"])
@@ -213,7 +219,7 @@ class MeshSelfExclusionTests(unittest.TestCase):
                     "NGINX_ROOT": str(root / "nginx"),
                     "LOG_ROOT": str(root / "logs"),
                     "MESH_PEERS": "not-a-url,https://good.example",
-                    "MESH_TOKEN": "shared-secret",
+                    "MESH_TOKEN": "shared-secret-0123456789",
                 }
             )
             self.assertEqual(app.extensions["mesh_hub"].urls, ["https://good.example"])

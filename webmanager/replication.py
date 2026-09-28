@@ -36,6 +36,8 @@ from pathlib import Path
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from . import peer_http
+
 DB_POLL_SECONDS = 15
 TIMEOUT_SECONDS = 30
 # Headers that must not be copied verbatim between the original request/
@@ -72,7 +74,7 @@ def fetch_secret_key(primary_url: str, token: str, timeout: float = 10) -> str:
         headers={"Accept": "text/plain", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - configured primary URL
+        with peer_http.open_peer(req, timeout=timeout) as response:  # noqa: S310 - configured primary URL
             key = response.read().decode("utf-8").strip()
     except (urllib.error.URLError, OSError) as exc:
         raise ReplicationError(f"Could not fetch the secret key from {primary_url}: {exc}") from exc
@@ -98,7 +100,7 @@ def find_or_create_user_via_primary(manager, claims: dict) -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
+        with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -193,7 +195,7 @@ class ReplicationManager:
         )
         try:
             try:
-                with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
+                with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
                     if response.status != 200:
                         raise ReplicationError(f"Primary returned HTTP {response.status}.")
                     with os.fdopen(descriptor, "wb") as handle:
@@ -232,7 +234,7 @@ class ReplicationManager:
             method=request.method,
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
+            with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
                 body = response.read()
                 status = response.status
                 response_headers = list(response.headers.items())

@@ -24,6 +24,8 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from . import peer_http
+
 MANIFEST_NAME = "webmanager.json"
 DOCKERFILE_NAME = "Dockerfile"
 CONTAINER_PORT = 8080
@@ -497,6 +499,8 @@ class ContainerRuntime:
         self._run(
             [
                 "run", "--rm",
+                "--network", "none",
+                "--security-opt", "no-new-privileges",
                 "--volume", f"{volume_name}:{DATA_MOUNT}",
                 "--volume", f"{tar_path.parent}:/backup:ro",
                 "busybox",
@@ -528,11 +532,15 @@ def wait_until_healthy(host_port: int, path: str, timeout: float = 45.0, is_runn
         if is_running is not None and not is_running():
             return False, "the container exited while starting"
         try:
-            with urllib.request.urlopen(url, timeout=3) as response:  # noqa: S310 - fixed loopback URL
+            # Redirects are not followed: the app must not be able to point
+            # this probe at another host. Answering with one counts as up.
+            with peer_http.open_peer(urllib.request.Request(url), timeout=3) as response:  # noqa: S310 - fixed loopback URL
                 if 200 <= response.status < 400:
                     return True, "healthy"
                 last = f"HTTP {response.status}"
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                return True, "healthy"
             last = f"HTTP {exc.code}"
         except (urllib.error.URLError, OSError) as exc:
             last = str(getattr(exc, "reason", exc))

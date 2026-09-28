@@ -24,12 +24,15 @@ import urllib.request
 
 from flask import Blueprint, current_app, jsonify, request
 
-from . import system_metrics
+from . import peer_http, system_metrics
 from .db import get_db
 from .update_status import read_update_status
 
 POLL_SECONDS = 20
 TIMEOUT_SECONDS = 10
+# The token guards the session-signing key and full database/data snapshots,
+# so a short, guessable one is refused rather than trusted.
+MIN_TOKEN_LENGTH = 16
 MAX_FAILED_ATTEMPTS = 10
 FAILED_ATTEMPT_WINDOW_SECONDS = 60
 # Bound on tracked failing IPs before a sweep drops expired ones, so a flood
@@ -131,7 +134,7 @@ class MeshHub:
             if previous is not None:
                 was_reachable = previous.get("reachable")
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured peer URL
+            with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured peer URL
                 body = json.loads(response.read().decode("utf-8"))
             if not isinstance(body, dict):
                 raise ValueError("Peer returned an unexpected response.")
@@ -185,7 +188,7 @@ class MeshHub:
         public: the secret key, a full database snapshot, site/app data.
         Refuses outright with no token configured, instead of allowing
         public access the way the plain status endpoint does."""
-        if self._token_hash is None:
+        if self._token_hash is None or len(self.token) < MIN_TOKEN_LENGTH:
             return False
         return self.authorize_incoming(authorization_header, ip)
 

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from webmanager import create_app, replication
+from webmanager import create_app, peer_http, replication
 
 from tests import test_app as base
 
@@ -25,6 +25,48 @@ def _valid_sqlite_bytes(extra_users=0) -> bytes:
         connection.commit()
         connection.close()
         return path.read_bytes()
+
+
+class PeerHttpTests(unittest.TestCase):
+    def test_redirects_are_returned_not_followed(self):
+        import http.server
+        import threading
+        import urllib.error
+        import urllib.request
+
+        hits = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", "/done")
+                self.send_header("Set-Cookie", "flash=1")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/go", data=b"x", method="POST"
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            peer_http.open_peer(request, timeout=5)
+        self.assertEqual(caught.exception.code, 302)
+        self.assertEqual(caught.exception.headers["Set-Cookie"], "flash=1")
+        self.assertEqual(hits, ["/go"])
 
 
 class _FakeHeaders(list):
@@ -61,7 +103,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
         self.app.config = {"DATABASE": str(self.database_path)}
         self.app.logger = MagicMock()
 
-    def manager(self, primary_url="https://primary.example", token="s3cret"):
+    def manager(self, primary_url="https://primary.example", token="s3cret-s3cret-s3cret"):
         return replication.ReplicationManager(self.app, primary_url, token)
 
     def test_is_replica_reflects_whether_a_primary_url_is_set(self):
@@ -71,7 +113,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
     def test_sync_once_replaces_the_local_database_on_success(self):
         new_bytes = _valid_sqlite_bytes(extra_users=1)
         manager = self.manager()
-        with patch.object(replication.urllib.request, "urlopen", return_value=_FakeHTTPResponse(new_bytes)):
+        with patch.object(peer_http, "open_peer", return_value=_FakeHTTPResponse(new_bytes)):
             self.assertTrue(manager.sync_once())
         self.assertIsNone(manager.last_error)
         self.assertIsNotNone(manager.last_sync_at)
@@ -84,7 +126,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
     def test_sync_once_rejects_a_corrupt_download_and_keeps_the_old_database(self):
         manager = self.manager()
         original = self.database_path.read_bytes()
-        with patch.object(replication.urllib.request, "urlopen", return_value=_FakeHTTPResponse(b"not a database")):
+        with patch.object(peer_http, "open_peer", return_value=_FakeHTTPResponse(b"not a database")):
             self.assertFalse(manager.sync_once())
         self.assertIsNotNone(manager.last_error)
         self.assertEqual(self.database_path.read_bytes(), original)
@@ -92,8 +134,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
     def test_sync_once_handles_an_unreachable_primary(self):
         manager = self.manager()
         with patch.object(
-            replication.urllib.request,
-            "urlopen",
+            peer_http, "open_peer",
             side_effect=replication.urllib.error.URLError("Connection refused"),
         ):
             self.assertFalse(manager.sync_once())
@@ -101,19 +142,18 @@ class ReplicationManagerUnitTests(unittest.TestCase):
 
     def test_fetch_secret_key_returns_the_stripped_body(self):
         with patch.object(
-            replication.urllib.request, "urlopen", return_value=_FakeHTTPResponse(b"the-secret\n")
+            peer_http, "open_peer", return_value=_FakeHTTPResponse(b"the-secret\n")
         ):
-            key = replication.fetch_secret_key("https://primary.example", "s3cret")
+            key = replication.fetch_secret_key("https://primary.example", "s3cret-s3cret-s3cret")
         self.assertEqual(key, "the-secret")
 
     def test_fetch_secret_key_raises_on_network_failure(self):
         with patch.object(
-            replication.urllib.request,
-            "urlopen",
+            peer_http, "open_peer",
             side_effect=replication.urllib.error.URLError("no route"),
         ):
             with self.assertRaises(replication.ReplicationError):
-                replication.fetch_secret_key("https://primary.example", "s3cret")
+                replication.fetch_secret_key("https://primary.example", "s3cret-s3cret-s3cret")
 
 
 class ReplicationEndpointTests(unittest.TestCase):
@@ -137,11 +177,11 @@ class ReplicationEndpointTests(unittest.TestCase):
 
     def test_db_snapshot_and_secret_key_are_served_with_the_right_token(self):
         hub = self.app.extensions["mesh_hub"]
-        hub.token = "s3cret"
-        hub._token_hash = __import__("webmanager.mesh", fromlist=["_hash_token"])._hash_token("s3cret")
+        hub.token = "s3cret-s3cret-s3cret"
+        hub._token_hash = __import__("webmanager.mesh", fromlist=["_hash_token"])._hash_token("s3cret-s3cret-s3cret")
         try:
             snapshot = self.client.get(
-                "/replication/db-snapshot", headers={"Authorization": "Bearer s3cret"}
+                "/replication/db-snapshot", headers={"Authorization": "Bearer s3cret-s3cret-s3cret"}
             )
             self.assertEqual(snapshot.status_code, 200)
             connection = sqlite3.connect(":memory:")
@@ -157,7 +197,7 @@ class ReplicationEndpointTests(unittest.TestCase):
                 finally:
                     downloaded.close()
 
-            secret = self.client.get("/mesh/secret-key", headers={"Authorization": "Bearer s3cret"})
+            secret = self.client.get("/mesh/secret-key", headers={"Authorization": "Bearer s3cret-s3cret-s3cret"})
             self.assertEqual(secret.status_code, 200)
             self.assertEqual(secret.data.decode("utf-8"), self.app.config["SECRET_KEY"])
         finally:
@@ -178,7 +218,7 @@ class WriteForwardingTests(unittest.TestCase):
     def test_replica_forwards_a_write_to_the_primary_and_relays_the_response(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
             user_id = self.add_user("alice", is_admin=True)
             self.login_user(user_id)
@@ -187,7 +227,7 @@ class WriteForwardingTests(unittest.TestCase):
                 status=200,
                 headers=[("Content-Type", "application/json"), ("Set-Cookie", "example=1")],
             )
-            with patch.object(replication.urllib.request, "urlopen", return_value=primary_response) as urlopen:
+            with patch.object(peer_http, "open_peer", return_value=primary_response) as urlopen:
                 response = self.client.post(
                     "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
                 )
@@ -210,9 +250,9 @@ class WriteForwardingTests(unittest.TestCase):
         self.login_user(admin_id)
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
-            with patch.object(replication.urllib.request, "urlopen") as urlopen:
+            with patch.object(peer_http, "open_peer") as urlopen:
                 response = self.client.post(
                     "/admin/updates/check", data={"_csrf_token": self.csrf()}
                 )
@@ -225,9 +265,9 @@ class WriteForwardingTests(unittest.TestCase):
     def test_replica_does_not_forward_reads(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
-            with patch.object(replication.urllib.request, "urlopen") as urlopen:
+            with patch.object(peer_http, "open_peer") as urlopen:
                 response = self.client.get("/mesh/status")
             self.assertEqual(response.status_code, 200)
             urlopen.assert_not_called()
@@ -238,13 +278,12 @@ class WriteForwardingTests(unittest.TestCase):
     def test_replica_returns_502_when_primary_is_unreachable(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
             user_id = self.add_user("alice", is_admin=True)
             self.login_user(user_id)
             with patch.object(
-                replication.urllib.request,
-                "urlopen",
+                peer_http, "open_peer",
                 side_effect=replication.urllib.error.URLError("Connection refused"),
             ):
                 response = self.client.post(
@@ -295,7 +334,7 @@ class ReplicationAdminPanelTests(unittest.TestCase):
         self.login_user(admin_id)
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         manager.last_error = "Connection refused"
         try:
             response = self.client.get("/admin/?section=updates")
@@ -315,9 +354,9 @@ class ReplicationAdminPanelTests(unittest.TestCase):
         self.login_user(admin_id)
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
-            with patch.object(replication.urllib.request, "urlopen") as urlopen:
+            with patch.object(peer_http, "open_peer") as urlopen:
                 urlopen.side_effect = replication.urllib.error.URLError("no route")
                 response = self.client.post(
                     "/admin/replication/sync",
@@ -360,9 +399,9 @@ class PromoteToPrimaryTests(unittest.TestCase):
         manager = self.app.extensions["replication_manager"]
         data_manager = self.app.extensions["data_replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         data_manager.primary_url = "https://primary.example"
-        data_manager.token = "s3cret"
+        data_manager.token = "s3cret-s3cret-s3cret"
 
         response = self.client.post(
             "/admin/replication/promote",
@@ -377,7 +416,7 @@ class PromoteToPrimaryTests(unittest.TestCase):
         self.assertEqual(self.app.config["REPLICA_OF"], "")
 
         # A write no longer gets forwarded anywhere - it just runs locally.
-        with patch.object(replication.urllib.request, "urlopen") as urlopen:
+        with patch.object(peer_http, "open_peer") as urlopen:
             self.client.post("/admin/updates/check", data={"_csrf_token": self.csrf()})
         urlopen.assert_not_called()
 
@@ -424,12 +463,12 @@ class GoogleSignInOnReplicaTests(unittest.TestCase):
     def test_new_sign_in_on_a_replica_asks_the_primary_instead_of_writing_locally(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
             before = self._user_count()
             primary_response = _FakeHTTPResponse(b'{"user_id": 77}')
             with patch.object(
-                replication.urllib.request, "urlopen", return_value=primary_response
+                peer_http, "open_peer", return_value=primary_response
             ) as urlopen:
                 response = self.google_callback()
             self.assertEqual(response.status_code, 302)
@@ -448,12 +487,11 @@ class GoogleSignInOnReplicaTests(unittest.TestCase):
     def test_sign_in_on_a_replica_fails_cleanly_when_primary_is_unreachable(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
             before = self._user_count()
             with patch.object(
-                replication.urllib.request,
-                "urlopen",
+                peer_http, "open_peer",
                 side_effect=replication.urllib.error.URLError("no route"),
             ):
                 response = self.google_callback()
@@ -489,15 +527,15 @@ class FindOrCreateUserEndpointTests(unittest.TestCase):
 
     def test_rejects_missing_claims(self):
         hub = self.app.extensions["mesh_hub"]
-        hub.token = "s3cret"
+        hub.token = "s3cret-s3cret-s3cret"
         from webmanager.mesh import _hash_token
 
-        hub._token_hash = _hash_token("s3cret")
+        hub._token_hash = _hash_token("s3cret-s3cret-s3cret")
         try:
             response = self.client.post(
                 "/replication/find-or-create-user",
                 json={"sub": "x"},  # missing email
-                headers={"Authorization": "Bearer s3cret"},
+                headers={"Authorization": "Bearer s3cret-s3cret-s3cret"},
             )
             self.assertEqual(response.status_code, 400)
         finally:
@@ -506,15 +544,15 @@ class FindOrCreateUserEndpointTests(unittest.TestCase):
 
     def test_creates_a_user_and_returns_its_id_with_the_right_token(self):
         hub = self.app.extensions["mesh_hub"]
-        hub.token = "s3cret"
+        hub.token = "s3cret-s3cret-s3cret"
         from webmanager.mesh import _hash_token
 
-        hub._token_hash = _hash_token("s3cret")
+        hub._token_hash = _hash_token("s3cret-s3cret-s3cret")
         try:
             response = self.client.post(
                 "/replication/find-or-create-user",
                 json=self.google_claims(),
-                headers={"Authorization": "Bearer s3cret"},
+                headers={"Authorization": "Bearer s3cret-s3cret-s3cret"},
             )
             self.assertEqual(response.status_code, 200)
             user_id = response.get_json()["user_id"]
@@ -556,7 +594,7 @@ class ReplicaStartupTests(unittest.TestCase):
                     "NGINX_ROOT": str(root / "nginx"),
                     "LOG_ROOT": str(root / "logs"),
                     "REPLICA_OF": "https://primary.example",
-                    "MESH_TOKEN": "s3cret",
+                    "MESH_TOKEN": "s3cret-s3cret-s3cret",
                 }
             )
             self.assertTrue(app.extensions["replication_manager"].is_replica)

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
-from webmanager import data_replication
+from webmanager import data_replication, peer_http
 from webmanager.services import RuntimeManager
 
 from tests import test_app as base
@@ -38,6 +38,29 @@ class SafeMembersTests(unittest.TestCase):
         # "repositories//etc/passwd" -> relative "/etc/passwd" (absolute) -> rejected.
         safe = data_replication._safe_members(members, "repositories")
         self.assertEqual(safe, [])
+
+    def test_drops_escaping_links_devices_and_special_bits(self):
+        def link(name, target, kind=tarfile.SYMTYPE):
+            info = tarfile.TarInfo(name=name)
+            info.type = kind
+            info.linkname = target
+            return info
+
+        device = tarfile.TarInfo(name="repositories/1/dev")
+        device.type = tarfile.CHRTYPE
+        setuid = tarfile.TarInfo(name="repositories/1/run.sh")
+        setuid.mode = 0o4777
+        members = [
+            link("repositories/1/out", "../../../etc"),
+            link("repositories/1/abs", "/etc/passwd"),
+            link("repositories/1/hard", "/etc/passwd", tarfile.LNKTYPE),
+            link("repositories/1/ok", "index.html"),
+            device,
+            setuid,
+        ]
+        safe = data_replication._safe_members(members, "repositories")
+        self.assertEqual([m.name for m in safe], ["1/ok", "1/run.sh"])
+        self.assertEqual(safe[1].mode, 0o755)
 
     def test_ignores_members_outside_the_prefix(self):
         members = [self._member("app-data/1.tar"), self._member("repositories/1/index.html")]
@@ -70,7 +93,7 @@ class ApplySnapshotTests(unittest.TestCase):
             {"runtime_manager": self.runtime_manager},
         )
         self.runtime_manager.app = self.app
-        self.manager = data_replication.DataReplicationManager(self.app, "https://primary.example", "s3cret")
+        self.manager = data_replication.DataReplicationManager(self.app, "https://primary.example", "s3cret-s3cret-s3cret")
 
     def _build_archive(self, *, with_app_data=True) -> Path:
         archive_path = Path(self.temp_directory.name) / "snapshot.tar"
@@ -107,6 +130,33 @@ class ApplySnapshotTests(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(content)) as inner:
             self.assertEqual(inner.extractfile("data/app.db").read(), b"sqlite-bytes")
 
+    def test_sync_once_survives_a_truncated_archive_and_keeps_the_files(self):
+        self.repository_root.mkdir(parents=True)
+        (self.repository_root / "keep.html").write_text("kept", encoding="utf-8")
+        truncated = self._build_archive().read_bytes()[:700]
+
+        class _Response:
+            status = 200
+
+            def __init__(self, data):
+                self._data = io.BytesIO(data)
+
+            def read(self, size=-1):
+                return self._data.read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with patch.object(peer_http, "open_peer", return_value=_Response(truncated)):
+            self.assertFalse(self.manager.sync_once())
+        self.assertTrue(self.manager.last_error)
+        self.assertEqual(
+            (self.repository_root / "keep.html").read_text(encoding="utf-8"), "kept"
+        )
+
     def test_apply_snapshot_wipes_stale_repositories_no_longer_present(self):
         stale = self.repository_root / "99" / "old.html"
         stale.parent.mkdir(parents=True)
@@ -136,13 +186,13 @@ class DataSnapshotEndpointTests(unittest.TestCase):
         (repository_root / "42" / "index.html").write_text("hi", encoding="utf-8")
 
         hub = self.app.extensions["mesh_hub"]
-        hub.token = "s3cret"
+        hub.token = "s3cret-s3cret-s3cret"
         from webmanager.mesh import _hash_token
 
-        hub._token_hash = _hash_token("s3cret")
+        hub._token_hash = _hash_token("s3cret-s3cret-s3cret")
         try:
             response = self.client.get(
-                "/replication/data-snapshot", headers={"Authorization": "Bearer s3cret"}
+                "/replication/data-snapshot", headers={"Authorization": "Bearer s3cret-s3cret-s3cret"}
             )
             self.assertEqual(response.status_code, 200)
             with tarfile.open(fileobj=io.BytesIO(response.data)) as archive:
@@ -168,11 +218,10 @@ class SyncDataAdminRouteTests(unittest.TestCase):
         self.login_user(admin_id)
         manager = self.app.extensions["data_replication_manager"]
         manager.primary_url = "https://primary.example"
-        manager.token = "s3cret"
+        manager.token = "s3cret-s3cret-s3cret"
         try:
             with patch.object(
-                data_replication.urllib.request,
-                "urlopen",
+                peer_http, "open_peer",
                 side_effect=data_replication.urllib.error.URLError("no route"),
             ) as urlopen:
                 response = self.client.post(

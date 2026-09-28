@@ -130,6 +130,15 @@ def create_app(test_config=None):
             "(the same shared secret configured on the primary)."
         )
 
+    if app.config["MESH_TOKEN"] and len(app.config["MESH_TOKEN"]) < mesh.MIN_TOKEN_LENGTH:
+        message = (
+            f"WEBMANAGER_PEER_TOKEN must be at least {mesh.MIN_TOKEN_LENGTH} characters "
+            "(try: openssl rand -hex 24). Replication endpoints stay disabled until it is."
+        )
+        if app.config["REPLICA_OF"]:
+            raise RuntimeError(message)
+        app.logger.warning(message)
+
     if not app.config["SECRET_KEY"]:
         if app.config["REPLICA_OF"]:
             secret_path = instance_path / "secret.key"
@@ -306,6 +315,14 @@ def create_app(test_config=None):
                     "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
                 )
             mesh_hub.start()
+        for url in [*peer_urls, app.config["REPLICA_OF"]]:
+            if url.startswith("http://"):
+                app.logger.warning(
+                    "%s uses plain http://, so the peer token (and, for a replica, "
+                    "session and database data) crosses the network unencrypted. "
+                    "Use https:// or a private network/VPN.",
+                    url,
+                )
 
     @app.errorhandler(404)
     def not_found(_error):
