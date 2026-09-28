@@ -55,13 +55,17 @@
         <label class="field"><span>App name</span><input name="site_name" value="{{ suggested_name }}" maxlength="80" required></label>
         <div class="field">
           <span>Address</span>
-          <div class="hostname-row compact">
-            <input name="slug" value="{{ suggested_slug }}" maxlength="48" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" required aria-label="Subdomain" autocomplete="off" spellcheck="false">
+          <div class="hostname-row compact" data-app-address>
+            <input name="slug" value="{{ suggested_slug }}" maxlength="48" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" aria-label="Subdomain" autocomplete="off" spellcheck="false" data-app-slug>
             <span class="hostname-dot" aria-hidden="true">.</span>
             <select name="domain_id" aria-label="Domain">
               {% for domain in site_domains %}<option value="{{ domain.id }}">{{ domain.name }}</option>{% endfor %}
             </select>
           </div>
+          <label class="check plain mt-16">
+            <input type="checkbox" name="use_domain_root" data-app-root>
+            <span><strong>Serve at the domain root</strong><small>Use the bare domain, no subdomain. Only one site or app per domain can do this.</small></span>
+          </label>
         </div>
       </div>
       <div class="record-actions">

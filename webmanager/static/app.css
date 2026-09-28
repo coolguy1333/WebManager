@@ -678,6 +678,7 @@ input.invalid { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-
 .hostname-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.3fr); gap: 10px; align-items: start; }
 .hostname-dot { padding-top: 30px; font-size: 1.2rem; font-weight: 700; color: var(--text-faint); }
 .hostname-row.root-mode [data-subdomain-field] input { opacity: 0.45; }
+.hostname-row.root-mode [data-app-slug] { opacity: 0.45; }
 
 .segmented {
   display: inline-flex; padding: 3px; gap: 3px;

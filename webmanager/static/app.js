@@ -721,3 +721,17 @@ const autoRefresh = document.querySelector("[data-auto-refresh]");
 if (autoRefresh) {
   window.setTimeout(() => window.location.reload(), Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
 }
+
+// ---------- App deploy form: subdomain is optional at the domain root ----------
+document.querySelectorAll("[data-app-address]").forEach((address) => {
+  const form = address.closest("form");
+  const root = form?.querySelector("[data-app-root]");
+  const slug = address.querySelector("[data-app-slug]");
+  if (!root || !slug) return;
+  const update = () => {
+    slug.disabled = root.checked;
+    address.classList.toggle("root-mode", root.checked);
+  };
+  root.addEventListener("change", update);
+  update();
+});

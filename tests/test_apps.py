@@ -174,6 +174,13 @@ class AppHostingTests(unittest.TestCase):
             )
         return response, start
 
+    def add_domain(self, name):
+        with self.app.app_context():
+            database = get_db()
+            domain_id = database.execute("INSERT INTO domains (name) VALUES (?)", (name,)).lastrowid
+            database.commit()
+            return domain_id
+
     def site(self):
         with self.app.app_context():
             return get_db().execute("SELECT * FROM sites WHERE kind = 'app'").fetchone()
@@ -249,6 +256,32 @@ class AppHostingTests(unittest.TestCase):
         self.assertIn("@webmanager_app_down", config)
 
     # -- permissions and limits ---------------------------------------------
+    def test_app_can_be_deployed_at_the_domain_root_without_a_subdomain(self):
+        _, repository_id = self.owner()
+        domain_id = self.add_domain("apps.example")
+        response, _ = self.deploy(repository_id, slug="", use_domain_root="on", domain_id=str(domain_id))
+        self.assertIn(response.status_code, (302, 303))
+        site = self.site()
+        self.assertIsNotNone(site)
+        self.assertEqual(site["use_domain_root"], 1)
+
+    def test_a_second_app_cannot_take_an_already_used_domain_root(self):
+        _, repository_id = self.owner()
+        domain_id = str(self.add_domain("apps.example"))
+        self.deploy(repository_id, slug="", use_domain_root="on", domain_id=domain_id)
+        (self.root / "webmanager.json").write_text(json.dumps({**MANIFEST, "env": []}), encoding="utf-8")
+        self.deploy(repository_id, slug="", use_domain_root="on", domain_id=domain_id)
+        with self.app.app_context():
+            count = get_db().execute("SELECT COUNT(*) FROM sites WHERE kind = 'app'").fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_settings_page_does_not_require_a_subdomain(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        page = self.client.get(f"/sites/{self.site()['id']}/settings")
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(b'name="slug" maxlength="48" value="status" required', page.data)
+
     def test_deploy_requires_app_hosting_permission(self):
         _, repository_id = self.owner(host=False)
         response, start = self.deploy(repository_id)

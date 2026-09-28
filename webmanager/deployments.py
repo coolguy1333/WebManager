@@ -1197,16 +1197,21 @@ def deploy_app(repository_id):
                 return back
 
     name = request.form.get("site_name", "").strip()
-    slug = request.form.get("slug", "").strip().lower() or slugify(name)
+    use_domain_root = request.form.get("use_domain_root") == "on"
     if not valid_site_name(name):
         flash("Give the app a name of 80 characters or fewer.", "error")
         return back
-    if not HOST_LABEL_RE.fullmatch(slug):
-        flash("Use lowercase letters, numbers, and dashes for the subdomain.", "error")
-        return back
-    if database.execute("SELECT 1 FROM sites WHERE slug = ?", (slug,)).fetchone():
-        flash(f"The subdomain {slug} is already taken.", "error")
-        return back
+    if use_domain_root:
+        # No subdomain is used; the slug is only an internal identifier.
+        slug = unique_slug(database, name)
+    else:
+        slug = request.form.get("slug", "").strip().lower() or slugify(name)
+        if not HOST_LABEL_RE.fullmatch(slug):
+            flash("Use lowercase letters, numbers, and dashes for the subdomain.", "error")
+            return back
+        if database.execute("SELECT 1 FROM sites WHERE slug = ?", (slug,)).fetchone():
+            flash(f"The subdomain {slug} is already taken.", "error")
+            return back
     raw_domain = request.form.get("domain_id", "").strip()
     domain = (
         database.execute("SELECT * FROM domains WHERE id = ?", (int(raw_domain),)).fetchone()
@@ -1217,8 +1222,8 @@ def deploy_app(repository_id):
         flash("Apps need a public domain. Ask an administrator to add one under Domains.", "error")
         return back
     try:
-        validate_site_domains(database, [domain], False)
-        hostname = f"{slug}.{domain['name']}"
+        validate_site_domains(database, [domain], use_domain_root)
+        hostname = domain["name"] if use_domain_root else f"{slug}.{domain['name']}"
         if domain_is_dashboard(database, hostname):
             raise ValueError("That hostname is reserved for the WebManager dashboard.")
         owner = hostname_owner(database, hostname)
@@ -1238,9 +1243,12 @@ def deploy_app(repository_id):
                 user_id, repository_id, domain_id, use_domain_root, name, slug,
                 folder, document_root, index_file, port, spa_fallback,
                 nginx_config, status, kind, app_memory_mb
-            ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, '', ?, 0, '', 'stopped', 'app', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 0, '', 'stopped', 'app', ?)
             """,
-            (owner_id, repository_id, domain["id"], name, slug, folder, str(selected), port, manifest["memory_mb"]),
+            (
+                owner_id, repository_id, domain["id"], int(use_domain_root), name, slug,
+                folder, str(selected), port, manifest["memory_mb"],
+            ),
         )
         database.commit()
     except (GitError, ValueError, RuntimeErrorDetail, sqlite3.IntegrityError) as exc:
