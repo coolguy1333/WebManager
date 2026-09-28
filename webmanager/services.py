@@ -113,6 +113,12 @@ class RuntimeManager:
                         self._start_app(site_id, force=force)
                     except RuntimeErrorDetail as exc:
                         self.app.logger.warning("App %s failed to start: %s", site_id, exc)
+                    except Exception as exc:  # noqa: BLE001 - never leave the app stuck on "starting"
+                        self.app.logger.exception("App %s failed to start unexpectedly", site_id)
+                        self._set_site_state(
+                            get_db(), site_id, "error", "container", None,
+                            f"Unexpected error while starting: {exc}",
+                        )
             finally:
                 lock.release()
 

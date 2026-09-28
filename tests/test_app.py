@@ -1378,6 +1378,87 @@ class WebManagerTestCase(unittest.TestCase):
                 Path(self.app.config["PROGRAM_UPDATE_CHECK_REQUEST_FILE"]).exists()
             )
 
+    def test_live_update_check_reports_real_github_state(self):
+        import subprocess
+        from unittest import mock
+        from webmanager import update_status
+
+        self.addCleanup(setattr, update_status, "_live_status", None)
+        repo = "https://github.com/example/webmanager.git"
+        installed = "a" * 40
+        latest = "b" * 40
+
+        def fake(stdout="", stderr="", code=0):
+            return subprocess.CompletedProcess([], code, stdout, stderr)
+
+        with mock.patch("subprocess.run") as run:
+            run.return_value = fake(f"{latest}\trefs/heads/main\n")
+            result = update_status.check_upstream(repo, "main", installed)
+            self.assertEqual(result["state"], "available")
+            self.assertTrue(result["update_available"])
+            self.assertEqual(result["available_commit"], latest)
+
+            run.return_value = fake(f"{installed}\trefs/heads/main\n")
+            self.assertEqual(
+                update_status.check_upstream(repo, "main", installed)["state"],
+                "current",
+            )
+
+            run.return_value = fake("", "fatal: unable to access", 128)
+            result = update_status.check_upstream(repo, "main", installed)
+            self.assertEqual(result["state"], "error")
+            self.assertIn("Could not reach GitHub", result["message"])
+
+            run.return_value = fake("")
+            self.assertIn(
+                "not found",
+                update_status.check_upstream(repo, "nope", installed)["message"],
+            )
+
+        bad = update_status.check_upstream("https://evil.example/x.git", "main", installed)
+        self.assertEqual(bad["state"], "error")
+
+    def test_check_now_runs_a_live_check_and_reports_the_result(self):
+        import subprocess
+        from unittest import mock
+
+        from webmanager import update_status
+
+        self.addCleanup(setattr, update_status, "_live_status", None)
+        self.app.config["LIVE_UPDATE_CHECK"] = True
+        self.app.config["UPDATER_ACTIVE"] = False
+        user_id = self.add_user("root-admin", is_admin=True)
+        self.login_user(user_id)
+        latest = "c" * 40
+        completed = subprocess.CompletedProcess(
+            [], 0, f"{latest}\trefs/heads/main\n", ""
+        )
+        with mock.patch("subprocess.run", return_value=completed), mock.patch(
+            "webmanager.update_status.installed_commit", return_value="a" * 40
+        ):
+            response = self.client.post(
+                "/admin/updates/check",
+                data={"_csrf_token": self.csrf()},
+                follow_redirects=True,
+            )
+        self.assertIn(b"new version is available", response.data)
+        self.assertIn(latest[:12].encode(), response.data)
+        self.assertIn(b"systemctl enable --now webmanager-update.path", response.data)
+
+    def test_install_is_refused_when_the_updater_is_off(self):
+        self.app.config["UPDATER_ACTIVE"] = False
+        user_id = self.add_user("root-admin", is_admin=True)
+        self.login_user(user_id)
+        response = self.client.post(
+            "/admin/updates/install",
+            data={"_csrf_token": self.csrf(), "commit": "d" * 40},
+            follow_redirects=True,
+        )
+        self.assertIn(b"webmanager-update.path", response.data)
+        self.assertFalse(
+            Path(self.app.config["PROGRAM_UPDATE_REQUEST_FILE"]).exists()
+        )
+
     def test_disabled_user_session_is_rejected(self):
         user_id = self.add_user("disabled", is_active=False)
         self.login_user(user_id)
@@ -2991,8 +3072,8 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("REUSE_VENV=0", installer)
         self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn('chmod 0755 "$APP_DIR/.venv"', installer)
-        self.assertIn("UPDATER_WAS_ENABLED=0", installer)
-        self.assertIn("Keeping automatic updater triggers disabled.", installer)
+        self.assertNotIn("UPDATER_WAS_ENABLED", installer)
+        self.assertIn("systemctl enable --now webmanager-update.path", installer)
         self.assertIn(
             "Leaving updater triggers unchanged during the active self-update.",
             installer,

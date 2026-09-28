@@ -741,12 +741,12 @@ other servers' *dashboard* addresses, not a hosted site's address), then
 
 ```bash
 WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com  # the *other* servers
-WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere
+WEBMANAGER_PEER_TOKEN=some-long-shared-secret                               # same value everywhere, 16+ chars (openssl rand -hex 24)
 ```
 
 Every server independently polls every URL in `WEBMANAGER_PEERS` every 20
 seconds at `/mesh/status`, authenticated with `WEBMANAGER_PEER_TOKEN` as a
-bearer token. That endpoint exposes only aggregate counts (sites/apps
+bearer token (tokens under 16 characters never unlock the replication endpoints, and peer URLs should be `https://`). That endpoint exposes only aggregate counts (sites/apps
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
 
@@ -1592,10 +1592,14 @@ automatically if any later installation step fails.
 Replacement virtual environments are installed with traverse permissions for
 the unprivileged `webmanager` service account while remaining owned by root.
 
-On an existing installation, manual setup preserves an intentionally disabled
-updater timer/path and clears stale update request files after the application
-passes its health check. New installations still enable update checks by
-default when they are configured. A successful manual setup also replaces any
+Manual setup enables and starts the updater timer/path whenever updates are
+configured (`WEBMANAGER_UPDATE_ENABLED=1` in `/etc/webmanager/updater.env`),
+including on older installations where they were never enabled, and clears
+stale update request files after the application passes its health check. The
+System page also checks GitHub itself (`git ls-remote`, no privileges needed),
+so "Check now" reports the real result even when the updater is off; installing
+still needs the updater (`sudo systemctl enable --now webmanager-update.path
+webmanager-update.timer`). A successful manual setup also replaces any
 stale testing or installing status with the exact commit it installed.
 
 An updater-driven self-update never enables, disables, or starts its own timer
