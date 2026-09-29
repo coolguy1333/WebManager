@@ -3073,6 +3073,8 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Reusing the installed Python environment", installer)
         self.assertIn('chmod 0755 "$APP_DIR/.venv"', installer)
         self.assertNotIn("UPDATER_WAS_ENABLED", installer)
+        for option in ("--replica-of)", "--peer-token)", "--peers)"):
+            self.assertIn(option, installer)
         self.assertIn("systemctl enable --now webmanager-update.path", installer)
         self.assertIn(
             "Leaving updater triggers unchanged during the active self-update.",

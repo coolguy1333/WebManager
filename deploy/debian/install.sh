@@ -24,6 +24,9 @@ EXISTING_INSTALL=0
 if [[ -e $SERVICE_FILE || -d $APP_DIR ]]; then
     EXISTING_INSTALL=1
 fi
+REPLICA_OF=
+PEER_TOKEN=
+PEERS=
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
 UPDATE_CONFIGURATION_EXPLICIT=0
@@ -54,6 +57,21 @@ while [[ $# -gt 0 ]]; do
             fi
             UPDATE_BRANCH=$1
             UPDATE_CONFIGURATION_EXPLICIT=1
+            ;;
+        --replica-of)
+            shift
+            [[ $# -gt 0 ]] || { echo "--replica-of requires the primary's dashboard URL." >&2; exit 1; }
+            REPLICA_OF=${1%/}
+            ;;
+        --peer-token)
+            shift
+            [[ $# -gt 0 ]] || { echo "--peer-token requires the shared token." >&2; exit 1; }
+            PEER_TOKEN=$1
+            ;;
+        --peers)
+            shift
+            [[ $# -gt 0 ]] || { echo "--peers requires comma-separated server URLs." >&2; exit 1; }
+            PEERS=$1
             ;;
         *)
             echo "Unknown installer option: $1" >&2
@@ -280,6 +298,41 @@ ensure_env WEBMANAGER_APPS_ENABLED "0"
 ensure_env WEBMANAGER_PEERS ""
 ensure_env WEBMANAGER_PEER_TOKEN ""
 ensure_env WEBMANAGER_REPLICA_OF ""
+
+# --replica-of / --peer-token / --peers: join an existing WebManager server.
+set_env() {
+    local key=$1 value=$2 temporary
+    temporary=$(mktemp)
+    grep -v "^${key}=" "$CONFIG_DIR/webmanager.env" >"$temporary" || true
+    printf '%s=%s\n' "$key" "$value" >>"$temporary"
+    install -o root -g webmanager -m 0640 "$temporary" "$CONFIG_DIR/webmanager.env"
+    rm -f "$temporary"
+}
+if [[ -n $REPLICA_OF$PEERS ]] && [[ -z $PEER_TOKEN ]]; then
+    echo "--replica-of and --peers need --peer-token." >&2
+    exit 1
+fi
+if [[ -n $PEER_TOKEN ]]; then
+    if [[ ! $PEER_TOKEN =~ ^[A-Za-z0-9._~+/=-]{16,}$ ]]; then
+        echo "--peer-token must be 16+ characters of letters, digits or ._~+/=- (try: openssl rand -hex 24)." >&2
+        exit 1
+    fi
+    set_env WEBMANAGER_PEER_TOKEN "$PEER_TOKEN"
+fi
+if [[ -n $REPLICA_OF ]]; then
+    if [[ ! $REPLICA_OF =~ ^https?://[][A-Za-z0-9.:_-]+(/[A-Za-z0-9._~/-]*)?$ ]]; then
+        echo "--replica-of must be the primary's dashboard URL, e.g. https://server-a.example.com" >&2
+        exit 1
+    fi
+    set_env WEBMANAGER_REPLICA_OF "$REPLICA_OF"
+fi
+if [[ -n $PEERS ]]; then
+    if [[ ! $PEERS =~ ^https?://[][A-Za-z0-9.:_/,-]+$ ]]; then
+        echo "--peers must be comma-separated http(s) URLs." >&2
+        exit 1
+    fi
+    set_env WEBMANAGER_PEERS "$PEERS"
+fi
 
 if [[ -n ${WEBMANAGER_INITIAL_SITE_BASE_DOMAIN:-} ]] \
     && ! grep -Eq '^WEBMANAGER_SITE_BASE_DOMAIN=.+$' "$CONFIG_DIR/webmanager.env"; then

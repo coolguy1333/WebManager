@@ -750,6 +750,25 @@ bearer token (tokens under 16 characters never unlock the replication endpoints,
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
 
+### Setting up a new peer server with one command
+
+On the **primary**, set `WEBMANAGER_PEER_TOKEN` in `/etc/webmanager/webmanager.env`
+(`openssl rand -hex 24`) and restart it. Then, on the new server:
+
+```bash
+git clone https://github.com/coolguy1333/WebManager.git webmanager && cd webmanager
+bash setup.sh \
+  --replica-of https://primary.example.com \
+  --peer-token <the same token>
+```
+
+`--replica-of` makes it a mirror of that primary; use `--peers
+https://other.example.com,...` instead (or as well) to only list servers to
+monitor. The primary must be reachable from the new server, since the
+replica fetches its session key at startup. Add the new server's Google
+sign-in redirect URI (`https://<its dashboard address>/auth/google/callback`)
+to your Google OAuth client.
+
 ### Replication: turning peers into real replicas
 
 The mesh above is visibility only. Setting `WEBMANAGER_REPLICA_OF` on a
