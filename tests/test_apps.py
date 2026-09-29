@@ -2,6 +2,8 @@
 shared fixtures (borrowed below without re-running its tests)."""
 
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
@@ -10,6 +12,7 @@ from webmanager import apps
 from webmanager.db import get_db
 from webmanager.nginx import build_app_config
 from webmanager.services import RuntimeErrorDetail, RuntimeManager
+from webmanager.usage_sampler import UsageSampler
 
 from tests import test_app as base
 
@@ -55,7 +58,7 @@ class FakeRuntime:
     def remove_images(self, site_id, keep=None):
         self.calls.append(("remove_images", site_id, keep))
 
-    def inspect(self, name):
+    def inspect(self, name, timeout=30):
         container = self.containers.get(name)
         if container is None:
             return None
@@ -91,7 +94,7 @@ class FakeRuntime:
     def remove_volume(self, site_id):
         self.volumes_removed.append(site_id)
 
-    def logs(self, name, tail=200):
+    def logs(self, name, tail=200, timeout=30):
         return "listening on 8080"
 
     def running_app_names(self):
@@ -676,6 +679,83 @@ class AppHostingTests(unittest.TestCase):
         response = self.client.get("/admin/apps")
         self.assertEqual(response.status_code, 403)
         self.assertTrue(user_id)
+
+    # -- speed: pages never wait on the container runtime -----------------------
+    def test_app_pages_do_not_wait_for_docker_stats(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+        real_stats = self.fake.stats_many
+        self.fake.stats_many = lambda names: (release.wait(10), real_stats(names))[1]
+        manager = self.app.extensions["runtime_manager"]
+        manager.usage = UsageSampler(manager._sample_usage, pause=0.01)
+
+        began = time.monotonic()
+        for url in ("/?view=apps", f"/sites/{site_id}", f"/sites/{site_id}/status.json", "/apps/stats.json"):
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+        self.assertLess(time.monotonic() - began, 3.0, "a page waited for the slow `docker stats`")
+        self.assertEqual(self.client.get("/apps/stats.json").get_json(), {})
+
+        release.set()
+        deadline = time.monotonic() + 3
+        data = {}
+        while not data and time.monotonic() < deadline:
+            data = self.client.get("/apps/stats.json").get_json()
+            time.sleep(0.02)
+        self.assertEqual(data[str(site_id)]["memory_used"], "12MiB")
+
+    def test_runtime_reachability_is_remembered_between_page_loads(self):
+        manager = self.app.extensions["runtime_manager"]
+        calls = []
+        self.fake.available = lambda: calls.append(1) or (True, "fake")
+
+        for _ in range(3):
+            self.assertTrue(manager.apps_status()[0])
+
+        self.assertEqual(len(calls), 1)
+
+    def test_an_unreachable_runtime_is_checked_again_soon(self):
+        manager = self.app.extensions["runtime_manager"]
+        manager.RUNTIME_DOWN_SECONDS = 0
+        answers = [(False, "cannot connect to the daemon"), (True, "27.0")]
+        self.fake.available = lambda: answers.pop(0)
+
+        ready, message = manager.apps_status()
+        self.assertFalse(ready)
+        self.assertIn("cannot connect to the daemon", message)
+        self.assertTrue(manager.apps_status()[0])
+
+    def test_a_container_that_stops_mid_reading_does_not_blank_every_app(self):
+        manager = self.app.extensions["runtime_manager"]
+        self.fake.containers["webmanager-app-1"] = {"status": "running", "hash": "h", "image": "i"}
+        real_stats = self.fake.stats_many
+        attempts = []
+        # docker stats fails for every name if one of them is gone by then.
+        self.fake.stats_many = lambda names: {} if not attempts.append(1) and len(attempts) == 1 else real_stats(names)
+
+        self.assertIn("webmanager-app-1", manager._sample_usage())
+        self.assertEqual(len(attempts), 2)
+
+    def test_site_log_only_reads_the_end_of_a_large_file(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        log = Path(self.app.config["LOG_ROOT"]) / f"site-{site_id}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("\n".join(f"line {i:06d} " + "x" * 50 for i in range(20000)) + "\n", encoding="utf-8")
+
+        page = self.client.get(f"/sites/{site_id}")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"line 019999", page.data)
+        self.assertIn(b"line 019920", page.data)
+        self.assertNotIn(b"line 019919", page.data)  # only the last 80 lines
+        self.assertNotIn(b"line 000000", page.data)
 
     def test_docs_page_renders_app_hosting_section(self):
         self.owner()

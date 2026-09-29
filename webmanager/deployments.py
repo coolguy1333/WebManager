@@ -294,12 +294,23 @@ def site_attention_reasons(site):
     return list(dict.fromkeys(reasons))
 
 
+SITE_LOG_TAIL_BYTES = 128 * 1024
+
+
 def recent_site_log(site_id: int, limit=80):
+    """The last lines of a site's log. Only the end of the file is read: an
+    app's build log keeps growing with every rebuild."""
     path = Path(current_app.config["LOG_ROOT"]) / f"site-{site_id}.log"
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open("rb") as handle:
+            size = handle.seek(0, 2)
+            handle.seek(max(0, size - SITE_LOG_TAIL_BYTES))
+            data = handle.read()
     except OSError:
         return ""
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > SITE_LOG_TAIL_BYTES:
+        lines = lines[1:]  # the first line was cut in half
     return "\n".join(lines[-limit:])
 
 

@@ -328,6 +328,10 @@ sed \
 chown root:root "$SITE_NGINX_FILE"
 chmod 0644 "$SITE_NGINX_FILE"
 ln -sfn "$SITE_NGINX_FILE" "$SITE_NGINX_LINK"
+if [[ ! -e /proc/net/if_inet6 ]]; then
+    # No IPv6 on this kernel: Nginx cannot open "listen [::]" sockets.
+    sed -i '/^[[:space:]]*listen[[:space:]]\+\[::\]/d' "$NGINX_FILE" "$SITE_NGINX_FILE"
+fi
 nginx -t
 systemctl reload nginx
 

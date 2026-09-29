@@ -199,7 +199,7 @@ class MeshEndpointTests(unittest.TestCase):
         self.login_user(admin_id)
         response = self.client.get("/admin/?section=updates")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"No other servers configured", response.data)
+        self.assertIn(b"Turn on server sharing", response.data)
 
     def test_admin_servers_panel_shows_a_configured_peer(self):
         admin_id = self.add_user("root", is_admin=True)

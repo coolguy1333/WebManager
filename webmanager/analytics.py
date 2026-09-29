@@ -15,7 +15,7 @@ def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 
         for value in ([hostname] if isinstance(hostname, str) else hostname)
     }
     requests = []
-    for record in _recent_records(Path(log_path)):
+    for record in _recent_records(Path(log_path), hostnames):
         if str(record.get("host", "")).lower() not in hostnames:
             continue
         try:
@@ -61,7 +61,10 @@ def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 
     }
 
 
-def _recent_records(path: Path):
+def _recent_records(path: Path, hostnames=None):
+    """Parsed JSON lines from the end of the log. When ``hostnames`` is given,
+    lines that can't be about one of them are skipped without being parsed,
+    which is most of a log on a server that hosts several sites."""
     if not path.is_file():
         return []
     try:
@@ -74,8 +77,13 @@ def _recent_records(path: Path):
     except OSError:
         return []
 
+    wanted = [name.lower().encode("utf-8") for name in hostnames] if hostnames else None
     records = []
     for line in lines:
+        if wanted is not None:
+            lowered = line.lower()
+            if not any(name in lowered for name in wanted):
+                continue
         try:
             records.append(json.loads(line.decode("utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -113,7 +121,7 @@ def aggregate_analytics(log_path: str | Path, site_hostnames: dict, days: int = 
     transferred = 0
     requests = 0
 
-    for record in _recent_records(Path(log_path)):
+    for record in _recent_records(Path(log_path), host_to_site):
         site_id = host_to_site.get(str(record.get("host", "")).lower())
         if site_id is None:
             continue

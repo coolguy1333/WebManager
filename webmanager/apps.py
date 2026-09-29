@@ -326,7 +326,7 @@ class ContainerRuntime:
 
     def available(self) -> tuple[bool, str]:
         try:
-            result = self._run(["info", "--format", "{{.ServerVersion}}"], timeout=15, check=False)
+            result = self._run(["info", "--format", "{{.ServerVersion}}"], timeout=8, check=False)
         except AppError as exc:
             return False, str(exc)
         if result.returncode != 0:
@@ -366,8 +366,8 @@ class ContainerRuntime:
                 self._run(["rmi", "-f", image], timeout=60, check=False)
 
     # containers ------------------------------------------------------------
-    def inspect(self, name: str) -> dict | None:
-        result = self._run(["inspect", "--type", "container", name], timeout=30, check=False)
+    def inspect(self, name: str, timeout: int = 30) -> dict | None:
+        result = self._run(["inspect", "--type", "container", name], timeout=timeout, check=False)
         if result.returncode != 0:
             return None
         try:
@@ -434,8 +434,8 @@ class ContainerRuntime:
     def remove_volume(self, site_id: int):
         self._run(["volume", "rm", "--force", self.volume_name(site_id)], timeout=60, check=False)
 
-    def logs(self, name: str, tail: int = 200) -> str:
-        result = self._run(["logs", "--tail", str(tail), "--timestamps", name], timeout=30, check=False)
+    def logs(self, name: str, tail: int = 200, timeout: int = 30) -> str:
+        result = self._run(["logs", "--tail", str(tail), "--timestamps", name], timeout=timeout, check=False)
         return (result.stdout + result.stderr).strip()
 
     def running_app_names(self) -> list[str]:

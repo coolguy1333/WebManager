@@ -33,15 +33,19 @@ from .domains import (
     normalize_domain,
     site_hostnames,
 )
-from . import quotas, system_metrics
+import secrets
+
+from . import mesh, quotas, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
+    auto_install_enabled,
     live_checks_enabled,
     read_update_status,
     request_program_update,
     request_program_update_check,
     run_live_check,
+    set_auto_install,
     updater_active,
 )
 
@@ -271,6 +275,7 @@ def dashboard():
         super_admin=super_admin,
         update_status=update_status,
         update_auto_requested=update_auto_requested,
+        update_auto_install=(auto_install_enabled() if active_section == "updates" and super_admin else None),
         quota_defaults=quota_defaults,
         usage=usage,
         source_updates=source_updates,
@@ -286,6 +291,14 @@ def dashboard():
             else None
         ),
         mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
+        mesh_token=(
+            current_app.extensions["mesh_hub"].token
+            if active_section == "updates" and super_admin
+            else None
+        ),
+        # The address this admin is using is the best guess at how other
+        # servers will reach this one (the page lets them change it).
+        join_address=request.host_url.rstrip("/"),
         replication=(_replication_status() if active_section == "updates" else None),
         updater_is_active=(updater_active() if active_section == "updates" else None),
         google_access_unrestricted=not (
@@ -847,7 +860,8 @@ def install_program_update():
     if (
         not status["update_available"]
         or status["available_commit"] != commit
-        or status["state"] != "available"
+        # "error" is a version that failed to install: approving it again retries it.
+        or status["state"] not in {"available", "error"}
     ):
         flash("That update is no longer available. Wait for the next check.", "error")
         return redirect(url_for("admin.dashboard", section="updates"))
@@ -870,6 +884,111 @@ def install_program_update():
             "Update approved. WebManager will test, back up all data, and install it.",
             "success",
         )
+    return redirect(url_for("admin.dashboard", section="updates"))
+
+
+@bp.post("/servers/sharing")
+@login_required
+def enable_server_sharing():
+    """Give this server a shared token so other servers can join it, without
+    anyone editing a settings file or restarting anything."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    hub = current_app.extensions["mesh_hub"]
+    if hub.token:
+        flash("Server sharing is already on.", "success")
+        return redirect(url_for("admin.dashboard", section="updates") + "#servers")
+    token = secrets.token_hex(24)
+    try:
+        mesh.save_token(current_app, token)
+    except OSError as exc:
+        flash(f"Could not save the sharing token: {exc}", "error")
+        return redirect(url_for("admin.dashboard", section="updates") + "#servers")
+    current_app.config["MESH_TOKEN"] = token
+    hub.set_token(token)
+    flash("Server sharing is on. Copy the command below onto the new server.", "success")
+    return redirect(url_for("admin.dashboard", section="updates") + "#servers")
+
+
+@bp.post("/servers/add")
+@login_required
+def add_server():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = url_for("admin.dashboard", section="updates") + "#servers"
+    url = mesh.normalize_peer_url(request.form.get("url", ""))
+    if url is None:
+        flash("Enter the other server's address, for example http://192.168.10.30:8080.", "error")
+        return redirect(back)
+    hub = current_app.extensions["mesh_hub"]
+    if not hub.token:
+        flash("Turn on server sharing first, so both servers have a token.", "error")
+        return redirect(back)
+    ok, error, hint = hub.probe(url)
+    hub.add_saved_url(url)
+    if ok:
+        flash(f"{url} added.", "success")
+    else:
+        flash(
+            f"{url} was added, but it isn't answering yet: {error} {hint or ''}".strip(),
+            "error",
+        )
+    return redirect(back)
+
+
+@bp.post("/servers/remove")
+@login_required
+def remove_server():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    url = mesh.normalize_peer_url(request.form.get("url", ""))
+    if url and current_app.extensions["mesh_hub"].remove_saved_url(url):
+        flash(f"{url} removed from this list.", "success")
+    else:
+        flash("That server is listed in the settings file, so remove it there.", "error")
+    return redirect(url_for("admin.dashboard", section="updates") + "#servers")
+
+
+@bp.post("/updates/auto")
+@login_required
+def set_program_auto_install():
+    """Switch installing new WebManager versions by themselves on or off.
+
+    The switch is a file the root updater looks for; it still runs the tests,
+    takes the backup and rolls back exactly as it does for a manual approval."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    enable = request.form.get("enabled") == "1"
+    if enable and updater_active() is False:
+        flash(
+            "The updater service is switched off on this server, so it can't install anything "
+            "by itself yet. On the server run: sudo systemctl enable --now "
+            "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then try again.",
+            "error",
+        )
+        return redirect(url_for("admin.dashboard", section="updates"))
+    try:
+        set_auto_install(enable)
+    except OSError as exc:
+        flash(f"Could not change the setting: {exc}", "error")
+        return redirect(url_for("admin.dashboard", section="updates"))
+    if enable:
+        # Let the updater look now, so an update that is already waiting goes in.
+        try:
+            request_program_update_check()
+        except OSError:
+            pass
+        flash(
+            "Automatic installation is on. New versions are tested, backed up and installed by "
+            "themselves; a failing one is rolled back and reported here.",
+            "success",
+        )
+    else:
+        flash("Automatic installation is off. New versions wait for your approval.", "success")
     return redirect(url_for("admin.dashboard", section="updates"))
 
 

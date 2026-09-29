@@ -11,6 +11,7 @@ from pathlib import Path
 from . import apps as app_support
 from .db import get_db
 from .domains import site_hostname, site_hostnames
+from .usage_sampler import UsageSampler
 from .nginx import (
     NginxConfigError,
     build_app_config,
@@ -26,6 +27,12 @@ from .nginx import (
 
 class RuntimeErrorDetail(RuntimeError):
     pass
+
+
+# Calls to the container daemon made while a page is loading give up sooner
+# than the ones that build or start apps, so a stuck daemon slows a page down
+# for seconds rather than half a minute.
+PAGE_CALL_TIMEOUT = 8
 
 
 def _tidy_nginx_output(text: str) -> str:
@@ -66,11 +73,24 @@ def allocate_port(database, minimum: int, maximum: int, requested: int | None = 
 
 
 class RuntimeManager:
+    # How long "the container runtime is reachable" (or not) is remembered, so
+    # page loads don't each ask the runtime. A failure is rechecked sooner.
+    RUNTIME_OK_SECONDS = 30
+    RUNTIME_DOWN_SECONDS = 5
+
     def __init__(self, app):
         self.app = app
         self.processes: dict[int, subprocess.Popen] = {}
         self._app_locks: dict[int, threading.Lock] = {}
         self._app_locks_guard = threading.Lock()
+        self._runtime_check: tuple[str, float, tuple[bool, str]] | None = None
+        # Pages never call `docker stats` themselves (it takes a second or
+        # more); they read the newest sample this keeps while somebody watches.
+        self.usage = UsageSampler(
+            self._sample_usage,
+            background=app is not None and not app.config.get("TESTING"),
+            logger=app.logger if app is not None else None,
+        )
 
     # ------------------------------------------------------------------
     # App hosting (containers)
@@ -97,10 +117,38 @@ class RuntimeManager:
             return False, "No container runtime found. Install Docker or Podman."
         if not self.nginx_binary:
             return False, "App hosting needs Nginx."
-        ok, detail = runtime.available()
+        ok, detail = self._runtime_reachable(runtime)
         if not ok:
             return False, f"The container runtime isn't reachable: {detail}"
         return True, f"{Path(runtime.binary).name} {detail}"
+
+    def _runtime_reachable(self, runtime) -> tuple[bool, str]:
+        """runtime.available(), remembered briefly: it is a call to the
+        container daemon, and several pages make it on every view."""
+        now = time.monotonic()
+        cached = self._runtime_check
+        if cached and cached[0] == runtime.binary and now < cached[1]:
+            return cached[2]
+        result = runtime.available()
+        lifetime = self.RUNTIME_OK_SECONDS if result[0] else self.RUNTIME_DOWN_SECONDS
+        self._runtime_check = (runtime.binary, now + lifetime, result)
+        return result
+
+    def _sample_usage(self) -> dict[str, dict]:
+        """One reading of every running app container (slow: runs `docker stats`)."""
+        runtime = self.container_runtime
+        if runtime is None:
+            return {}
+        # `docker stats NAME...` fails for all of them if one stopped since
+        # `docker ps`, so look again once before giving up.
+        for _attempt in range(2):
+            names = runtime.running_app_names()
+            if not names:
+                return {}
+            readings = runtime.stats_many(names)
+            if readings:
+                return readings
+        return {}
 
     def _app_lock(self, site_id):
         with self._app_locks_guard:
@@ -305,7 +353,7 @@ class RuntimeManager:
         if runtime is None:
             return {"available": False, "status": None, "logs": "", "message": self.apps_status()[1]}
         name = runtime.container_name(site["id"])
-        info = runtime.inspect(name)
+        info = runtime.inspect(name, timeout=PAGE_CALL_TIMEOUT)
         running = info is not None and info["State"]["Status"] == "running"
         backups = sorted(
             (Path(self.app.instance_path) / "app-backups" / str(site["id"])).glob("data-*.tar"),
@@ -317,10 +365,10 @@ class RuntimeManager:
             "started_at": info["State"].get("StartedAt") if info else None,
             "restarts": info.get("RestartCount") if info else None,
             "image": info["Config"]["Image"] if info else None,
-            "logs": runtime.logs(name, 200) if info else "",
+            "logs": runtime.logs(name, 200, timeout=PAGE_CALL_TIMEOUT) if info else "",
             "volume": runtime.volume_name(site["id"]),
             "backups": [backup.name for backup in backups],
-            "stats": runtime.stats_many([name]).get(name) if running else None,
+            "stats": self.usage.latest().get(name) if running else None,
         }
 
     def app_status(self, site) -> dict:
@@ -330,27 +378,26 @@ class RuntimeManager:
         if runtime is None:
             return {"status": None, "restarts": None, "stats": None}
         name = runtime.container_name(site["id"])
-        info = runtime.inspect(name)
+        info = runtime.inspect(name, timeout=PAGE_CALL_TIMEOUT)
         running = info is not None and info["State"]["Status"] == "running"
         return {
             "status": info["State"]["Status"] if info else None,
             "restarts": info.get("RestartCount") if info else None,
-            "stats": runtime.stats_many([name]).get(name) if running else None,
+            "stats": self.usage.latest().get(name) if running else None,
         }
 
     def stats_for_sites(self, site_ids: list[int]) -> dict[int, dict]:
-        """Live CPU/memory/network snapshot for many apps in one docker call."""
+        """Latest CPU/memory/network reading for each of these apps that has
+        one. Returns at once: readings come from the background sampler, so
+        the first view after a quiet spell shows none until it has taken one."""
         runtime = self.container_runtime
         if runtime is None or not site_ids:
             return {}
-        name_by_site = {site_id: runtime.container_name(site_id) for site_id in site_ids}
-        running = set(runtime.running_app_names())
-        names = [name for name in name_by_site.values() if name in running]
-        raw = runtime.stats_many(names)
+        readings = self.usage.latest()
         return {
-            site_id: raw[name]
-            for site_id, name in name_by_site.items()
-            if name in raw
+            site_id: readings[name]
+            for site_id in site_ids
+            if (name := runtime.container_name(site_id)) in readings
         }
 
     @property

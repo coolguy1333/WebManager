@@ -28,6 +28,9 @@ REPLICA_OF=
 PEER_TOKEN=
 PEERS=
 SKIP_PRIMARY_CHECK=0
+AUTO_UPDATE=keep
+ANNOUNCE=0
+ANNOUNCE_URL=
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
 UPDATE_CONFIGURATION_EXPLICIT=0
@@ -71,6 +74,21 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-primary-check)
             SKIP_PRIMARY_CHECK=1
+            ;;
+        --announce)
+            ANNOUNCE=1
+            ;;
+        --announce-url)
+            shift
+            [[ $# -gt 0 ]] || { echo "--announce-url requires this server's address." >&2; exit 1; }
+            ANNOUNCE=1
+            ANNOUNCE_URL=${1%/}
+            ;;
+        --auto-update)
+            AUTO_UPDATE=on
+            ;;
+        --no-auto-update)
+            AUTO_UPDATE=off
             ;;
         --peers)
             shift
@@ -121,6 +139,15 @@ if [[ "$SOURCE_DIR" == "$APP_DIR" ]]; then
     echo "Run the installer from a source checkout outside $APP_DIR." >&2
     exit 1
 fi
+
+# Something the admin should know about an otherwise successful install. An
+# updater-driven update passes a file that the System page reads back.
+note() {
+    echo "Note: $*"
+    if [[ -n ${WEBMANAGER_INSTALL_NOTES_FILE:-} ]]; then
+        printf '%s\n' "$*" >>"$WEBMANAGER_INSTALL_NOTES_FILE" || true
+    fi
+}
 
 # A new replica cannot start unless its primary answers with the shared
 # secret key, so find out now - before anything on this server is changed -
@@ -333,6 +360,16 @@ install -d -o webmanager -g webmanager -m 0750 \
     "$DATA_DIR/logs"
 install -d -o root -g webmanager -m 0710 "$UPDATER_STATE"
 install -d -o webmanager -g webmanager -m 0750 "$UPDATER_STATE/requests"
+# The System page's "Install updates automatically" switch is this file
+# (the web app runs as webmanager, so it must be able to create and remove it).
+case "$AUTO_UPDATE" in
+    on)
+        install -o webmanager -g webmanager -m 0640 /dev/null "$UPDATER_STATE/requests/auto-install"
+        ;;
+    off)
+        rm -f "$UPDATER_STATE/requests/auto-install"
+        ;;
+esac
 install -d -o root -g webmanager -m 0750 "$CONFIG_DIR"
 if [[ ! -f "$CONFIG_DIR/webmanager.env" ]]; then
     install -o root -g webmanager -m 0640 \
@@ -460,6 +497,13 @@ EOF
     fi
 fi
 
+# The web app checks GitHub itself too, and can't read updater.env (root only):
+# give it the same repository and branch so both always look at the same thing.
+if [[ -n $UPDATE_REPOSITORY ]]; then
+    set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"
+    set_env WEBMANAGER_UPDATE_BRANCH "$UPDATE_BRANCH"
+fi
+
 env_value() {
     sed -n "s/^$1=//p" "$CONFIG_DIR/webmanager.env" | tail -n 1
 }
@@ -513,6 +557,115 @@ if ! install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-logrotate" "$LOGROT
         exit 1
     fi
 fi
+# Nginx is the one part of an update that can be refused by something outside
+# WebManager. Keep the current files so an update can put them back and still
+# install the new version, instead of failing (and undoing) the whole update.
+NGINX_SNAPSHOT=$(mktemp -d)
+for nginx_name in webmanager webmanager-sites; do
+    if [[ -f "/etc/nginx/sites-available/$nginx_name" ]]; then
+        cp -a "/etc/nginx/sites-available/$nginx_name" "$NGINX_SNAPSHOT/$nginx_name"
+    fi
+done
+restore_nginx_files() {
+    local nginx_name
+    for nginx_name in webmanager webmanager-sites; do
+        if [[ -f "$NGINX_SNAPSHOT/$nginx_name" ]]; then
+            cp -a "$NGINX_SNAPSHOT/$nginx_name" "/etc/nginx/sites-available/$nginx_name"
+            ln -sfn "/etc/nginx/sites-available/$nginx_name" "/etc/nginx/sites-enabled/$nginx_name"
+        else
+            rm -f "/etc/nginx/sites-enabled/$nginx_name" "/etc/nginx/sites-available/$nginx_name"
+        fi
+    done
+    return 0
+}
+
+# Hosts whose kernel has no IPv6 cannot open "listen [::]:port" sockets, and
+# Nginx refuses to start at all when one is configured.
+drop_ipv6_listeners() {
+    local nginx_file
+    for nginx_file in "$@"; do
+        if [[ -f $nginx_file ]]; then
+            sed -i '/^[[:space:]]*listen[[:space:]]\+\[::\]/d' "$nginx_file"
+        fi
+    done
+    return 0
+}
+
+# Servers installed before replication existed proxy the dashboard without a
+# /replication/ location; add it (long timeouts, no buffering) so other servers
+# can pull large data snapshots. Files that already have one, or don't proxy
+# the dashboard the usual way, are left alone.
+ensure_replication_location() {
+    local nginx_file=$1 port=$2
+    [[ -f $nginx_file ]] || return 0
+    python3 - "$nginx_file" "$port" <<'PY' || true
+import re
+import sys
+from pathlib import Path
+
+path, port = Path(sys.argv[1]), sys.argv[2]
+text = path.read_text(encoding="utf-8")
+if "/replication/" in text:
+    raise SystemExit(0)
+proxy = f"proxy_pass http://127.0.0.1:{port}"
+
+
+def matching_brace(source, opening):
+    depth = 0
+    index = opening
+    while index < len(source):
+        char = source[index]
+        if char == "#":
+            index = source.find("\n", index)
+            if index < 0:
+                return -1
+        elif char in "\"'":
+            index = source.find(char, index + 1)
+            if index < 0:
+                return -1
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+result = []
+position = 0
+for match in re.finditer(r"^([ \t]*)location\s+/\s*\{", text, re.M):
+    if match.start() < position:
+        continue
+    opening = match.end() - 1
+    closing = matching_brace(text, opening)
+    if closing < 0 or proxy not in text[opening:closing]:
+        continue
+    indent = match.group(1)
+    block = (
+        "\n\n{i}# Other WebManager servers pull site/app data snapshots here; they can be\n"
+        "{i}# large and slow to produce.\n"
+        "{i}location ^~ /replication/ {{\n"
+        "{i}    proxy_pass http://127.0.0.1:{p};\n"
+        "{i}    proxy_http_version 1.1;\n"
+        "{i}    proxy_set_header Host $http_host;\n"
+        "{i}    proxy_set_header X-Forwarded-Host $http_host;\n"
+        "{i}    proxy_set_header X-Real-IP $remote_addr;\n"
+        "{i}    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+        "{i}    proxy_set_header X-Forwarded-Proto $scheme;\n"
+        "{i}    proxy_buffering off;\n"
+        "{i}    proxy_read_timeout 900s;\n"
+        "{i}    proxy_send_timeout 900s;\n"
+        "{i}}}"
+    ).format(i=indent, p=port)
+    result.append(text[position:closing + 1] + block)
+    position = closing + 1
+if result:
+    path.write_text("".join(result) + text[position:], encoding="utf-8")
+PY
+}
+
 if [[ ! -f "$NGINX_AVAILABLE" ]]; then
     install -o root -g root -m 0644 "$SCRIPT_DIR/nginx-dashboard.conf" "$NGINX_AVAILABLE"
 else
@@ -552,12 +705,41 @@ else
         fi
     fi
 fi
-nginx -t
+ensure_replication_location "$NGINX_AVAILABLE" "$APP_PORT"
+if [[ ! -e /proc/net/if_inet6 ]]; then
+    drop_ipv6_listeners "$NGINX_AVAILABLE" "$SITE_NGINX_AVAILABLE"
+fi
+NGINX_OK=1
+if ! NGINX_TEST_OUTPUT=$(nginx -t 2>&1); then
+    printf '%s\n' "$NGINX_TEST_OUTPUT" >&2
+    if [[ $SELF_UPDATE -ne 1 ]]; then
+        exit 1
+    fi
+    NGINX_PROBLEM=$(printf '%s\n' "$NGINX_TEST_OUTPUT" | grep -m1 -E '\[(emerg|alert|crit)\]' | cut -c1-240 || true)
+    restore_nginx_files
+    if nginx -t >/dev/null 2>&1; then
+        note "The new Nginx configuration was refused by nginx -t (${NGINX_PROBLEM:-no details}) and was not applied; the previous one is still in use."
+    else
+        NGINX_OK=0
+        note "Nginx's configuration test fails (${NGINX_PROBLEM:-no details}) even with the previous files, so Nginx was left as it is."
+    fi
+else
+    printf '%s\n' "$NGINX_TEST_OUTPUT"
+fi
+rm -rf "$NGINX_SNAPSHOT"
 
 echo "[7/8] Starting services"
 systemctl daemon-reload
-systemctl enable --now nginx
-systemctl reload nginx
+if [[ $NGINX_OK -eq 1 ]]; then
+    systemctl enable --now nginx
+    if ! systemctl reload nginx; then
+        if [[ $SELF_UPDATE -eq 1 ]]; then
+            note "Nginx could not be reloaded, so it is still using its previous configuration."
+        else
+            exit 1
+        fi
+    fi
+fi
 systemctl enable webmanager
 systemctl restart webmanager
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
@@ -578,7 +760,11 @@ elif [[ $SELF_UPDATE -eq 0 ]]; then
 fi
 
 echo "[8/8] Configuring UFW when it is already active"
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+if [[ $SELF_UPDATE -eq 1 ]]; then
+    # The updater's sandbox cannot change firewall rules, and an update does not
+    # change which ports WebManager uses.
+    echo "Firewall rules are left as they are during an update."
+elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
     ufw allow 8080/tcp
     if [[ -n $SITE_BASE_DOMAIN ]]; then
         ufw allow 80/tcp
@@ -663,8 +849,53 @@ if [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
         || echo "Warning: could not remove the previous Python environment." >&2
 fi
 
-SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+# Only for the closing message. `hostname -I` needs a netlink socket, which the
+# updater's sandbox forbids; under `set -e -o pipefail` that failure used to
+# make every automatic update fail (and roll back) after it had installed.
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
 SERVER_IP=${SERVER_IP:-SERVER_IP}
+
+# Tell the server this one joined about our address, so it lists us without
+# anyone typing it in there. Never fatal: the admin can add us by hand.
+if [[ $SELF_UPDATE -eq 0 && $ANNOUNCE -eq 1 ]]; then
+    ANNOUNCE_TARGET=${REPLICA_OF:-${PEERS%%,*}}
+    if [[ -z $ANNOUNCE_URL && $SERVER_IP != SERVER_IP ]]; then
+        ANNOUNCE_URL="http://$SERVER_IP:8080"
+    fi
+    if [[ -z $ANNOUNCE_TARGET || -z $ANNOUNCE_URL ]]; then
+        echo "Could not work out this server's address to announce; add it in the other server's Servers panel."
+    elif python3 - "$ANNOUNCE_TARGET" "$PEER_TOKEN" "$ANNOUNCE_URL" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+target, token, own = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
+request = urllib.request.Request(
+    target + "/mesh/register",
+    data=json.dumps({"url": own}).encode(),
+    headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    urllib.request.urlopen(request, timeout=20).read()
+except urllib.error.HTTPError as exc:
+    try:
+        detail = json.loads(exc.read().decode()).get("error", "")
+    except Exception:
+        detail = ""
+    print(f"The other server refused the announcement (HTTP {exc.code}). {detail}", file=sys.stderr)
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"Could not reach the other server to announce: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        echo "Announced $ANNOUNCE_URL to $ANNOUNCE_TARGET; it now appears in that server's Servers panel."
+    else
+        echo "Could not announce this server. Add $ANNOUNCE_URL in the other server's Servers panel instead."
+    fi
+fi
 
 echo
 echo "============================================================"

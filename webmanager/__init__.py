@@ -105,6 +105,10 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/check",
         ),
+        # Blank: next to the install-request file, where the updater looks.
+        PROGRAM_UPDATE_AUTO_FILE=os.environ.get(
+            "WEBMANAGER_PROGRAM_UPDATE_AUTO_FILE", ""
+        ).strip(),
         UPDATE_REPOSITORY=os.environ.get("WEBMANAGER_UPDATE_REPOSITORY", "").strip(),
         UPDATE_BRANCH=os.environ.get("WEBMANAGER_UPDATE_BRANCH", "").strip(),
         MESH_PEERS=os.environ.get("WEBMANAGER_PEERS", "").strip(),
@@ -114,6 +118,9 @@ def create_app(test_config=None):
 
     if test_config:
         app.config.update(test_config)
+    if not app.config["MESH_TOKEN"]:
+        # Sharing switched on from the System page (no settings file edit).
+        app.config["MESH_TOKEN"] = mesh.load_saved_token(app)
 
     site_domain = str(app.config["SITE_BASE_DOMAIN"]).strip().lower().rstrip(".")
     if site_domain and not DOMAIN_RE.fullmatch(site_domain):
@@ -305,6 +312,13 @@ def create_app(test_config=None):
                 if url == replica_of or urlsplit(url).hostname != self_host
             ]
     mesh_hub = mesh.MeshHub(app, peer_urls, app.config["MESH_TOKEN"])
+    for saved_url in mesh.load_saved_peers(app):
+        # Servers added on the System page or that registered themselves.
+        if saved_url not in mesh_hub.urls:
+            mesh_hub.urls.append(saved_url)
+        mesh_hub.saved_urls.add(saved_url)
+        if saved_url not in peer_urls:
+            peer_urls.append(saved_url)
     app.extensions["mesh_hub"] = mesh_hub
 
     if not app.config.get("TESTING"):
@@ -332,7 +346,7 @@ def create_app(test_config=None):
                     "/mesh/status is public and unauthenticated. Set "
                     "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
                 )
-            mesh_hub.start()
+        mesh_hub.start()  # also lets servers added later be polled straight away
         from urllib.parse import urlsplit
 
         plain_http = [

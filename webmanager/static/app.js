@@ -574,6 +574,23 @@ if (siteToolbar) {
   apply();
 }
 
+// Runs `task` now and then every `every` ms while the tab is visible, never
+// starting one while the last is still waiting for the server (a slow server
+// would otherwise be buried in requests). With `again`, it also runs once
+// about a second in: the server's first reading of a busy figure needs a
+// moment, so the page fills in without waiting a whole interval.
+const poll = (task, { every = 2000, again = false } = {}) => {
+  let running = false;
+  const tick = async () => {
+    if (running || document.hidden) return;
+    running = true;
+    try { await task(); } finally { running = false; }
+  };
+  tick();
+  if (again) window.setTimeout(tick, 1000);
+  window.setInterval(tick, every);
+};
+
 // ---------- System: live resource usage ----------
 const metricsPanel = document.querySelector("[data-metrics]");
 if (metricsPanel) {
@@ -682,8 +699,7 @@ if (metricsPanel) {
       meshLive?.classList.add("stale");
     }
   };
-  refresh();
-  window.setInterval(refresh, 2000);
+  poll(refresh);
 }
 
 // ---------- Apps: live container usage (list views) ----------
@@ -708,7 +724,7 @@ if (appsLive) {
       // Leave the last known values on screen; try again next tick.
     }
   };
-  window.setInterval(refreshAppsList, 2000);
+  poll(refreshAppsList, { again: true });
 }
 
 // ---------- App page: live container status & usage ----------
@@ -736,7 +752,7 @@ if (appStatus) {
       // Leave the last known values on screen; try again next tick.
     }
   };
-  window.setInterval(refreshAppStatus, 2000);
+  poll(refreshAppStatus, { again: true });
 }
 
 // Reload while an app is building/starting so the page reflects the result.
@@ -770,4 +786,22 @@ document.querySelectorAll("[data-app-address]").forEach((address) => {
   };
   root.addEventListener("change", update);
   update();
+});
+
+// ---------- Servers: keep the copy-paste join commands in step with the address ----------
+document.querySelectorAll("[data-join]").forEach((panel) => {
+  const address = panel.querySelector("[data-join-address]");
+  if (!address) return;
+  const update = () => {
+    const value = address.value.trim().replace(/\/+$/, "") || "http://THIS-SERVER:8080";
+    panel.querySelectorAll("[data-join-command]").forEach((code) => {
+      const command = code.dataset.joinCommand
+        .replace("{address}", value)
+        .replace("{token}", code.dataset.joinToken);
+      const lines = code.textContent.split("\n");
+      lines[lines.length - 1] = command;
+      code.textContent = lines.join("\n");
+    });
+  };
+  address.addEventListener("input", update);
 });

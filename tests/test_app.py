@@ -2160,6 +2160,24 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(analytics["bytes"], 512)
         self.assertEqual(analytics["top_paths"], [("/docs", 1)])
 
+    def test_site_analytics_ignores_other_sites_that_only_mention_the_host(self):
+        log_path = Path(self.app.config["NGINX_ROOT"]) / "access.log"
+        entries = [
+            {"time": "2026-06-11T12:00:00+00:00", "host": "demo.example", "status": 200,
+             "bytes": 10, "client": "203.0.113.5", "uri": "/"},
+            # Another site whose request happens to contain this site's hostname.
+            {"time": "2026-06-11T12:01:00+00:00", "host": "other.example", "status": 200,
+             "bytes": 99, "client": "203.0.113.6", "uri": "/redirect?to=demo.example"},
+            {"time": "2026-06-11T12:02:00+00:00", "host": "DEMO.example", "status": 404,
+             "bytes": 5, "client": "203.0.113.7", "uri": "/missing"},
+        ]
+        log_path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+
+        analytics = site_analytics(log_path, "demo.example", days=3650)
+
+        self.assertEqual(analytics["requests"], 2)
+        self.assertEqual(analytics["bytes"], 15)
+
     def test_not_found_page_has_navigation_and_status_code(self):
         user_id = self.add_user("alice")
         self.login_user(user_id)
@@ -3137,7 +3155,12 @@ class ServiceUnitTests(unittest.TestCase):
             "Tests failed with installed dependencies; retrying in a clean environment.",
             updater,
         )
-        self.assertIn("Last test output:", updater)
+        # A failed update says why: the failing tests and the end of the output,
+        # and a retry that cannot even be set up does not hide the real failure.
+        self.assertIn("summarize_log()", updater)
+        self.assertIn("compgen -e | grep '^WEBMANAGER_'", updater)
+        self.assertIn("The approved update failed its application test suite", updater)
+        self.assertIn("FIRST_TEST_FAILURE=$(summarize_log", updater)
         self.assertIn("UPDATE_STAGE=installing_dependencies", updater)
         self.assertIn("UPDATE_STAGE=preflighting_install", updater)
         self.assertIn("source.backup(target)", updater)
@@ -3236,9 +3259,30 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Preparing the data backup while WebManager remains online.", updater)
         self.assertIn('sync_data_backup "$DATA_BACKUP_DIR"', updater)
         self.assertIn(
-            'restore_directory_contents "$DATA_BACKUP_DIR" "$DATA_DIR"',
+            'restore_data_backup "$DATA_BACKUP_DIR" "$DATA_DIR"',
             updater,
         )
+        # Big rebuildable data is not backed up, so a rollback must never wipe
+        # it: it only puts back what the backup holds.
+        self.assertIn(
+            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"', updater
+        )
+        self.assertNotIn('restore_directory_contents "$DATA_BACKUP_DIR"', updater)
+        self.assertIn("Not enough free disk space", updater)
+        self.assertLess(
+            updater.index("UPDATE_STAGE=checking_space"),
+            updater.index("UPDATE_STAGE=backing_up"),
+        )
+        # Installing by themselves: on only when a super admin asked for it, and
+        # a version that keeps failing is not hammered every 15 minutes.
+        self.assertIn("AUTO_FILE=$STATE_DIR/requests/auto-install", updater)
+        self.assertIn("AUTO_INSTALL=1", updater)
+        self.assertIn('FAILURE_RECORD=$STATE_DIR/last-failure', updater)
+        self.assertIn("AUTO_RETRY_MINUTES=360", updater)
+        # A server far behind the tip is still judged (the clone is shallow).
+        self.assertIn("fetch --quiet --unshallow", updater)
+        # The web app is told which repository and branch the updater follows.
+        self.assertIn('"repository": repository or None', updater)
         self.assertNotIn("webmanager-data.tar.gz", updater)
         self.assertIn("waiting for super-admin approval", updater)
         self.assertIn("OnUnitActiveSec=15min", timer)
@@ -3247,15 +3291,30 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("requests/check", path_unit)
         self.assertIn("ProtectSystem=full", service)
         self.assertIn("ReadWritePaths=/opt/webmanager", service)
+        # Paths that may not exist on every server are optional ("-"), or the
+        # service would refuse to start at all.
         self.assertIn(
-            "ReadWritePaths=/etc/nginx/sites-available",
+            "ReadWritePaths=-/etc/nginx/sites-available",
             service,
         )
+        self.assertIn("ReadWritePaths=-/etc/logrotate.d", service)
         self.assertIn(
             "ReadWritePaths=/usr/local/sbin",
             service,
         )
         self.assertIn("--self-update", installer)
+        # An update never fails just because Nginx refuses the new files: it
+        # puts the old ones back and says so. Servers without IPv6 keep working.
+        self.assertIn("restore_nginx_files()", installer)
+        self.assertIn("was not applied; the previous one is still in use", installer)
+        self.assertIn("drop_ipv6_listeners", installer)
+        self.assertIn("/proc/net/if_inet6", installer)
+        # The updater's sandbox cannot change firewall rules.
+        self.assertIn("Firewall rules are left as they are during an update.", installer)
+        self.assertIn("awk '{print $1}' || true)", installer)
+        self.assertIn("--auto-update)", installer)
+        self.assertIn("ensure_replication_location", installer)
+        self.assertIn('set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"', installer)
         self.assertIn(
             "https://github.com/coolguy1333/WebManager.git", installer
         )

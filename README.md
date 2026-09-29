@@ -756,6 +756,20 @@ bearer token (tokens under 16 characters never unlock the replication endpoints,
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
 
+### Adding a server from the System page (easiest)
+
+1. Open **System → Servers → Turn on server sharing**. This creates the shared
+   token for you (kept in the data folder); nothing to edit, nothing to restart.
+2. Copy the command it shows onto the new server and run it. The address in it
+   is the one you are browsing with; edit the box if the new server should use
+   another (for a private network, `http://SERVER-IP:8080`).
+3. The new server announces itself (`--announce`), so it appears in the Servers
+   list on its own. Any server can also be added by hand with **Add by
+   address**, and removed again (servers named in `WEBMANAGER_PEERS` are
+   changed in that file instead).
+
+The manual steps below do the same thing without the page.
+
 ### Setting up a new peer server with one command
 
 Peers reach each other at the dashboard address. On a private network that
@@ -781,6 +795,9 @@ gateway's 404 page).
      --replica-of http://PRIMARY-IP:8080 \
      --peer-token <the same token>
    ```
+
+Add `--announce` (or `--announce-url http://THIS-SERVER:8080`) to have the new
+server register itself with the one it joined.
 
 `--replica-of` makes it a mirror of that primary (use `--peers
 https://other.example.com,...` instead, or as well, to only list servers to
@@ -1657,16 +1674,34 @@ file from recursively retriggering installation.
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.
 
+**Installing automatically.** On the System page, *Turn on automatic
+installation* (or run `setup.sh --auto-update`; `--no-auto-update` turns it
+off) makes the updater treat each new commit as approved, so the server keeps
+itself current. It runs exactly the same tests, backup and rollback as a manual
+approval. A version that fails is reported on the System page with the failing
+tests, is **not** retried every 15 minutes (it is tried again after a few
+hours, or immediately with *Try again*), and a newer commit replaces it.
+
+The updater refuses to start an update when the disk is too full for the
+backup, keeps the last three backups, and leaves large rebuildable data
+(`repositories`, `logs`, `app-backups`, `app-work`) out of them, so a rollback
+puts back the database, keys and settings without touching the checkouts.
+If Nginx rejects a new configuration during an update, the previous Nginx
+files are put back and the update still installs, with a note on the System
+page. Servers without IPv6 get IPv6 listeners left out of the Nginx files
+WebManager writes. Firewall rules are never changed by an update.
+
 Before installing a new commit, the updater:
 
 1. Clones the configured branch into an isolated temporary directory.
 2. Verifies that the URL is an HTTPS `github.com` repository.
 3. Rejects force-pushed or rewritten history.
-4. Requires approval for that exact 40-character commit from a super admin.
+4. Requires approval for that exact 40-character commit from a super admin (unless automatic installation is on).
 5. Runs the full test suite, reusing the installed virtual environment when
    requirements are unchanged and retrying in a clean one if that fails.
-6. Stops WebManager and backs up `/var/lib/webmanager`,
-   `/etc/webmanager`, the installed application, and service definitions.
+6. Stops WebManager and backs up the database and settings in
+   `/var/lib/webmanager`, `/etc/webmanager`, the installed application, and
+   service definitions.
 7. Installs the candidate and waits for the health endpoint.
 8. Automatically restores both the previous application and all persistent
    data if installation or health verification fails.

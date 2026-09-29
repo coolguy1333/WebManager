@@ -976,3 +976,6 @@ fieldset.field legend { margin-bottom: 6px; }
   .hostname-row.compact { grid-template-columns: minmax(0, 1fr); }
   .hostname-row.compact .hostname-dot { display: none; }
 }
+
+/* Copy-paste commands on the Servers panel wrap instead of scrolling sideways. */
+[data-join] pre { white-space: pre-wrap; word-break: break-all; }
