@@ -147,6 +147,15 @@ class ReplicationManagerUnitTests(unittest.TestCase):
             key = replication.fetch_secret_key("https://primary.example", "s3cret-s3cret-s3cret")
         self.assertEqual(key, "the-secret")
 
+    def test_fetch_secret_key_explains_a_404_from_the_wrong_port(self):
+        error = replication.urllib.error.HTTPError(
+            "http://primary.example/mesh/secret-key", 404, "Not Found", {}, None
+        )
+        with patch.object(peer_http, "open_peer", side_effect=error):
+            with self.assertRaises(replication.ReplicationError) as caught:
+                replication.fetch_secret_key("http://primary.example", "t" * 16)
+        self.assertIn("8080", str(caught.exception))
+
     def test_fetch_secret_key_raises_on_network_failure(self):
         with patch.object(
             peer_http, "open_peer",

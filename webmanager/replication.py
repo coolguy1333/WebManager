@@ -76,6 +76,17 @@ def fetch_secret_key(primary_url: str, token: str, timeout: float = 10) -> str:
     try:
         with peer_http.open_peer(req, timeout=timeout) as response:  # noqa: S310 - configured primary URL
             key = response.read().decode("utf-8").strip()
+    except urllib.error.HTTPError as exc:
+        hints = {
+            401: "the peer token doesn't match the primary's WEBMANAGER_PEER_TOKEN (or is under 16 characters)",
+            404: "that address answered but isn't a WebManager dashboard that supports replication - "
+            "the dashboard is on port 8080 by default (e.g. http://HOST:8080), and the primary must be "
+            "updated to a version with replication and have WEBMANAGER_PEER_TOKEN set",
+        }
+        hint = f" - {hints[exc.code]}" if exc.code in hints else ""
+        raise ReplicationError(
+            f"Could not fetch the secret key from {primary_url}: HTTP {exc.code}{hint}"
+        ) from exc
     except (urllib.error.URLError, OSError) as exc:
         raise ReplicationError(f"Could not fetch the secret key from {primary_url}: {exc}") from exc
     if not key:
