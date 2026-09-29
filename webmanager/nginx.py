@@ -21,6 +21,7 @@ BLOCKED_DIRECTIVES = {
     "proxy_store_access",
     "ssi",
     "ssi_types",
+    "stub_status",
     "sub_filter_types",
     "user",
     "worker_processes",
@@ -505,7 +506,13 @@ def validate_site_config(
                 raise NginxConfigError(f"The {name} directive is not allowed in managed configs.")
 
             if directive == "listen":
-                listen_port = _listen_port(arguments[0]) if arguments else None
+                if len(arguments) != 1:
+                    # Extra parameters (default_server, ssl, proxy_protocol, ...)
+                    # could take over the gateway or break every other site.
+                    raise NginxConfigError(
+                        "Each listen directive may only give an address and port."
+                    )
+                listen_port = _listen_port(arguments[0])
                 if listen_port not in allowed_ports:
                     expected = " or ".join(str(value) for value in sorted(allowed_ports))
                     raise NginxConfigError(

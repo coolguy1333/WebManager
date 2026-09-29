@@ -610,9 +610,31 @@ if (metricsPanel) {
       if (!peer) return;
       const statusCell = row.querySelector('[data-mesh-stat="status"]');
       if (statusCell) {
-        statusCell.innerHTML = peer.reachable
-          ? '<span class="badge badge-success"><span class="dot"></span>Online</span>'
-          : `<span class="badge badge-danger" title="${peer.error ? String(peer.error).replace(/"/g, "&quot;") : ""}"><span class="dot"></span>Unreachable</span>`;
+        const badge = document.createElement("span");
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        badge.append(dot);
+        if (peer.reachable) {
+          badge.className = "badge badge-success";
+          badge.append("Online");
+        } else if (peer.checked_at) {
+          badge.className = "badge badge-danger";
+          badge.title = peer.error || "";
+          badge.append("Unreachable");
+        } else {
+          badge.className = "badge";
+          badge.textContent = "Checking…";
+        }
+        statusCell.replaceChildren(badge);
+      }
+      const problem = row.querySelector("[data-mesh-problem]");
+      if (problem) {
+        const failed = !peer.reachable && Boolean(peer.checked_at);
+        problem.hidden = !failed;
+        if (failed) {
+          const seen = peer.last_seen ? ` Last seen ${peer.last_seen}.` : " Never reached yet.";
+          problem.textContent = (peer.hint || peer.error || "") + seen;
+        }
       }
       setMesh(row, "version", peer.version || "—");
       setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");

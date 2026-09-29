@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ENV_FILE=/etc/webmanager/webmanager.env
 NGINX_FILE=/etc/nginx/sites-available/webmanager
 SITE_NGINX_FILE=/etc/nginx/sites-available/webmanager-sites
@@ -141,6 +142,21 @@ server {
         proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 60s;
+    }
+
+    # Other WebManager servers pull site/app data snapshots here; they can be
+    # large and slow to produce.
+    location ^~ /replication/ {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
     }
 
     add_header X-Content-Type-Options "nosniff" always;
@@ -292,49 +308,23 @@ rm -f "$NGINX_TEMP"
 
 SITE_GATEWAY_PORT=$(sed -n 's/^WEBMANAGER_SITE_GATEWAY_PORT=//p' "$ENV_FILE" | tail -n 1)
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
-cat >"$SITE_NGINX_FILE" <<EOF
-map \$http_cf_connecting_ip \$webmanager_site_client_ip {
-    default \$http_cf_connecting_ip;
-    "" \$remote_addr;
-}
-
-map \$http_x_forwarded_proto \$webmanager_site_proto {
-    default \$http_x_forwarded_proto;
-    "" \$scheme;
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    listen 8080;
-    listen [::]:8080;
-    # The exact dashboard server_name takes priority. WebManager validates
-    # configured site hostnames at the loopback gateway.
-    server_name _;
-    server_tokens off;
-
-    location / {
-        proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$webmanager_site_client_ip;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
-        proxy_intercept_errors off;
-    }
-
-    # Friendly page if WebManager's site gateway is down or restarting.
-    error_page 502 503 504 = @webmanager_offline;
-    location @webmanager_offline {
-        default_type text/html;
-        add_header Retry-After 30 always;
-        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Temporarily unavailable</title><style>:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#525b6c;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);border:1px solid var(--line);border-radius:16px}.code{font-size:64px;font-weight:800;letter-spacing:-3px;line-height:1;color:var(--accent);margin:0 0 12px}h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}p:last-child{margin:0}a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}</style><main><p class="code">503</p><h1>Temporarily unavailable</h1><p>This website is offline for a moment. Please try again shortly.</p></main></html>';
-    }
-
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-}
-EOF
+SITES_TEMPLATE=
+for candidate in "$SCRIPT_DIR/nginx-sites.conf" "$SCRIPT_DIR/deploy/debian/nginx-sites.conf"; do
+    if [[ -f $candidate ]]; then
+        SITES_TEMPLATE=$candidate
+        break
+    fi
+done
+if [[ -z $SITES_TEMPLATE ]]; then
+    echo "Could not find nginx-sites.conf next to this script. Re-run: bash setup.sh" >&2
+    exit 1
+fi
+APP_PORT=$(sed -n 's/^WEBMANAGER_PORT=//p' "$ENV_FILE" | tail -n 1)
+APP_PORT=${APP_PORT:-5000}
+sed \
+    -e "s|@SITE_GATEWAY_PORT@|$SITE_GATEWAY_PORT|g" \
+    -e "s|@APP_PORT@|$APP_PORT|g" \
+    "$SITES_TEMPLATE" >"$SITE_NGINX_FILE"
 chown root:root "$SITE_NGINX_FILE"
 chmod 0644 "$SITE_NGINX_FILE"
 ln -sfn "$SITE_NGINX_FILE" "$SITE_NGINX_LINK"

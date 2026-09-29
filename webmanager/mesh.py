@@ -83,6 +83,9 @@ def local_status(app) -> dict:
     }
 
 
+explain_failure = peer_http.explain_failure
+
+
 class MeshHub:
     """Polls sibling servers and authenticates their polls of us."""
 
@@ -138,24 +141,40 @@ class MeshHub:
                 body = json.loads(response.read().decode("utf-8"))
             if not isinstance(body, dict):
                 raise ValueError("Peer returned an unexpected response.")
+            now = time.time()
             with self._lock:
-                self._remote[url] = {"reachable": True, "error": None, "checked_at": time.time(), "data": body}
+                self._remote[url] = {
+                    "reachable": True, "error": None, "hint": None,
+                    "checked_at": now, "last_ok_at": now, "data": body,
+                }
             if was_reachable is False:
                 self.app.logger.info("Mesh peer %s is reachable again.", url)
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            message = str(getattr(exc, "reason", None) or exc)
+            message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             with self._lock:
                 previous = self._remote.get(url, {})
                 self._remote[url] = {
                     "reachable": False,
                     "error": message,
+                    "hint": hint,
                     "checked_at": time.time(),
+                    "last_ok_at": previous.get("last_ok_at"),
                     # Keep the last known data so the panel can still show
                     # "last seen" figures for a peer that's gone offline.
                     "data": previous.get("data"),
                 }
             if was_reachable is not False:
-                self.app.logger.warning("Mesh peer %s is unreachable: %s", url, message)
+                self.app.logger.warning("Mesh peer %s is unreachable: %s (%s)", url, message, hint)
+
+    def _last_seen(self, epoch):
+        """"3 minutes ago" for the last successful poll, or None if never."""
+        if not epoch:
+            return None
+        moment = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch))
+        try:
+            return self.app.jinja_env.filters["ago"](moment)
+        except Exception:  # never let a label break the panel
+            return moment
 
     def entries(self) -> list[dict]:
         """One entry per configured peer, for the admin panel."""
@@ -171,7 +190,9 @@ class MeshHub:
                     "hostname": data.get("hostname") or url.replace("https://", "").replace("http://", ""),
                     "reachable": bool(remote.get("reachable")),
                     "error": remote.get("error"),
+                    "hint": remote.get("hint"),
                     "checked_at": remote.get("checked_at"),
+                    "last_seen": self._last_seen(remote.get("last_ok_at")),
                     "version": data.get("version"),
                     "sites": data.get("sites"),
                     "apps_enabled": data.get("apps_enabled"),

@@ -27,6 +27,7 @@ fi
 REPLICA_OF=
 PEER_TOKEN=
 PEERS=
+SKIP_PRIMARY_CHECK=0
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
 UPDATE_CONFIGURATION_EXPLICIT=0
@@ -68,6 +69,9 @@ while [[ $# -gt 0 ]]; do
             [[ $# -gt 0 ]] || { echo "--peer-token requires the shared token." >&2; exit 1; }
             PEER_TOKEN=$1
             ;;
+        --skip-primary-check)
+            SKIP_PRIMARY_CHECK=1
+            ;;
         --peers)
             shift
             [[ $# -gt 0 ]] || { echo "--peers requires comma-separated server URLs." >&2; exit 1; }
@@ -105,7 +109,8 @@ for required in \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
     deploy/debian/webmanager-update.timer \
-    deploy/debian/webmanager-update.path; do
+    deploy/debian/webmanager-update.path \
+    deploy/debian/nginx-sites.conf; do
     if [[ ! -e "$SOURCE_DIR/$required" ]]; then
         echo "Missing source item: $SOURCE_DIR/$required" >&2
         exit 1
@@ -115,6 +120,67 @@ done
 if [[ "$SOURCE_DIR" == "$APP_DIR" ]]; then
     echo "Run the installer from a source checkout outside $APP_DIR." >&2
     exit 1
+fi
+
+# A new replica cannot start unless its primary answers with the shared
+# secret key, so find out now - before anything on this server is changed -
+# and say exactly what is wrong instead of leaving a service that crash-loops.
+check_primary() {
+    python3 - "$REPLICA_OF" "$PEER_TOKEN" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url, token = sys.argv[1].rstrip("/"), sys.argv[2]
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+request = urllib.request.Request(
+    url + "/mesh/secret-key", headers={"Authorization": "Bearer " + token}
+)
+try:
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=10) as response:
+        if response.status == 200 and response.read(4096).strip():
+            print(f"The primary at {url} answered and accepted the token.")
+            raise SystemExit(0)
+    problem = "it answered, but not with a secret key"
+except urllib.error.HTTPError as exc:
+    if exc.code == 401:
+        problem = (
+            "it rejected the token. Set the same WEBMANAGER_PEER_TOKEN (16+ characters) in "
+            "/etc/webmanager/webmanager.env on the primary, restart it, and use that value here"
+        )
+    elif exc.code == 404:
+        problem = (
+            "it answered 404, so that address does not reach a WebManager with replication. "
+            "Use the primary's dashboard address (for example http://PRIMARY-IP:8080 or its "
+            "public https:// address), and update the primary first: on it, run 'git pull && "
+            "sudo bash setup.sh' and make sure WEBMANAGER_PEER_TOKEN is set there"
+        )
+    elif 300 <= exc.code < 400:
+        problem = f"it redirected to {exc.headers.get('Location')}; use that final address instead"
+    else:
+        problem = f"it answered HTTP {exc.code}"
+except (urllib.error.URLError, OSError) as exc:
+    problem = f"could not connect ({getattr(exc, 'reason', exc)}). Check the address, the network and any firewall"
+print(f"Cannot use {url} as the primary: {problem}.", file=sys.stderr)
+print("Nothing was changed on this server. Fix the above and run setup again, or add", file=sys.stderr)
+print("--skip-primary-check to install anyway.", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+if [[ $SELF_UPDATE -eq 0 && -n $REPLICA_OF && $SKIP_PRIMARY_CHECK -eq 0 ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        echo "[0/8] Checking that the primary is reachable"
+        check_primary
+    else
+        echo "python3 is not installed yet; skipping the primary reachability check."
+    fi
 fi
 
 NEW_VENV=
@@ -199,6 +265,7 @@ install -o root -g root -m 0644 "$SOURCE_DIR/run.py" "$APP_DIR/run.py"
 install -o root -g root -m 0644 "$SOURCE_DIR/requirements.txt" "$APP_DIR/requirements.txt"
 install -o root -g root -m 0644 "$SOURCE_DIR/README.md" "$APP_DIR/README.md"
 install -o root -g root -m 0755 "$SOURCE_DIR/configure-google.sh" "$APP_DIR/configure-google.sh"
+install -o root -g root -m 0644 "$SOURCE_DIR/deploy/debian/nginx-sites.conf" "$APP_DIR/nginx-sites.conf"
 SOURCE_COMMIT=
 if git -C "$SOURCE_DIR" diff --quiet 2>/dev/null \
     && git -C "$SOURCE_DIR" diff --cached --quiet 2>/dev/null \
@@ -409,6 +476,12 @@ APP_PORT=${APP_PORT:-5000}
 SITE_PORT_MIN=${SITE_PORT_MIN:-8100}
 SITE_PORT_MAX=${SITE_PORT_MAX:-8999}
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
+for port_value in "$SITE_GATEWAY_PORT" "$APP_PORT" "$SITE_PORT_MIN" "$SITE_PORT_MAX"; do
+    if [[ ! $port_value =~ ^[0-9]{1,5}$ ]]; then
+        echo "Invalid port in $CONFIG_DIR/webmanager.env: '$port_value'." >&2
+        exit 1
+    fi
+done
 DASHBOARD_HOST=
 if [[ -n $GOOGLE_REDIRECT_URI ]]; then
     DASHBOARD_HOST=$(python3 - "$GOOGLE_REDIRECT_URI" <<'PY'
@@ -456,49 +529,10 @@ fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 if [[ -n $SITE_BASE_DOMAIN || -n $DASHBOARD_HOST ]]; then
     SITE_NGINX_TEMP=$(mktemp)
-    cat >"$SITE_NGINX_TEMP" <<EOF
-map \$http_cf_connecting_ip \$webmanager_site_client_ip {
-    default \$http_cf_connecting_ip;
-    "" \$remote_addr;
-}
-
-map \$http_x_forwarded_proto \$webmanager_site_proto {
-    default \$http_x_forwarded_proto;
-    "" \$scheme;
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
-    # Cloudflare Tunnel reaches port 8080. Make the site gateway the explicit
-    # fallback there; the exact dashboard server_name still takes priority.
-    server_name _;
-    server_tokens off;
-
-    location / {
-        proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$webmanager_site_client_ip;
-        proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
-        proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
-        proxy_intercept_errors off;
-    }
-
-    # Friendly page if WebManager's site gateway is down or restarting.
-    error_page 502 503 504 = @webmanager_offline;
-    location @webmanager_offline {
-        default_type text/html;
-        add_header Retry-After 30 always;
-        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Temporarily unavailable</title><style>:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#525b6c;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);border:1px solid var(--line);border-radius:16px}.code{font-size:64px;font-weight:800;letter-spacing:-3px;line-height:1;color:var(--accent);margin:0 0 12px}h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}p:last-child{margin:0}a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}</style><main><p class="code">503</p><h1>Temporarily unavailable</h1><p>This website is offline for a moment. Please try again shortly.</p></main></html>';
-    }
-
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-}
-EOF
+    sed \
+        -e "s|@SITE_GATEWAY_PORT@|$SITE_GATEWAY_PORT|g" \
+        -e "s|@APP_PORT@|$APP_PORT|g" \
+        "$SCRIPT_DIR/nginx-sites.conf" >"$SITE_NGINX_TEMP"
     if install -o root -g root -m 0644 "$SITE_NGINX_TEMP" "$SITE_NGINX_AVAILABLE" \
         && ln -sfn "$SITE_NGINX_AVAILABLE" "$SITE_NGINX_ENABLED"; then
         :

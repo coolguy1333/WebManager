@@ -343,6 +343,7 @@
       <div role="cell" data-mesh-stat="cpu">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>
       <div role="cell" data-mesh-stat="memory">{{ (peer.memory_percent ~ "%") if peer.memory_percent is not none else "—" }}</div>
       <div role="cell" data-mesh-stat="disk">{{ (peer.disk_percent ~ "%") if peer.disk_percent is not none else "—" }}</div>
+      <div class="site-error" data-mesh-problem{% if peer.reachable or not peer.checked_at %} hidden{% endif %}>{{ peer.hint or peer.error }}{% if peer.last_seen %} Last seen {{ peer.last_seen }}.{% elif peer.checked_at and not peer.reachable %} Never reached yet.{% endif %}</div>
     </div>
     {% endfor %}
   </div>

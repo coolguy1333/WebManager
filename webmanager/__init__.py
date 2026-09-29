@@ -14,6 +14,11 @@ from .replication import ReplicationError, ReplicationManager
 from .services import RuntimeManager
 
 
+class StartupError(RuntimeError):
+    """A configuration problem WebManager reports plainly (run.py prints just
+    the message instead of a traceback)."""
+
+
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
@@ -112,20 +117,20 @@ def create_app(test_config=None):
 
     site_domain = str(app.config["SITE_BASE_DOMAIN"]).strip().lower().rstrip(".")
     if site_domain and not DOMAIN_RE.fullmatch(site_domain):
-        raise RuntimeError("WEBMANAGER_SITE_BASE_DOMAIN must be a valid DNS name.")
+        raise StartupError("WEBMANAGER_SITE_BASE_DOMAIN must be a valid DNS name.")
     app.config["SITE_BASE_DOMAIN"] = site_domain
     if app.config["SITE_PUBLIC_SCHEME"] not in {"http", "https"}:
-        raise RuntimeError("WEBMANAGER_SITE_PUBLIC_SCHEME must be http or https.")
+        raise StartupError("WEBMANAGER_SITE_PUBLIC_SCHEME must be http or https.")
     if app.config["SITE_GATEWAY_PORT"] in range(
         app.config["SITE_PORT_MIN"],
         app.config["SITE_PORT_MAX"] + 1,
     ):
-        raise RuntimeError(
+        raise StartupError(
             "WEBMANAGER_SITE_GATEWAY_PORT must be outside the site port range."
         )
 
     if app.config["REPLICA_OF"] and not app.config["MESH_TOKEN"]:
-        raise RuntimeError(
+        raise StartupError(
             "WEBMANAGER_REPLICA_OF requires WEBMANAGER_PEER_TOKEN to be set "
             "(the same shared secret configured on the primary)."
         )
@@ -136,7 +141,7 @@ def create_app(test_config=None):
             "(try: openssl rand -hex 24). Replication endpoints stay disabled until it is."
         )
         if app.config["REPLICA_OF"]:
-            raise RuntimeError(message)
+            raise StartupError(message)
         app.logger.warning(message)
 
     if not app.config["SECRET_KEY"]:
@@ -152,7 +157,7 @@ def create_app(test_config=None):
                     # known key until the primary is reachable again.
                     app.config["SECRET_KEY"] = secret_path.read_text(encoding="utf-8").strip()
                 else:
-                    raise RuntimeError(
+                    raise StartupError(
                         "This is a new replica (WEBMANAGER_REPLICA_OF is set) and its "
                         f"primary could not be reached to fetch the shared secret key: {exc} "
                         "The primary must be reachable the first time a replica starts."
@@ -276,16 +281,29 @@ def create_app(test_config=None):
             "or https://): %s",
             ", ".join(invalid_peer_urls),
         )
+    replica_of = app.config["REPLICA_OF"]
+    if replica_of and replica_of not in peer_urls:
+        # A replica always keeps an eye on its primary.
+        peer_urls.append(replica_of)
     if peer_urls:
-        try:
-            with app.app_context():
-                self_host = domains.dashboard_hostname()
-        except Exception:  # pragma: no cover - DB not ready yet is not fatal here
-            self_host = ""
-        if self_host:
-            from urllib.parse import urlsplit
+        from urllib.parse import urlsplit
 
-            peer_urls = [url for url in peer_urls if urlsplit(url).hostname != self_host]
+        if replica_of:
+            # A replica's database is a copy of the primary's, so the dashboard
+            # address stored in it is the primary's; use this server's own.
+            self_host = (urlsplit(app.config["GOOGLE_REDIRECT_URI"]).hostname or "").lower()
+        else:
+            try:
+                with app.app_context():
+                    self_host = domains.dashboard_hostname()
+            except Exception:  # pragma: no cover - DB not ready yet is not fatal here
+                self_host = ""
+        if self_host:
+            # Don't poll ourselves when the same list is pasted on every server.
+            peer_urls = [
+                url for url in peer_urls
+                if url == replica_of or urlsplit(url).hostname != self_host
+            ]
     mesh_hub = mesh.MeshHub(app, peer_urls, app.config["MESH_TOKEN"])
     app.extensions["mesh_hub"] = mesh_hub
 
@@ -315,14 +333,21 @@ def create_app(test_config=None):
                     "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
                 )
             mesh_hub.start()
-        for url in [*peer_urls, app.config["REPLICA_OF"]]:
-            if url.startswith("http://"):
-                app.logger.warning(
-                    "%s uses plain http://, so the peer token (and, for a replica, "
-                    "session and database data) crosses the network unencrypted. "
-                    "Use https:// or a private network/VPN.",
-                    url,
-                )
+        from urllib.parse import urlsplit
+
+        plain_http = [
+            url
+            for url in dict.fromkeys([*peer_urls, replica_of])
+            if url.startswith("http://")
+            and (urlsplit(url).hostname or "") not in {"localhost", "127.0.0.1", "::1"}
+        ]
+        if plain_http:
+            app.logger.warning(
+                "%s use plain http://, so the peer token (and, for a replica, "
+                "session and database data) crosses the network unencrypted. "
+                "Fine on a private network; otherwise use https:// or a VPN.",
+                ", ".join(plain_http),
+            )
 
     @app.errorhandler(404)
     def not_found(_error):

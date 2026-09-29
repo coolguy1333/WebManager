@@ -76,6 +76,12 @@ class _FakeHeaders(list):
     def items(self):
         return list(self)
 
+    def get(self, key, default=None):
+        for name, value in self:
+            if name.lower() == key.lower():
+                return value
+        return default
+
 
 class _FakeHTTPResponse(io.BytesIO):
     """Minimal stand-in for http.client.HTTPResponse / urlopen's context
@@ -101,6 +107,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
         self.database_path.write_bytes(_valid_sqlite_bytes())
         self.app = MagicMock()
         self.app.config = {"DATABASE": str(self.database_path)}
+        self.app.instance_path = self.temp_directory.name
         self.app.logger = MagicMock()
 
     def manager(self, primary_url="https://primary.example", token="s3cret-s3cret-s3cret"):
@@ -120,6 +127,89 @@ class ReplicationManagerUnitTests(unittest.TestCase):
         connection = sqlite3.connect(self.database_path)
         try:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+        finally:
+            connection.close()
+
+    def _snapshot_from(self, statements):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "snapshot.sqlite3"
+            connection = sqlite3.connect(path)
+            for statement in statements:
+                connection.execute(statement)
+            connection.commit()
+            connection.close()
+            return path.read_bytes()
+
+    def test_sync_once_upgrades_a_snapshot_from_a_primary_on_an_older_version(self):
+        # An older primary: no app columns on sites, no apps.host permission.
+        old = self._snapshot_from(
+            [
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT)",
+                "INSERT INTO users (username, password_hash) VALUES ('admin', 'x')",
+                "CREATE TABLE sites (id INTEGER PRIMARY KEY, user_id INTEGER, repository_id INTEGER, "
+                "name TEXT, slug TEXT, folder TEXT, document_root TEXT, index_file TEXT, "
+                "port INTEGER, spa_fallback INTEGER, nginx_config TEXT, status TEXT)",
+                "INSERT INTO sites (user_id, repository_id, name, slug, folder, document_root, "
+                "index_file, port, spa_fallback, nginx_config, status) "
+                "VALUES (1, 1, 'Old', 'old', '.', '/x', 'index.html', 8100, 1, '', 'stopped')",
+            ]
+        )
+        manager = self.manager()
+        with patch.object(peer_http, "open_peer", return_value=_FakeHTTPResponse(old)):
+            self.assertTrue(manager.sync_once(), manager.last_error)
+        connection = sqlite3.connect(self.database_path)
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(sites)")}
+            self.assertLessEqual({"kind", "app_env", "use_domain_root"}, columns)
+            self.assertEqual(
+                connection.execute("SELECT kind FROM sites WHERE slug = 'old'").fetchone()[0],
+                "static",
+            )
+            self.assertIsNotNone(
+                connection.execute("SELECT 1 FROM permissions WHERE code = 'apps.host'").fetchone()
+            )
+            # Server-specific defaults are never written into a mirrored copy.
+            self.assertIsNone(connection.execute("SELECT 1 FROM dashboard_domains").fetchone())
+        finally:
+            connection.close()
+
+    def test_sync_once_points_stored_paths_at_this_servers_data_directory(self):
+        primary_dir = "/var/lib/webmanager"
+        snapshot = self._snapshot_from(
+            [
+                "CREATE TABLE users (id INTEGER PRIMARY KEY)",
+                "CREATE TABLE repositories (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, "
+                "url TEXT, local_path TEXT, pending_path TEXT)",
+                f"INSERT INTO repositories (user_id, name, url, local_path, pending_path) "
+                f"VALUES (1, 'r', 'u', '{primary_dir}/repositories/1/1', NULL)",
+                "CREATE TABLE sites (id INTEGER PRIMARY KEY, user_id INTEGER, repository_id INTEGER, "
+                "name TEXT, slug TEXT, folder TEXT, document_root TEXT, index_file TEXT, "
+                "port INTEGER, nginx_config TEXT)",
+                f"INSERT INTO sites (user_id, repository_id, name, slug, folder, document_root, "
+                f"index_file, port, nginx_config) "
+                f"VALUES (1, 1, 's', 's', '.', '{primary_dir}/repositories/1/1', 'index.html', 8100, "
+                f"'server {{ root \"{primary_dir}/repositories/1/1\"; }}')",
+            ]
+        )
+        manager = self.manager()
+        response = _FakeHTTPResponse(
+            snapshot, headers=[(replication.DATA_DIR_HEADER, primary_dir)]
+        )
+        with patch.object(peer_http, "open_peer", return_value=response):
+            self.assertTrue(manager.sync_once(), manager.last_error)
+        own = self.temp_directory.name
+        connection = sqlite3.connect(self.database_path)
+        try:
+            self.assertEqual(
+                connection.execute("SELECT local_path FROM repositories").fetchone()[0],
+                f"{own}/repositories/1/1",
+            )
+            document_root, config = connection.execute(
+                "SELECT document_root, nginx_config FROM sites"
+            ).fetchone()
+            self.assertEqual(document_root, f"{own}/repositories/1/1")
+            self.assertIn(f'root "{own}/repositories/1/1"', config)
+            self.assertNotIn(primary_dir, config)
         finally:
             connection.close()
 
@@ -154,6 +244,7 @@ class ReplicationManagerUnitTests(unittest.TestCase):
         with patch.object(peer_http, "open_peer", side_effect=error):
             with self.assertRaises(replication.ReplicationError) as caught:
                 replication.fetch_secret_key("http://primary.example", "t" * 16)
+        self.assertIn("isn't reaching a WebManager", str(caught.exception))
         self.assertIn("8080", str(caught.exception))
 
     def test_fetch_secret_key_raises_on_network_failure(self):
@@ -299,6 +390,30 @@ class WriteForwardingTests(unittest.TestCase):
                     "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
                 )
             self.assertEqual(response.status_code, 502)
+        finally:
+            manager.primary_url = ""
+            manager.token = ""
+
+    def test_browser_users_get_a_readable_page_when_the_primary_is_down(self):
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret-s3cret-s3cret"
+        try:
+            user_id = self.add_user("alice", is_admin=True)
+            self.login_user(user_id)
+            with patch.object(
+                peer_http, "open_peer",
+                side_effect=replication.urllib.error.URLError("Connection refused"),
+            ):
+                response = self.client.post(
+                    "/admin/sources/check-all",
+                    data={"_csrf_token": self.csrf()},
+                    headers={"Accept": "text/html,application/xhtml+xml"},
+                )
+            self.assertEqual(response.status_code, 502)
+            self.assertIn(b"Primary server unavailable", response.data)
+            self.assertIn(b"nothing was saved", response.data)
+            self.assertNotIn(b'{"error"', response.data)
         finally:
             manager.primary_url = ""
             manager.token = ""

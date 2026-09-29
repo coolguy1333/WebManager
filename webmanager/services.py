@@ -347,9 +347,11 @@ class RuntimeManager:
 
     def restore_sites(self, include_apps: bool = True):
         with self.app.app_context():
-            sites = get_db().execute(
+            database = get_db()
+            sites = database.execute(
                 "SELECT * FROM sites WHERE status IN ('running', 'starting')"
             ).fetchall()
+            static_sites = []
             for site in sites:
                 if site["kind"] == "app":
                     if not include_apps:
@@ -361,12 +363,43 @@ class RuntimeManager:
                     # config), but may need a build, so don't block startup.
                     self.start_app_async(site["id"])
                     continue
+                static_sites.append(site)
+            static_sites = self._restore_static_sites_together(database, static_sites)
+            for site in static_sites:
                 try:
                     self.start_site(site["id"])
                 except RuntimeErrorDetail:
                     continue
 
+    def _restore_static_sites_together(self, database, sites):
+        """With Nginx, bring every running static site back with ONE config
+        write and ONE reload instead of one per site (a replica does this after
+        every data sync). Returns the sites that still need the one-by-one path:
+        anything that isn't plainly 'running', or all of them if the combined
+        attempt failed, so each gets its own precise error."""
+        together = [site for site in sites if site["status"] == "running"]
+        if not together or not self.nginx_binary:
+            return sites
+        remaining = [site for site in sites if site["status"] != "running"]
+        try:
+            self._write_all_nginx_configs(database)
+            self._reload_nginx()
+        except RuntimeErrorDetail:
+            return sites
+        for site in together:
+            current = database.execute(
+                "SELECT status FROM sites WHERE id = ?", (site["id"],)
+            ).fetchone()
+            if current is None or current["status"] != "running":
+                continue  # its config was rejected; already marked as an error
+            if site["runtime_backend"] == "builtin":
+                self._stop_builtin(site["id"], site["runtime_pid"], site["port"])
+            self._set_site_state(database, site["id"], "running", "nginx", None, None)
+        return remaining
+
     def restore_gateway(self):
+        if not self.nginx_binary:
+            return
         with self.app.app_context():
             try:
                 self.apply_nginx_configs()

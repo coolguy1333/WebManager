@@ -3015,6 +3015,48 @@ class ServiceUnitTests(unittest.TestCase):
         )
         validate_site_config(config, root, 8123, hostnames, 8090)
 
+    def test_nginx_site_gateway_template_is_valid_nginx(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        nginx = shutil.which("nginx")
+        if not nginx:
+            self.skipTest("nginx is not installed")
+        root = Path(__file__).resolve().parent.parent
+        template = (root / "deploy" / "debian" / "nginx-sites.conf").read_text(
+            encoding="utf-8"
+        )
+        rendered = template.replace("@SITE_GATEWAY_PORT@", "18190").replace(
+            "@APP_PORT@", "15100"
+        )
+        self.assertNotIn("@SITE_GATEWAY_PORT@", rendered)
+        self.assertNotIn("@APP_PORT@", rendered)
+        # Use unprivileged ports and skip IPv6 so the syntax test runs anywhere.
+        rendered = (
+            rendered.replace("listen 80;", "listen 18181;")
+            .replace("listen 8080 default_server;", "listen 18180 default_server;")
+        )
+        rendered = "\n".join(
+            line for line in rendered.splitlines() if "listen [::]" not in line
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "nginx.conf"
+            main.write_text(
+                f"pid {directory}/nginx.pid;\nerror_log {directory}/error.log;\n"
+                "events {}\nhttp {\n"
+                f"  client_body_temp_path {directory}/a;\n  proxy_temp_path {directory}/b;\n"
+                f"  fastcgi_temp_path {directory}/c;\n  uwsgi_temp_path {directory}/d;\n"
+                f"  scgi_temp_path {directory}/e;\n  access_log off;\n{rendered}\n}}\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [nginx, "-t", "-c", str(main), "-p", directory],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_runtime_requirements_include_authlib_requests_integration(self):
         root = Path(__file__).resolve().parent.parent
         requirements = (root / "requirements.txt").read_text(
@@ -3179,11 +3221,21 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
-        self.assertIn("site gateway the explicit", installer)
+        sites_template = (
+            root / "deploy" / "debian" / "nginx-sites.conf"
+        ).read_text(encoding="utf-8")
+        self.assertIn("nginx-sites.conf", installer)
+        self.assertIn("@SITE_GATEWAY_PORT@", installer)
+        self.assertIn("site gateway the explicit", sites_template)
         self.assertIn("server_name $DASHBOARD_HOST", installer)
-        self.assertIn("listen 8080 default_server;", installer)
-        self.assertIn("listen [::]:8080 default_server;", installer)
-        self.assertIn(r"proxy_set_header Host \$host;", installer)
+        self.assertIn("listen 8080 default_server;", sites_template)
+        self.assertIn("listen [::]:8080 default_server;", sites_template)
+        self.assertIn("proxy_set_header Host $host;", sites_template)
+        # Other servers reach the peer endpoints by IP address, and a
+        # visitor-supplied client-IP header is only believed from a trusted edge.
+        self.assertIn("location ^~ /mesh/", sites_template)
+        self.assertIn("location ^~ /replication/", sites_template)
+        self.assertIn("$webmanager_trusted_edge", sites_template)
         self.assertIn("webmanager-uninstall", installer)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"',
@@ -3219,7 +3271,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Hosted site base domain", google_setup)
         self.assertIn("CONFIGURED_SITE_BASE_DOMAIN", google_setup)
         self.assertIn("server_name $PUBLIC_HOST", google_setup)
-        self.assertIn("configured site hostnames at the loopback gateway", google_setup)
+        self.assertIn("nginx-sites.conf", google_setup)
         self.assertIn(
             'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
             google_setup,
@@ -3501,6 +3553,7 @@ class SecurityRegressionTests(unittest.TestCase):
             "try_files /../../../etc/passwd =404;",
             "rewrite ^ /../secret.key break;",
             "ssi on;",
+            "stub_status;",
         ]
         for attack in attacks:
             with self.subTest(attack=attack):
@@ -3517,6 +3570,23 @@ class SecurityRegressionTests(unittest.TestCase):
             "    disable_symlinks on;\n    location ~ ^/old/(.*)$ { return 301 $scheme://$host/new/$1; }",
         )
         validate_site_config(safe, root, 43100, ["demo.webmanager.example"], 43099)
+
+    def test_config_editor_rejects_listen_parameters(self):
+        root = Path(self.temp_directory.name) / "listen"
+        root.mkdir()
+        hostnames = ["demo.webmanager.example"]
+        base = build_site_config("Demo", root, "index.html", 43100, True, hostnames, 43099)
+        for parameters in ("default_server", "ssl", "proxy_protocol", "reuseport"):
+            with self.subTest(parameters=parameters):
+                config = base.replace(
+                    "    listen 127.0.0.1:43099;",
+                    f"    listen 127.0.0.1:43099 {parameters};",
+                    1,
+                )
+                self.assertNotEqual(config, base)
+                with self.assertRaises(NginxConfigError):
+                    validate_site_config(config, root, 43100, hostnames, 43099)
+        validate_site_config(base, root, 43100, hostnames, 43099)
 
     def test_generated_config_cannot_be_injected_through_site_name(self):
         root = Path(self.temp_directory.name) / "inject"

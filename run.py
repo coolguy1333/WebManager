@@ -1,7 +1,14 @@
-from webmanager import create_app
+import sys
+
+from webmanager import StartupError, create_app
 
 
-app = create_app()
+try:
+    app = create_app()
+except StartupError as exc:
+    # A configuration problem: say what to fix, not where in the code it failed.
+    print(f"WebManager cannot start: {exc}", file=sys.stderr)
+    raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

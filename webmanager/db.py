@@ -211,16 +211,30 @@ def close_db(_error=None):
 
 def init_db():
     database = get_db()
+    migrate_structure(database, local_defaults=True)
+    database.commit()
+
+
+def migrate_structure(database, local_defaults=False):
+    """Bring a database's tables, columns, indexes and built-in permissions up
+    to this version.
+
+    With local_defaults=False (what a replica runs on a snapshot from a
+    primary that may be on another version) nothing specific to this server is
+    written: no default domain from WEBMANAGER_SITE_BASE_DOMAIN, no dashboard
+    domain from the Google redirect address, and nobody is promoted to admin.
+    """
     database.executescript(SCHEMA)
     _migrate_users(database)
     _migrate_repositories(database)
-    _migrate_domains(database)
-    _migrate_dashboard_domains(database)
+    if local_defaults:
+        _migrate_domains(database)
+        _migrate_dashboard_domains(database)
     _migrate_sites(database)
     _migrate_site_domain_aliases(database)
     _seed_permissions(database)
-    _ensure_initial_admin(database)
-    database.commit()
+    if local_defaults:
+        _ensure_initial_admin(database)
 
 
 def _migrate_users(database):
