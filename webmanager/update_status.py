@@ -18,6 +18,12 @@ DEFAULT_STATUS = {
     "update_available": False,
     "message": "No update check has completed yet. Select Check now to run one.",
     "checked_at": None,
+    # Written by the updater service: why the last install failed, the source
+    # it follows, and whether it installs new versions by itself.
+    "detail": None,
+    "repository": None,
+    "branch": None,
+    "auto_install": False,
 }
 
 
@@ -51,6 +57,10 @@ def _read_file_status():
     status = DEFAULT_STATUS.copy()
     status.update({key: payload.get(key) for key in status if key in payload})
     status["update_available"] = bool(status["update_available"])
+    status["auto_install"] = bool(status["auto_install"])
+    for key in ("detail", "repository", "branch"):
+        if not isinstance(status[key], str):
+            status[key] = None
     return status
 
 
@@ -66,8 +76,21 @@ def read_update_status():
     with _live_lock:
         live = dict(_live_status) if _live_status else None
     if live and (file_status is None or _checked_key(live) >= _checked_key(file_status)):
+        if (
+            file_status
+            and file_status["state"] == "error"
+            and live["state"] == "available"
+            and file_status["available_commit"]
+            and file_status["available_commit"] == live["available_commit"]
+        ):
+            # That very version was tried and failed to install. GitHub still
+            # having it says nothing new: keep showing what went wrong.
+            return file_status
         if file_status and file_status.get("installed_commit") and not live.get("installed_commit"):
             live["installed_commit"] = file_status["installed_commit"]
+        for key in ("repository", "branch", "auto_install"):
+            if file_status:
+                live[key] = file_status[key]
         return live
     return file_status or DEFAULT_STATUS.copy()
 
@@ -81,9 +104,19 @@ def installed_commit():
 
 
 def update_source():
-    """(repository URL, branch) to check, like the updater would use."""
+    """(repository URL, branch) to check: the same one the updater follows.
+
+    An explicit setting wins; otherwise what the updater service recorded in
+    its status file (it alone can read /etc/webmanager/updater.env); otherwise
+    this checkout's origin, and finally the project's own repository."""
     repository = str(current_app.config.get("UPDATE_REPOSITORY") or "").strip()
     branch = str(current_app.config.get("UPDATE_BRANCH") or "").strip()
+    if not repository:
+        recorded = _read_file_status() or {}
+        if REPOSITORY_RE.fullmatch(recorded.get("repository") or ""):
+            repository = recorded["repository"]
+            if not branch and BRANCH_RE.fullmatch(recorded.get("branch") or ""):
+                branch = recorded["branch"]
     if not repository:
         try:
             text = (APP_DIR / ".git" / "config").read_text(encoding="utf-8")
@@ -98,12 +131,22 @@ def update_source():
     return repository, branch or "main"
 
 
+def _same_commit(installed, available):
+    """Installed commits are sometimes recorded abbreviated."""
+    return bool(
+        installed and available
+        and (available == installed or (len(installed) >= 7 and available.startswith(installed)))
+    )
+
+
 def _result(state, message, installed, available):
     return {
         "state": state,
         "installed_commit": installed,
         "available_commit": available,
-        "update_available": bool(available and installed and not available.startswith(installed) and available != installed),
+        # Like the updater service: when the installed commit is unknown, the
+        # latest one is offered rather than reporting nothing.
+        "update_available": bool(available and not _same_commit(installed, available)),
         "message": message,
         "checked_at": _now(),
     }
@@ -132,12 +175,17 @@ def check_upstream(repository, branch, installed, timeout=20):
                 result = _result("error", f"Could not reach GitHub: {detail[-1] if detail else 'git failed'}", installed, None)
             elif available is None:
                 result = _result("error", f"Branch {branch} was not found on {repository}.", installed, None)
-            elif installed and (available == installed or (len(installed) >= 7 and available.startswith(installed))):
+            elif _same_commit(installed, available):
                 result = _result("current", "WebManager is current.", installed, available)
             elif installed:
                 result = _result("available", "An update is available and waiting for super-admin approval.", installed, available)
             else:
-                result = _result("error", "The installed version is unknown, so it can't be compared with GitHub.", installed, available)
+                result = _result(
+                    "available",
+                    "The installed version couldn't be identified, so the latest version is offered. "
+                    "Installing it records exactly what is installed.",
+                    installed, available,
+                )
         except FileNotFoundError:
             result = _result("error", "Git is not installed on this server.", installed, None)
         except subprocess.TimeoutExpired:
@@ -192,6 +240,27 @@ def updater_active():
     except (OSError, subprocess.TimeoutExpired):
         return None
     return completed.stdout.strip() == "active"
+
+
+def auto_install_file():
+    configured = current_app.config.get("PROGRAM_UPDATE_AUTO_FILE")
+    if configured:
+        return Path(configured)
+    return Path(current_app.config["PROGRAM_UPDATE_REQUEST_FILE"]).with_name("auto-install")
+
+
+def auto_install_enabled():
+    """Whether new versions install by themselves (the updater looks for this file)."""
+    return auto_install_file().is_file()
+
+
+def set_auto_install(enabled):
+    path = auto_install_file()
+    if enabled:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(mode=0o640, exist_ok=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def request_program_update(commit):

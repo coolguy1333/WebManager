@@ -503,6 +503,7 @@ details > summary::-webkit-details-marker { display: none; }
 .facts div { min-width: 0; }
 .facts dt { color: var(--text-faint); font-size: 0.75rem; font-weight: 560; margin-bottom: 2px; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts .fact-wide { grid-column: 1 / -1; }
 .kv { margin: 0; }
 .kv div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; }
 .kv div + div { border-top: 1px solid var(--border); }
@@ -657,9 +658,9 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
 .folder-row.root-mode .folder-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 
 .hostname-input { display: flex; align-items: stretch; min-width: 0; }
-.hostname-input input { border-top-right-radius: 0; border-bottom-right-radius: 0; font-family: var(--mono); font-size: 0.85rem; min-width: 80px; }
+.hostname-input input { flex: 1 1 0; width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; font-family: var(--mono); font-size: 0.85rem; min-width: 60px; }
 .hostname-input span {
-  display: flex; align-items: center; min-width: 0; max-width: 70%;
+  display: flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 65%;
   padding: 0 10px;
   border: 1px solid var(--border-strong); border-left: 0;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
@@ -798,6 +799,12 @@ fieldset.field legend { margin-bottom: 6px; }
     grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 14px 16px;
   }
   .apps-list .row-actions, .admin-apps-list .row-actions { justify-content: flex-start; margin-top: 4px; }
+  /* Server rows: name and problem on their own lines, the figures wrap side by side with their labels. */
+  .mesh-list .list-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+  .mesh-list .list-row > .site-name, .mesh-list .list-row > .site-error { flex: 1 0 100%; margin-top: 0; }
+  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"]) { font-size: 0.85rem; }
+  .mesh-list .list-row[data-mesh-empty] > [data-mesh-stat]:not([data-mesh-stat="status"]) { display: none; }
+  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"])::before { content: attr(data-label) " "; color: var(--text-faint); font-size: 0.75rem; }
 }
 
 @media (max-width: 860px) {
@@ -969,3 +976,6 @@ fieldset.field legend { margin-bottom: 6px; }
   .hostname-row.compact { grid-template-columns: minmax(0, 1fr); }
   .hostname-row.compact .hostname-dot { display: none; }
 }
+
+/* Copy-paste commands on the Servers panel wrap instead of scrolling sideways. */
+[data-join] pre { white-space: pre-wrap; word-break: break-all; }

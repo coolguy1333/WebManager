@@ -1,4 +1,6 @@
+import functools
 import re
+import socket
 from pathlib import Path
 
 
@@ -21,6 +23,7 @@ BLOCKED_DIRECTIVES = {
     "proxy_store_access",
     "ssi",
     "ssi_types",
+    "stub_status",
     "sub_filter_types",
     "user",
     "worker_processes",
@@ -113,6 +116,30 @@ OFFLINE_PAGE = status_page(
 
 class NginxConfigError(ValueError):
     pass
+
+
+@functools.lru_cache(maxsize=1)
+def ipv6_loopback_available() -> bool:
+    """Whether this host can listen on [::1]. Nginx refuses to start at all if a
+    config has an IPv6 listener the host can't open (IPv6 switched off, some
+    containers), so such listeners are dropped when the files are written."""
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+_IPV6_LISTEN_RE = re.compile(r"(?m)^[ \t]*listen[ \t]+\[[^\]\n]*\][^;\n]*;[ \t]*\r?\n?")
+
+
+def drop_ipv6_listeners(config: str) -> str:
+    """Remove `listen [...]` lines. The stored configs keep both address
+    families so they stay valid when copied to a server that has IPv6."""
+    return _IPV6_LISTEN_RE.sub("", config)
 
 
 def nginx_path(path: str | Path) -> str:
@@ -505,7 +532,13 @@ def validate_site_config(
                 raise NginxConfigError(f"The {name} directive is not allowed in managed configs.")
 
             if directive == "listen":
-                listen_port = _listen_port(arguments[0]) if arguments else None
+                if len(arguments) != 1:
+                    # Extra parameters (default_server, ssl, proxy_protocol, ...)
+                    # could take over the gateway or break every other site.
+                    raise NginxConfigError(
+                        "Each listen directive may only give an address and port."
+                    )
+                listen_port = _listen_port(arguments[0])
                 if listen_port not in allowed_ports:
                     expected = " or ".join(str(value) for value in sorted(allowed_ports))
                     raise NginxConfigError(

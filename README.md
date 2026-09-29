@@ -204,6 +204,12 @@ The default installation uses:
 
 Port `5000` should not be exposed publicly. Debian's system Nginx forwards dashboard traffic from port `8080` to `127.0.0.1:5000`.
 
+Requests to port `8080` that are addressed to a bare IP (for example
+`http://192.168.10.20:8080`, which is how other WebManager servers reach this
+one on a private network, and how you can open the dashboard before setting up
+a hostname) go to WebManager itself; requests for a hostname go to the site
+gateway as described below.
+
 Each deployed site receives one internal port from `8100` through `8999`.
 System Nginx accepts wildcard HTTP traffic on port `80` and forwards it to the
 loopback-only gateway on port `8090`. HTTPS can terminate at an upstream
@@ -750,24 +756,57 @@ bearer token (tokens under 16 characters never unlock the replication endpoints,
 running, CPU/memory/disk percent) — never site names, hostnames, or
 repository details. See the in-app **Docs** page for the full reference.
 
+### Adding a server from the System page (easiest)
+
+1. Open **System → Servers → Turn on server sharing**. This creates the shared
+   token for you (kept in the data folder); nothing to edit, nothing to restart.
+2. Copy the command it shows onto the new server and run it. The address in it
+   is the one you are browsing with; edit the box if the new server should use
+   another (for a private network, `http://SERVER-IP:8080`).
+3. The new server announces itself (`--announce`), so it appears in the Servers
+   list on its own. Any server can also be added by hand with **Add by
+   address**, and removed again (servers named in `WEBMANAGER_PEERS` are
+   changed in that file instead).
+
+The manual steps below do the same thing without the page.
+
 ### Setting up a new peer server with one command
 
-On the **primary**, set `WEBMANAGER_PEER_TOKEN` in `/etc/webmanager/webmanager.env`
-(`openssl rand -hex 24`) and restart it. Then, on the new server:
+Peers reach each other at the dashboard address. On a private network that
+can simply be the server's IP and port `8080` (for example
+`http://192.168.10.20:8080`); otherwise use its public `https://` address. A
+hosted site's address, or port 80, does **not** work (it returns the site
+gateway's 404 page).
 
-```bash
-git clone https://github.com/coolguy1333/WebManager.git webmanager && cd webmanager
-bash setup.sh \
-  --replica-of https://primary.example.com \
-  --peer-token <the same token>
-```
+1. **On the primary**, update it and set a shared token, then restart it:
 
-`--replica-of` makes it a mirror of that primary; use `--peers
-https://other.example.com,...` instead (or as well) to only list servers to
-monitor. The primary must be reachable from the new server, since the
-replica fetches its session key at startup. Add the new server's Google
-sign-in redirect URI (`https://<its dashboard address>/auth/google/callback`)
-to your Google OAuth client.
+   ```bash
+   cd webmanager && git pull && sudo bash setup.sh   # teaches Nginx to route IP-addressed peer requests
+   openssl rand -hex 24                              # copy the output
+   sudo nano /etc/webmanager/webmanager.env          # set WEBMANAGER_PEER_TOKEN=<that token>
+   sudo systemctl restart webmanager
+   ```
+
+2. **On the new server**:
+
+   ```bash
+   git clone https://github.com/coolguy1333/WebManager.git webmanager && cd webmanager
+   bash setup.sh \
+     --replica-of http://PRIMARY-IP:8080 \
+     --peer-token <the same token>
+   ```
+
+Add `--announce` (or `--announce-url http://THIS-SERVER:8080`) to have the new
+server register itself with the one it joined.
+
+`--replica-of` makes it a mirror of that primary (use `--peers
+https://other.example.com,...` instead, or as well, to only list servers to
+monitor). Before changing anything, setup checks that the primary answers with
+that token and tells you exactly what is wrong if it doesn't (wrong address,
+wrong token, primary not updated, firewall); `--skip-primary-check` installs
+anyway. Add the new server's Google sign-in redirect URI
+(`https://<its dashboard address>/auth/google/callback`) to your Google OAuth
+client.
 
 ### Replication: turning peers into real replicas
 
@@ -800,6 +839,13 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   if the old primary comes back on its own it has no way to know it's been
   superseded, so point it at the new primary (or take it offline) to avoid
   two servers both accepting writes.
+
+Every server in the group is fully trusted: a replica holds the primary's
+secret key (so it can sign sessions and decrypt saved app variables) and a
+complete copy of its database. Only add servers you would give admin access.
+App data volumes are copied while the app runs, so a database that is mid-write
+at that instant is captured mid-write; SQLite and Postgres recover from that on
+start, but a replica is not a point-in-time backup.
 
 See the in-app **Docs** page for the full setup, security model, and
 troubleshooting.
@@ -1628,16 +1674,34 @@ file from recursively retriggering installation.
 This updates WebManager itself and is separate from owner-approved or automatic
 site source updates in the dashboard.
 
+**Installing automatically.** On the System page, *Turn on automatic
+installation* (or run `setup.sh --auto-update`; `--no-auto-update` turns it
+off) makes the updater treat each new commit as approved, so the server keeps
+itself current. It runs exactly the same tests, backup and rollback as a manual
+approval. A version that fails is reported on the System page with the failing
+tests, is **not** retried every 15 minutes (it is tried again after a few
+hours, or immediately with *Try again*), and a newer commit replaces it.
+
+The updater refuses to start an update when the disk is too full for the
+backup, keeps the last three backups, and leaves large rebuildable data
+(`repositories`, `logs`, `app-backups`, `app-work`) out of them, so a rollback
+puts back the database, keys and settings without touching the checkouts.
+If Nginx rejects a new configuration during an update, the previous Nginx
+files are put back and the update still installs, with a note on the System
+page. Servers without IPv6 get IPv6 listeners left out of the Nginx files
+WebManager writes. Firewall rules are never changed by an update.
+
 Before installing a new commit, the updater:
 
 1. Clones the configured branch into an isolated temporary directory.
 2. Verifies that the URL is an HTTPS `github.com` repository.
 3. Rejects force-pushed or rewritten history.
-4. Requires approval for that exact 40-character commit from a super admin.
+4. Requires approval for that exact 40-character commit from a super admin (unless automatic installation is on).
 5. Runs the full test suite, reusing the installed virtual environment when
    requirements are unchanged and retrying in a clean one if that fails.
-6. Stops WebManager and backs up `/var/lib/webmanager`,
-   `/etc/webmanager`, the installed application, and service definitions.
+6. Stops WebManager and backs up the database and settings in
+   `/var/lib/webmanager`, `/etc/webmanager`, the installed application, and
+   service definitions.
 7. Installs the candidate and waits for the health endpoint.
 8. Automatically restores both the previous application and all persistent
    data if installation or health verification fails.

@@ -53,6 +53,31 @@ class AppError(ValueError):
     """A problem with an app's repository, settings, or container."""
 
 
+# Progress chatter BuildKit prints for every step, including the ones that worked.
+_BUILD_NOISE_RE = re.compile(
+    r"^#\d+ (?:DONE|CACHED|\[internal\]|transferring|resolve|sha256:|extracting|exporting|writing|naming|unpacking)"
+)
+_BUILD_ERROR_RE = re.compile(r"^ERROR: (?:failed to build: )?(?:failed to solve: )?(.+)$")
+
+
+def summarize_build_failure(output: str, limit: int = 1500) -> tuple[str, str]:
+    """(one-line reason, tidy output) for a failed image build: the reason
+    goes first so it shows in the short 'needs attention' summary, and the
+    output keeps the failing step instead of the progress noise before it."""
+    lines = [line.rstrip() for line in (output or "").splitlines()]
+    reason = ""
+    for line in reversed(lines):
+        match = _BUILD_ERROR_RE.match(line.strip())
+        if match:
+            reason = match.group(1).strip()[:400]
+            break
+    tidy = "\n".join(line for line in lines if line.strip() and not _BUILD_NOISE_RE.match(line))
+    if len(tidy) > limit:
+        tidy = tidy[-limit:]
+        tidy = tidy[tidy.find("\n") + 1:] if "\n" in tidy else tidy  # start on a whole line
+    return reason, tidy
+
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -301,7 +326,7 @@ class ContainerRuntime:
 
     def available(self) -> tuple[bool, str]:
         try:
-            result = self._run(["info", "--format", "{{.ServerVersion}}"], timeout=15, check=False)
+            result = self._run(["info", "--format", "{{.ServerVersion}}"], timeout=8, check=False)
         except AppError as exc:
             return False, str(exc)
         if result.returncode != 0:
@@ -326,8 +351,8 @@ class ContainerRuntime:
             except OSError:
                 pass
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()[-1500:]
-            raise AppError(f"The app image failed to build:\n{detail}")
+            reason, tail = summarize_build_failure((result.stderr or "") + "\n" + (result.stdout or ""))
+            raise AppError(f"The app image failed to build: {reason}\n{tail}" if reason else f"The app image failed to build:\n{tail}")
         return image
 
     def remove_images(self, site_id: int, keep: str | None = None):
@@ -341,8 +366,8 @@ class ContainerRuntime:
                 self._run(["rmi", "-f", image], timeout=60, check=False)
 
     # containers ------------------------------------------------------------
-    def inspect(self, name: str) -> dict | None:
-        result = self._run(["inspect", "--type", "container", name], timeout=30, check=False)
+    def inspect(self, name: str, timeout: int = 30) -> dict | None:
+        result = self._run(["inspect", "--type", "container", name], timeout=timeout, check=False)
         if result.returncode != 0:
             return None
         try:
@@ -409,8 +434,8 @@ class ContainerRuntime:
     def remove_volume(self, site_id: int):
         self._run(["volume", "rm", "--force", self.volume_name(site_id)], timeout=60, check=False)
 
-    def logs(self, name: str, tail: int = 200) -> str:
-        result = self._run(["logs", "--tail", str(tail), "--timestamps", name], timeout=30, check=False)
+    def logs(self, name: str, tail: int = 200, timeout: int = 30) -> str:
+        result = self._run(["logs", "--tail", str(tail), "--timestamps", name], timeout=timeout, check=False)
         return (result.stdout + result.stderr).strip()
 
     def running_app_names(self) -> list[str]:

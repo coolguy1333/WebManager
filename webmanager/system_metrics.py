@@ -36,17 +36,42 @@ def _cpu_times():
     return sum(values), idle
 
 
-def cpu_percent(interval=0.2):
-    first = _cpu_times()
-    if first is None:
-        return None
-    time.sleep(interval)
-    second = _cpu_times()
+_cpu_lock = threading.Lock()
+_cpu_last = {"at": 0.0, "times": None, "percent": None}
+CPU_MIN_WINDOW = 0.5  # measure over at least this long
+CPU_MAX_WINDOW = 30.0  # older than this and the last reading says little
+
+
+def _busy_percent(first, second):
     total = second[0] - first[0]
     idle = second[1] - first[1]
     if total <= 0:
         return 0.0
     return round(100 * (total - idle) / total, 1)
+
+
+def cpu_percent(interval=0.2):
+    """Host CPU use since the previous call. Only the first call (or one after
+    a long quiet spell) waits ``interval`` to have something to compare with;
+    the 2-second live refresh and the peers' polls then never sleep."""
+    with _cpu_lock:
+        current = _cpu_times()
+        if current is None:
+            return None
+        now = time.monotonic()
+        last = _cpu_last
+        age = now - last["at"]
+        if last["times"] is not None and age < CPU_MIN_WINDOW and last["percent"] is not None:
+            return last["percent"]  # too soon after the last one to tell anything new
+        if last["times"] is None or age > CPU_MAX_WINDOW:
+            time.sleep(interval)
+            later = _cpu_times() or current
+            percent = _busy_percent(current, later)
+            _cpu_last.update(at=time.monotonic(), times=later, percent=percent)
+            return percent
+        percent = _busy_percent(last["times"], current)
+        _cpu_last.update(at=now, times=current, percent=percent)
+        return percent
 
 
 def memory():
@@ -163,6 +188,18 @@ def load_average():
         return [round(value, 2) for value in os.getloadavg()]
     except (AttributeError, OSError):
         return None
+
+
+def collect_basic(app):
+    """Just the headline figures a peer's Servers panel shows. Unlike
+    collect(), it never walks the repository/log directories, so answering a
+    peer's poll stays fast however much is hosted here."""
+    return {
+        "hostname": socket.gethostname(),
+        "cpu_percent": cpu_percent(),
+        "memory": memory(),
+        "disk": disk(Path(app.instance_path)),
+    }
 
 
 def collect(app):

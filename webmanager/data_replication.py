@@ -148,7 +148,10 @@ class DataReplicationManager:
                     with open(temporary_path, "wb") as handle:
                         shutil.copyfileobj(response, handle)
             except urllib.error.URLError as exc:
-                raise RuntimeError(f"Could not reach primary {self.primary_url}: {exc}") from exc
+                raise RuntimeError(
+                    f"Could not reach primary {self.primary_url}: "
+                    f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
+                ) from exc
             self._apply_snapshot(temporary_path)
         finally:
             temporary_path.unlink(missing_ok=True)

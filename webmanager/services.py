@@ -11,11 +11,14 @@ from pathlib import Path
 from . import apps as app_support
 from .db import get_db
 from .domains import site_hostname, site_hostnames
+from .usage_sampler import UsageSampler
 from .nginx import (
     NginxConfigError,
     build_app_config,
     build_main_config,
     build_paused_site_config,
+    drop_ipv6_listeners,
+    ipv6_loopback_available,
     route_site_config,
     upgrade_legacy_site_config,
     validate_site_config,
@@ -24,6 +27,23 @@ from .nginx import (
 
 class RuntimeErrorDetail(RuntimeError):
     pass
+
+
+# Calls to the container daemon made while a page is loading give up sooner
+# than the ones that build or start apps, so a stuck daemon slows a page down
+# for seconds rather than half a minute.
+PAGE_CALL_TIMEOUT = 8
+
+
+def _tidy_nginx_output(text: str) -> str:
+    """Nginx repeats the same failure several times while it retries (bind()
+    errors, for example); show each distinct line once."""
+    seen = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and line not in seen:
+            seen.append(line)
+    return "\n".join(seen)
 
 
 def port_is_available(port: int) -> bool:
@@ -53,11 +73,24 @@ def allocate_port(database, minimum: int, maximum: int, requested: int | None = 
 
 
 class RuntimeManager:
+    # How long "the container runtime is reachable" (or not) is remembered, so
+    # page loads don't each ask the runtime. A failure is rechecked sooner.
+    RUNTIME_OK_SECONDS = 30
+    RUNTIME_DOWN_SECONDS = 5
+
     def __init__(self, app):
         self.app = app
         self.processes: dict[int, subprocess.Popen] = {}
         self._app_locks: dict[int, threading.Lock] = {}
         self._app_locks_guard = threading.Lock()
+        self._runtime_check: tuple[str, float, tuple[bool, str]] | None = None
+        # Pages never call `docker stats` themselves (it takes a second or
+        # more); they read the newest sample this keeps while somebody watches.
+        self.usage = UsageSampler(
+            self._sample_usage,
+            background=app is not None and not app.config.get("TESTING"),
+            logger=app.logger if app is not None else None,
+        )
 
     # ------------------------------------------------------------------
     # App hosting (containers)
@@ -84,10 +117,38 @@ class RuntimeManager:
             return False, "No container runtime found. Install Docker or Podman."
         if not self.nginx_binary:
             return False, "App hosting needs Nginx."
-        ok, detail = runtime.available()
+        ok, detail = self._runtime_reachable(runtime)
         if not ok:
             return False, f"The container runtime isn't reachable: {detail}"
         return True, f"{Path(runtime.binary).name} {detail}"
+
+    def _runtime_reachable(self, runtime) -> tuple[bool, str]:
+        """runtime.available(), remembered briefly: it is a call to the
+        container daemon, and several pages make it on every view."""
+        now = time.monotonic()
+        cached = self._runtime_check
+        if cached and cached[0] == runtime.binary and now < cached[1]:
+            return cached[2]
+        result = runtime.available()
+        lifetime = self.RUNTIME_OK_SECONDS if result[0] else self.RUNTIME_DOWN_SECONDS
+        self._runtime_check = (runtime.binary, now + lifetime, result)
+        return result
+
+    def _sample_usage(self) -> dict[str, dict]:
+        """One reading of every running app container (slow: runs `docker stats`)."""
+        runtime = self.container_runtime
+        if runtime is None:
+            return {}
+        # `docker stats NAME...` fails for all of them if one stopped since
+        # `docker ps`, so look again once before giving up.
+        for _attempt in range(2):
+            names = runtime.running_app_names()
+            if not names:
+                return {}
+            readings = runtime.stats_many(names)
+            if readings:
+                return readings
+        return {}
 
     def _app_lock(self, site_id):
         with self._app_locks_guard:
@@ -292,7 +353,7 @@ class RuntimeManager:
         if runtime is None:
             return {"available": False, "status": None, "logs": "", "message": self.apps_status()[1]}
         name = runtime.container_name(site["id"])
-        info = runtime.inspect(name)
+        info = runtime.inspect(name, timeout=PAGE_CALL_TIMEOUT)
         running = info is not None and info["State"]["Status"] == "running"
         backups = sorted(
             (Path(self.app.instance_path) / "app-backups" / str(site["id"])).glob("data-*.tar"),
@@ -304,10 +365,10 @@ class RuntimeManager:
             "started_at": info["State"].get("StartedAt") if info else None,
             "restarts": info.get("RestartCount") if info else None,
             "image": info["Config"]["Image"] if info else None,
-            "logs": runtime.logs(name, 200) if info else "",
+            "logs": runtime.logs(name, 200, timeout=PAGE_CALL_TIMEOUT) if info else "",
             "volume": runtime.volume_name(site["id"]),
             "backups": [backup.name for backup in backups],
-            "stats": runtime.stats_many([name]).get(name) if running else None,
+            "stats": self.usage.latest().get(name) if running else None,
         }
 
     def app_status(self, site) -> dict:
@@ -317,27 +378,26 @@ class RuntimeManager:
         if runtime is None:
             return {"status": None, "restarts": None, "stats": None}
         name = runtime.container_name(site["id"])
-        info = runtime.inspect(name)
+        info = runtime.inspect(name, timeout=PAGE_CALL_TIMEOUT)
         running = info is not None and info["State"]["Status"] == "running"
         return {
             "status": info["State"]["Status"] if info else None,
             "restarts": info.get("RestartCount") if info else None,
-            "stats": runtime.stats_many([name]).get(name) if running else None,
+            "stats": self.usage.latest().get(name) if running else None,
         }
 
     def stats_for_sites(self, site_ids: list[int]) -> dict[int, dict]:
-        """Live CPU/memory/network snapshot for many apps in one docker call."""
+        """Latest CPU/memory/network reading for each of these apps that has
+        one. Returns at once: readings come from the background sampler, so
+        the first view after a quiet spell shows none until it has taken one."""
         runtime = self.container_runtime
         if runtime is None or not site_ids:
             return {}
-        name_by_site = {site_id: runtime.container_name(site_id) for site_id in site_ids}
-        running = set(runtime.running_app_names())
-        names = [name for name in name_by_site.values() if name in running]
-        raw = runtime.stats_many(names)
+        readings = self.usage.latest()
         return {
-            site_id: raw[name]
-            for site_id, name in name_by_site.items()
-            if name in raw
+            site_id: readings[name]
+            for site_id in site_ids
+            if (name := runtime.container_name(site_id)) in readings
         }
 
     @property
@@ -347,9 +407,11 @@ class RuntimeManager:
 
     def restore_sites(self, include_apps: bool = True):
         with self.app.app_context():
-            sites = get_db().execute(
+            database = get_db()
+            sites = database.execute(
                 "SELECT * FROM sites WHERE status IN ('running', 'starting')"
             ).fetchall()
+            static_sites = []
             for site in sites:
                 if site["kind"] == "app":
                     if not include_apps:
@@ -361,12 +423,43 @@ class RuntimeManager:
                     # config), but may need a build, so don't block startup.
                     self.start_app_async(site["id"])
                     continue
+                static_sites.append(site)
+            static_sites = self._restore_static_sites_together(database, static_sites)
+            for site in static_sites:
                 try:
                     self.start_site(site["id"])
                 except RuntimeErrorDetail:
                     continue
 
+    def _restore_static_sites_together(self, database, sites):
+        """With Nginx, bring every running static site back with ONE config
+        write and ONE reload instead of one per site (a replica does this after
+        every data sync). Returns the sites that still need the one-by-one path:
+        anything that isn't plainly 'running', or all of them if the combined
+        attempt failed, so each gets its own precise error."""
+        together = [site for site in sites if site["status"] == "running"]
+        if not together or not self.nginx_binary:
+            return sites
+        remaining = [site for site in sites if site["status"] != "running"]
+        try:
+            self._write_all_nginx_configs(database)
+            self._reload_nginx()
+        except RuntimeErrorDetail:
+            return sites
+        for site in together:
+            current = database.execute(
+                "SELECT status FROM sites WHERE id = ?", (site["id"],)
+            ).fetchone()
+            if current is None or current["status"] != "running":
+                continue  # its config was rejected; already marked as an error
+            if site["runtime_backend"] == "builtin":
+                self._stop_builtin(site["id"], site["runtime_pid"], site["port"])
+            self._set_site_state(database, site["id"], "running", "nginx", None, None)
+        return remaining
+
     def restore_gateway(self):
+        if not self.nginx_binary:
+            return
         with self.app.app_context():
             try:
                 self.apply_nginx_configs()
@@ -659,6 +752,13 @@ class RuntimeManager:
         return port is None or f"--port {port}" in command
 
     def _write_all_nginx_configs(self, database, activating_site_id=None):
+        # A host without IPv6 can't open [::1]; Nginx would refuse to start.
+        if ipv6_loopback_available():
+            def emit(path, text):
+                path.write_text(text, encoding="utf-8")
+        else:
+            def emit(path, text):
+                path.write_text(drop_ipv6_listeners(text), encoding="utf-8")
         try:
             root = Path(self.app.config["NGINX_ROOT"])
             config_dir = root / "conf.d"
@@ -718,15 +818,23 @@ class RuntimeManager:
                             raise RuntimeErrorDetail(str(exc)) from exc
                         self.app.logger.error("App %s config: %s", site["id"], exc)
                         continue
-                    (config_dir / f"{site['id']}-{site['slug']}.conf").write_text(config, encoding="utf-8")
+                    emit(config_dir / f"{site['id']}-{site['slug']}.conf", config)
                     continue
+                site_config = site["nginx_config"]
                 try:
                     hostnames = site_hostnames(database, site)
                     gateway_port = (
                         self.app.config["SITE_GATEWAY_PORT"] if hostnames else None
                     )
+                    if hostnames:
+                        # A config copied from another server (a replica's
+                        # mirror) names that server's gateway port; point it
+                        # at ours. A no-op for a config already routed here.
+                        site_config = route_site_config(
+                            site_config, site["port"], hostnames, gateway_port
+                        )
                     validate_site_config(
-                        site["nginx_config"],
+                        site_config,
                         site["document_root"],
                         site["port"],
                         hostnames,
@@ -753,17 +861,16 @@ class RuntimeManager:
                     except NginxConfigError:
                         placeholder = ""
                     if placeholder:
-                        (config_dir / f"{site['id']}-{site['slug']}.paused.conf").write_text(
-                            placeholder, encoding="utf-8"
-                        )
+                        emit(config_dir / f"{site['id']}-{site['slug']}.paused.conf", placeholder)
                     continue
                 path = config_dir / f"{site['id']}-{site['slug']}.conf"
-                path.write_text(site["nginx_config"], encoding="utf-8")
+                emit(path, site_config)
 
             for filename, placeholder in paused_configs.items():
-                (config_dir / filename).write_text(placeholder, encoding="utf-8")
+                emit(config_dir / filename, placeholder)
 
-            (root / "nginx.conf").write_text(
+            emit(
+                root / "nginx.conf",
                 build_main_config(
                     root,
                     config_dir,
@@ -786,7 +893,6 @@ class RuntimeManager:
                     ),
                     self.app.config["PORT"],
                 ),
-                encoding="utf-8",
             )
         except OSError as exc:
             raise RuntimeErrorDetail(f"Could not write the managed Nginx configuration: {exc}") from exc
@@ -816,7 +922,7 @@ class RuntimeManager:
         except OSError as exc:
             raise RuntimeErrorDetail(f"Could not run Nginx: {exc}") from exc
         if result.returncode != 0:
-            raise RuntimeErrorDetail((result.stderr or result.stdout).strip() or "Nginx command failed.")
+            raise RuntimeErrorDetail(_tidy_nginx_output(result.stderr or result.stdout) or "Nginx command failed.")
         return result
 
     def _reload_nginx(self):

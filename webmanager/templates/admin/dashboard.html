@@ -248,7 +248,7 @@
         <div><dt>Nginx data &amp; access log</dt><dd>{{ bytes(metrics.storage.nginx) }}</dd></div>
         <div><dt>Database</dt><dd>{{ bytes(metrics.storage.database) }}</dd></div>
         <div><dt>Data directory</dt><dd><code>{{ metrics.disk.path if metrics.disk else "n/a" }}</code></dd></div>
-        {% if app_hosting %}<div><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% else %}<span class="badge">Off</span> {{ app_hosting[1] }}{% endif %}</dd></div>{% endif %}
+        {% if app_hosting %}<div class="fact-wide"><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% else %}<span class="badge">Off</span> {{ app_hosting[1] }}{% endif %}</dd></div>{% endif %}
       </dl>
     </div>
   </div>
@@ -306,9 +306,9 @@
 {% endif %}
 
 {# ---------- Mesh: other servers ---------- #}
-<section class="mb-24" data-mesh>
+<section class="mb-24" data-mesh id="servers">
   <div class="section-title">
-    <div><h2>Servers</h2><p>Other WebManager instances configured to federate with this one. Each server hosts its own sites and apps independently; this only shows who's up.</p></div>
+    <div><h2>Servers</h2><p>Other WebManager servers in this group. Each hosts its own sites and apps; this shows who's up, and a replica also mirrors this server's settings and data.</p></div>
     {% if mesh_entries %}<span class="badge" data-mesh-live>{{ ui.icon('activity', 12) }} Live</span>{% endif %}
   </div>
   {% if mesh_entries %}
@@ -327,54 +327,100 @@
       <span role="columnheader">Disk</span>
     </div>
     {% for peer in mesh_entries %}
-    <div class="list-row" role="row" data-mesh-row data-peer-url="{{ peer.url }}">
+    <div class="list-row" role="row" data-mesh-row data-peer-url="{{ peer.url }}"{% if peer.version is none and not peer.sites and peer.cpu_percent is none %} data-mesh-empty{% endif %}>
       <div class="site-name" role="cell">
         <a href="{{ peer.url }}" target="_blank" rel="noopener noreferrer">{{ peer.hostname }}{{ ui.icon('external', 12) }}</a>
         <small>{{ peer.url }}</small>
+        {% if peer.removable %}
+        <form method="post" action="{{ url_for('admin.remove_server') }}" data-confirm="Stop tracking {{ peer.url }}? It keeps running; it just leaves this list.">
+          {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}">
+          <button class="btn btn-sm btn-ghost" type="submit">Remove</button>
+        </form>
+        {% endif %}
       </div>
       <div role="cell" data-mesh-stat="status">
         {% if peer.reachable %}<span class="badge badge-success"><span class="dot"></span>Online</span>
         {% elif peer.checked_at %}<span class="badge badge-danger" title="{{ peer.error }}"><span class="dot"></span>Unreachable</span>
         {% else %}<span class="badge">Checking…</span>{% endif %}
       </div>
-      <div role="cell" data-mesh-stat="version">{{ peer.version or "—" }}</div>
-      <div role="cell" data-mesh-stat="sites">{% if peer.sites %}{{ peer.sites.running }}/{{ peer.sites.total }} running{% else %}—{% endif %}</div>
-      <div role="cell" data-mesh-stat="apps">{% if peer.apps %}{{ peer.apps.running }}/{{ peer.apps.total }} running{% elif peer.apps_enabled == false %}Off{% else %}—{% endif %}</div>
-      <div role="cell" data-mesh-stat="cpu">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>
-      <div role="cell" data-mesh-stat="memory">{{ (peer.memory_percent ~ "%") if peer.memory_percent is not none else "—" }}</div>
-      <div role="cell" data-mesh-stat="disk">{{ (peer.disk_percent ~ "%") if peer.disk_percent is not none else "—" }}</div>
+      <div role="cell" data-mesh-stat="version" data-label="Version">{{ peer.version or "—" }}</div>
+      <div role="cell" data-mesh-stat="sites" data-label="Sites">{% if peer.sites %}{{ peer.sites.running }}/{{ peer.sites.total }} running{% else %}—{% endif %}</div>
+      <div role="cell" data-mesh-stat="apps" data-label="Apps">{% if peer.apps %}{{ peer.apps.running }}/{{ peer.apps.total }} running{% elif peer.apps_enabled == false %}Off{% else %}—{% endif %}</div>
+      <div role="cell" data-mesh-stat="cpu" data-label="CPU">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>
+      <div role="cell" data-mesh-stat="memory" data-label="Memory">{{ (peer.memory_percent ~ "%") if peer.memory_percent is not none else "—" }}</div>
+      <div role="cell" data-mesh-stat="disk" data-label="Disk">{{ (peer.disk_percent ~ "%") if peer.disk_percent is not none else "—" }}</div>
+      <div class="site-error" data-mesh-problem{% if peer.reachable or not peer.checked_at %} hidden{% endif %}>{{ peer.hint or peer.error }}{% if peer.last_seen %} Last seen {{ peer.last_seen }}.{% elif peer.checked_at and not peer.reachable %} Never reached yet.{% endif %}</div>
     </div>
     {% endfor %}
   </div>
-  {% else %}
-  <section class="card empty">
-    <span class="record-icon">{{ ui.icon('link', 22) }}</span>
-    <h2>No other servers configured</h2>
-    <p>Set <code>WEBMANAGER_PEERS</code> (the other servers' addresses) and <code>WEBMANAGER_PEER_TOKEN</code> (a shared secret, the same on every server) in <code>/etc/webmanager/webmanager.env</code> on each server, then restart WebManager. See <a href="{{ url_for('deployments.docs') }}#mesh">Docs</a>.</p>
-  </section>
   {% endif %}
+  <section class="card {{ 'mt-16' if mesh_entries else '' }}">
+    <div class="card-header">
+      <div><h2>Add a server</h2><p>{% if mesh_token %}Run the command below on the new server. It joins this one and shows up in the list above by itself.{% else %}Turn on sharing here, then copy one command onto the new server. No settings files to edit.{% endif %}</p></div>
+    </div>
+    {% if mesh_token %}
+    <div class="card-body stack" data-join>
+      <label class="field">
+        <span>This server's address, as the new server will reach it</span>
+        <input type="text" value="{{ join_address }}" data-join-address autocomplete="off" spellcheck="false">
+        <small class="hint">A private address works best on a home or office network (for example <code>http://192.168.10.20:8080</code>); otherwise use the public <code>https://</code> address.</small>
+      </label>
+      <div>
+        <h3 class="mb-8">New replica (mirrors this server, can take over)</h3>
+        <pre><code data-join-command="bash setup.sh --replica-of {address} --peer-token {token} --announce" data-join-token="{{ mesh_token }}">git clone https://github.com/coolguy1333/WebManager.git webmanager &amp;&amp; cd webmanager
+bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --announce</code></pre>
+      </div>
+      <div>
+        <h3 class="mb-8">Or just watch a server that stays independent</h3>
+        <pre><code data-join-command="bash setup.sh --peers {address} --peer-token {token}" data-join-token="{{ mesh_token }}">bash setup.sh --peers {{ join_address }} --peer-token {{ mesh_token }}</code></pre>
+        <small class="hint">Then add that server's address here (below) so this one watches it too.</small>
+      </div>
+    </div>
+    <div class="card-footer">
+      <form class="actions" method="post" action="{{ url_for('admin.add_server') }}" data-loading>
+        {{ ui.csrf() }}
+        <input type="text" name="url" placeholder="http://192.168.10.30:8080" aria-label="Server address" autocomplete="off" spellcheck="false" required>
+        <button class="btn" type="submit" data-loading-text="Checking…">{{ ui.icon('plus', 14) }}Add by address</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="card-footer end">
+      <form method="post" action="{{ url_for('admin.enable_server_sharing') }}" data-loading>
+        {{ ui.csrf() }}
+        <button class="btn btn-primary" type="submit">{{ ui.icon('link', 14) }}Turn on server sharing</button>
+      </form>
+    </div>
+    {% endif %}
+  </section>
 </section>
 
 {# ---------- WebManager update ---------- #}
 <section class="card mb-24">
   <div class="card-header">
-    <div><h2>WebManager updates</h2><p>Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing always needs your approval.</p></div>
+    <div><h2>WebManager updates</h2><p>{% if update_auto_install %}Checked every 15 minutes. New versions are tested, backed up and installed by themselves, and rolled back if anything fails.{% else %}Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing needs your approval, or switch on automatic installation.{% endif %}</p></div>
     <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] or update_auto_requested else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{% if update_auto_requested and update_status.state in ['unknown', 'current', 'error'] %}Checking…{% elif update_status.state == "unknown" %}Not checked{% elif update_status.state == "current" %}Up to date{% else %}{{ update_status.state|replace('_', ' ')|capitalize }}{% endif %}</span>
   </div>
   <div class="card-body stack">
     {% if update_status.update_available and update_status.state == 'available' %}
     <div class="alert warning">{{ ui.icon('download') }}<div class="alert-body"><strong>A new version of WebManager is available</strong>Commit <code>{{ update_status.available_commit[:12] }}</code>. It is tested and backed up before installing, and rolled back automatically if anything fails.</div></div>
     {% elif update_auto_requested %}
-    <div class="alert info" data-auto-refresh="3">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check is out of date{% else %}No check has run yet{% endif %}, so WebManager is asking GitHub now. This page refreshes by itself.</div></div>
+    <div class="alert info" data-auto-refresh="3" data-auto-refresh-max="12">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check is out of date{% else %}No check has run yet{% endif %}, so WebManager is asking GitHub now. This page refreshes by itself for a short while; press “Check now” to try again.</div></div>
     {% endif %}
     {% if updater_is_active is sameas false %}
     <div class="alert warning">{{ ui.icon('alert') }}<div class="alert-body"><strong>The updater service is switched off on this server.</strong>WebManager can still check GitHub, but it can't install an update from here. On the server run <code>sudo systemctl enable --now webmanager-update.path webmanager-update.timer</code> (or re-run <code>setup.sh</code>).</div></div>
     {% endif %}
     <p>{{ update_status.message }}</p>
+    {% if update_status.state == 'error' and update_status.detail %}
+    <details class="inline-disclosure">
+      <summary>{{ ui.icon('code', 14) }}What went wrong</summary>
+      <pre class="mt-16"><code>{{ update_status.detail }}</code></pre>
+    </details>
+    {% endif %}
     <dl class="facts">
       <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
       <div><dt>Latest on GitHub</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "—" }}</code></dd></div>
       <div><dt>Last checked</dt><dd>{{ ui.when(update_status.checked_at) if update_status.checked_at else "Never" }}</dd></div>
+      <div><dt>Automatic installation</dt><dd>{{ "On" if update_auto_install else "Off" }}</dd></div>
     </dl>
   </div>
   <div class="card-footer end">
@@ -382,11 +428,16 @@
       {{ ui.csrf() }}
       <button class="btn" type="submit">{{ ui.icon('refresh', 14) }}Check now</button>
     </form>
-    {% if update_status.update_available and update_status.state == 'available' %}
+    <form method="post" action="{{ url_for('admin.set_program_auto_install') }}" data-loading{% if not update_auto_install %} data-confirm="Install new versions automatically? Each one is tested and backed up first and rolled back if anything fails, but WebManager restarts briefly whenever one is installed."{% endif %}>
+      {{ ui.csrf() }}
+      <input type="hidden" name="enabled" value="{{ '0' if update_auto_install else '1' }}">
+      <button class="btn" type="submit"{% if not update_auto_install and updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Turn off automatic installation" if update_auto_install else "Turn on automatic installation" }}</button>
+    </form>
+    {% if update_status.update_available and update_status.state in ['available', 'error'] %}
     <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
       {{ ui.csrf() }}
       <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="btn btn-primary" type="submit">{{ ui.icon('download', 14) }}Approve and install</button>
+      <button class="btn btn-primary" type="submit"{% if updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Try again" if update_status.state == 'error' else "Approve and install" }}</button>
     </form>
     {% endif %}
   </div>
@@ -402,7 +453,7 @@
     {% if not source_updates.total %}
     <p class="muted">No Git sources are connected yet.</p>
     {% elif not source_updates.pending and not source_updates.failed %}
-    <p class="muted">All {{ source_updates.total }} source{{ "" if source_updates.total == 1 else "s" }} are up to date as of their last check.</p>
+    <p class="muted">{% if source_updates.total == 1 %}The one source is{% else %}All {{ source_updates.total }} sources are{% endif %} up to date as of the last check.</p>
     {% endif %}
     {% for repo in source_updates.pending %}
     <div class="record-actions">

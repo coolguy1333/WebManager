@@ -27,6 +27,10 @@ fi
 REPLICA_OF=
 PEER_TOKEN=
 PEERS=
+SKIP_PRIMARY_CHECK=0
+AUTO_UPDATE=keep
+ANNOUNCE=0
+ANNOUNCE_URL=
 UPDATE_REPOSITORY=${WEBMANAGER_UPDATE_REPOSITORY:-}
 UPDATE_BRANCH=${WEBMANAGER_UPDATE_BRANCH:-}
 UPDATE_CONFIGURATION_EXPLICIT=0
@@ -68,6 +72,24 @@ while [[ $# -gt 0 ]]; do
             [[ $# -gt 0 ]] || { echo "--peer-token requires the shared token." >&2; exit 1; }
             PEER_TOKEN=$1
             ;;
+        --skip-primary-check)
+            SKIP_PRIMARY_CHECK=1
+            ;;
+        --announce)
+            ANNOUNCE=1
+            ;;
+        --announce-url)
+            shift
+            [[ $# -gt 0 ]] || { echo "--announce-url requires this server's address." >&2; exit 1; }
+            ANNOUNCE=1
+            ANNOUNCE_URL=${1%/}
+            ;;
+        --auto-update)
+            AUTO_UPDATE=on
+            ;;
+        --no-auto-update)
+            AUTO_UPDATE=off
+            ;;
         --peers)
             shift
             [[ $# -gt 0 ]] || { echo "--peers requires comma-separated server URLs." >&2; exit 1; }
@@ -105,7 +127,8 @@ for required in \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
     deploy/debian/webmanager-update.timer \
-    deploy/debian/webmanager-update.path; do
+    deploy/debian/webmanager-update.path \
+    deploy/debian/nginx-sites.conf; do
     if [[ ! -e "$SOURCE_DIR/$required" ]]; then
         echo "Missing source item: $SOURCE_DIR/$required" >&2
         exit 1
@@ -115,6 +138,76 @@ done
 if [[ "$SOURCE_DIR" == "$APP_DIR" ]]; then
     echo "Run the installer from a source checkout outside $APP_DIR." >&2
     exit 1
+fi
+
+# Something the admin should know about an otherwise successful install. An
+# updater-driven update passes a file that the System page reads back.
+note() {
+    echo "Note: $*"
+    if [[ -n ${WEBMANAGER_INSTALL_NOTES_FILE:-} ]]; then
+        printf '%s\n' "$*" >>"$WEBMANAGER_INSTALL_NOTES_FILE" || true
+    fi
+}
+
+# A new replica cannot start unless its primary answers with the shared
+# secret key, so find out now - before anything on this server is changed -
+# and say exactly what is wrong instead of leaving a service that crash-loops.
+check_primary() {
+    python3 - "$REPLICA_OF" "$PEER_TOKEN" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url, token = sys.argv[1].rstrip("/"), sys.argv[2]
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+request = urllib.request.Request(
+    url + "/mesh/secret-key", headers={"Authorization": "Bearer " + token}
+)
+try:
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=10) as response:
+        if response.status == 200 and response.read(4096).strip():
+            print(f"The primary at {url} answered and accepted the token.")
+            raise SystemExit(0)
+    problem = "it answered, but not with a secret key"
+except urllib.error.HTTPError as exc:
+    if exc.code == 401:
+        problem = (
+            "it rejected the token. Set the same WEBMANAGER_PEER_TOKEN (16+ characters) in "
+            "/etc/webmanager/webmanager.env on the primary, restart it, and use that value here"
+        )
+    elif exc.code == 404:
+        problem = (
+            "it answered 404, so that address does not reach a WebManager with replication. "
+            "Use the primary's dashboard address (for example http://PRIMARY-IP:8080 or its "
+            "public https:// address), and update the primary first: on it, run 'git pull && "
+            "sudo bash setup.sh' and make sure WEBMANAGER_PEER_TOKEN is set there"
+        )
+    elif 300 <= exc.code < 400:
+        problem = f"it redirected to {exc.headers.get('Location')}; use that final address instead"
+    else:
+        problem = f"it answered HTTP {exc.code}"
+except (urllib.error.URLError, OSError) as exc:
+    problem = f"could not connect ({getattr(exc, 'reason', exc)}). Check the address, the network and any firewall"
+print(f"Cannot use {url} as the primary: {problem}.", file=sys.stderr)
+print("Nothing was changed on this server. Fix the above and run setup again, or add", file=sys.stderr)
+print("--skip-primary-check to install anyway.", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+if [[ $SELF_UPDATE -eq 0 && -n $REPLICA_OF && $SKIP_PRIMARY_CHECK -eq 0 ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        echo "[0/8] Checking that the primary is reachable"
+        check_primary
+    else
+        echo "python3 is not installed yet; skipping the primary reachability check."
+    fi
 fi
 
 NEW_VENV=
@@ -199,6 +292,7 @@ install -o root -g root -m 0644 "$SOURCE_DIR/run.py" "$APP_DIR/run.py"
 install -o root -g root -m 0644 "$SOURCE_DIR/requirements.txt" "$APP_DIR/requirements.txt"
 install -o root -g root -m 0644 "$SOURCE_DIR/README.md" "$APP_DIR/README.md"
 install -o root -g root -m 0755 "$SOURCE_DIR/configure-google.sh" "$APP_DIR/configure-google.sh"
+install -o root -g root -m 0644 "$SOURCE_DIR/deploy/debian/nginx-sites.conf" "$APP_DIR/nginx-sites.conf"
 SOURCE_COMMIT=
 if git -C "$SOURCE_DIR" diff --quiet 2>/dev/null \
     && git -C "$SOURCE_DIR" diff --cached --quiet 2>/dev/null \
@@ -266,6 +360,16 @@ install -d -o webmanager -g webmanager -m 0750 \
     "$DATA_DIR/logs"
 install -d -o root -g webmanager -m 0710 "$UPDATER_STATE"
 install -d -o webmanager -g webmanager -m 0750 "$UPDATER_STATE/requests"
+# The System page's "Install updates automatically" switch is this file
+# (the web app runs as webmanager, so it must be able to create and remove it).
+case "$AUTO_UPDATE" in
+    on)
+        install -o webmanager -g webmanager -m 0640 /dev/null "$UPDATER_STATE/requests/auto-install"
+        ;;
+    off)
+        rm -f "$UPDATER_STATE/requests/auto-install"
+        ;;
+esac
 install -d -o root -g webmanager -m 0750 "$CONFIG_DIR"
 if [[ ! -f "$CONFIG_DIR/webmanager.env" ]]; then
     install -o root -g webmanager -m 0640 \
@@ -393,6 +497,13 @@ EOF
     fi
 fi
 
+# The web app checks GitHub itself too, and can't read updater.env (root only):
+# give it the same repository and branch so both always look at the same thing.
+if [[ -n $UPDATE_REPOSITORY ]]; then
+    set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"
+    set_env WEBMANAGER_UPDATE_BRANCH "$UPDATE_BRANCH"
+fi
+
 env_value() {
     sed -n "s/^$1=//p" "$CONFIG_DIR/webmanager.env" | tail -n 1
 }
@@ -409,6 +520,12 @@ APP_PORT=${APP_PORT:-5000}
 SITE_PORT_MIN=${SITE_PORT_MIN:-8100}
 SITE_PORT_MAX=${SITE_PORT_MAX:-8999}
 SITE_GATEWAY_PORT=${SITE_GATEWAY_PORT:-8090}
+for port_value in "$SITE_GATEWAY_PORT" "$APP_PORT" "$SITE_PORT_MIN" "$SITE_PORT_MAX"; do
+    if [[ ! $port_value =~ ^[0-9]{1,5}$ ]]; then
+        echo "Invalid port in $CONFIG_DIR/webmanager.env: '$port_value'." >&2
+        exit 1
+    fi
+done
 DASHBOARD_HOST=
 if [[ -n $GOOGLE_REDIRECT_URI ]]; then
     DASHBOARD_HOST=$(python3 - "$GOOGLE_REDIRECT_URI" <<'PY'
@@ -440,6 +557,115 @@ if ! install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-logrotate" "$LOGROT
         exit 1
     fi
 fi
+# Nginx is the one part of an update that can be refused by something outside
+# WebManager. Keep the current files so an update can put them back and still
+# install the new version, instead of failing (and undoing) the whole update.
+NGINX_SNAPSHOT=$(mktemp -d)
+for nginx_name in webmanager webmanager-sites; do
+    if [[ -f "/etc/nginx/sites-available/$nginx_name" ]]; then
+        cp -a "/etc/nginx/sites-available/$nginx_name" "$NGINX_SNAPSHOT/$nginx_name"
+    fi
+done
+restore_nginx_files() {
+    local nginx_name
+    for nginx_name in webmanager webmanager-sites; do
+        if [[ -f "$NGINX_SNAPSHOT/$nginx_name" ]]; then
+            cp -a "$NGINX_SNAPSHOT/$nginx_name" "/etc/nginx/sites-available/$nginx_name"
+            ln -sfn "/etc/nginx/sites-available/$nginx_name" "/etc/nginx/sites-enabled/$nginx_name"
+        else
+            rm -f "/etc/nginx/sites-enabled/$nginx_name" "/etc/nginx/sites-available/$nginx_name"
+        fi
+    done
+    return 0
+}
+
+# Hosts whose kernel has no IPv6 cannot open "listen [::]:port" sockets, and
+# Nginx refuses to start at all when one is configured.
+drop_ipv6_listeners() {
+    local nginx_file
+    for nginx_file in "$@"; do
+        if [[ -f $nginx_file ]]; then
+            sed -i '/^[[:space:]]*listen[[:space:]]\+\[::\]/d' "$nginx_file"
+        fi
+    done
+    return 0
+}
+
+# Servers installed before replication existed proxy the dashboard without a
+# /replication/ location; add it (long timeouts, no buffering) so other servers
+# can pull large data snapshots. Files that already have one, or don't proxy
+# the dashboard the usual way, are left alone.
+ensure_replication_location() {
+    local nginx_file=$1 port=$2
+    [[ -f $nginx_file ]] || return 0
+    python3 - "$nginx_file" "$port" <<'PY' || true
+import re
+import sys
+from pathlib import Path
+
+path, port = Path(sys.argv[1]), sys.argv[2]
+text = path.read_text(encoding="utf-8")
+if "/replication/" in text:
+    raise SystemExit(0)
+proxy = f"proxy_pass http://127.0.0.1:{port}"
+
+
+def matching_brace(source, opening):
+    depth = 0
+    index = opening
+    while index < len(source):
+        char = source[index]
+        if char == "#":
+            index = source.find("\n", index)
+            if index < 0:
+                return -1
+        elif char in "\"'":
+            index = source.find(char, index + 1)
+            if index < 0:
+                return -1
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+result = []
+position = 0
+for match in re.finditer(r"^([ \t]*)location\s+/\s*\{", text, re.M):
+    if match.start() < position:
+        continue
+    opening = match.end() - 1
+    closing = matching_brace(text, opening)
+    if closing < 0 or proxy not in text[opening:closing]:
+        continue
+    indent = match.group(1)
+    block = (
+        "\n\n{i}# Other WebManager servers pull site/app data snapshots here; they can be\n"
+        "{i}# large and slow to produce.\n"
+        "{i}location ^~ /replication/ {{\n"
+        "{i}    proxy_pass http://127.0.0.1:{p};\n"
+        "{i}    proxy_http_version 1.1;\n"
+        "{i}    proxy_set_header Host $http_host;\n"
+        "{i}    proxy_set_header X-Forwarded-Host $http_host;\n"
+        "{i}    proxy_set_header X-Real-IP $remote_addr;\n"
+        "{i}    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+        "{i}    proxy_set_header X-Forwarded-Proto $scheme;\n"
+        "{i}    proxy_buffering off;\n"
+        "{i}    proxy_read_timeout 900s;\n"
+        "{i}    proxy_send_timeout 900s;\n"
+        "{i}}}"
+    ).format(i=indent, p=port)
+    result.append(text[position:closing + 1] + block)
+    position = closing + 1
+if result:
+    path.write_text("".join(result) + text[position:], encoding="utf-8")
+PY
+}
+
 if [[ ! -f "$NGINX_AVAILABLE" ]]; then
     install -o root -g root -m 0644 "$SCRIPT_DIR/nginx-dashboard.conf" "$NGINX_AVAILABLE"
 else
@@ -456,49 +682,10 @@ fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 if [[ -n $SITE_BASE_DOMAIN || -n $DASHBOARD_HOST ]]; then
     SITE_NGINX_TEMP=$(mktemp)
-    cat >"$SITE_NGINX_TEMP" <<EOF
-map \$http_cf_connecting_ip \$webmanager_site_client_ip {
-    default \$http_cf_connecting_ip;
-    "" \$remote_addr;
-}
-
-map \$http_x_forwarded_proto \$webmanager_site_proto {
-    default \$http_x_forwarded_proto;
-    "" \$scheme;
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
-    # Cloudflare Tunnel reaches port 8080. Make the site gateway the explicit
-    # fallback there; the exact dashboard server_name still takes priority.
-    server_name _;
-    server_tokens off;
-
-    location / {
-        proxy_pass http://127.0.0.1:$SITE_GATEWAY_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$webmanager_site_client_ip;
-        proxy_set_header X-Forwarded-For \$webmanager_site_client_ip;
-        proxy_set_header X-Forwarded-Proto \$webmanager_site_proto;
-        proxy_intercept_errors off;
-    }
-
-    # Friendly page if WebManager's site gateway is down or restarting.
-    error_page 502 503 504 = @webmanager_offline;
-    location @webmanager_offline {
-        default_type text/html;
-        add_header Retry-After 30 always;
-        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Temporarily unavailable</title><style>:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#151923;--muted:#525b6c;--card:#fff;--line:#e2e6ec;--accent:#2f64e8}@media (prefers-color-scheme:dark){:root{--bg:#0b0d12;--fg:#e7eaf0;--muted:#9aa3b5;--card:#141821;--line:#252c39;--accent:#7aa2ff}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}main{width:min(440px,100%);text-align:center;padding:40px 32px;background:var(--card);border:1px solid var(--line);border-radius:16px}.code{font-size:64px;font-weight:800;letter-spacing:-3px;line-height:1;color:var(--accent);margin:0 0 12px}h1{font-size:22px;margin:0 0 8px}p{margin:0 0 24px;color:var(--muted)}p:last-child{margin:0}a{display:inline-block;padding:10px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}a:hover{filter:brightness(1.1)}</style><main><p class="code">503</p><h1>Temporarily unavailable</h1><p>This website is offline for a moment. Please try again shortly.</p></main></html>';
-    }
-
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-}
-EOF
+    sed \
+        -e "s|@SITE_GATEWAY_PORT@|$SITE_GATEWAY_PORT|g" \
+        -e "s|@APP_PORT@|$APP_PORT|g" \
+        "$SCRIPT_DIR/nginx-sites.conf" >"$SITE_NGINX_TEMP"
     if install -o root -g root -m 0644 "$SITE_NGINX_TEMP" "$SITE_NGINX_AVAILABLE" \
         && ln -sfn "$SITE_NGINX_AVAILABLE" "$SITE_NGINX_ENABLED"; then
         :
@@ -518,12 +705,41 @@ else
         fi
     fi
 fi
-nginx -t
+ensure_replication_location "$NGINX_AVAILABLE" "$APP_PORT"
+if [[ ! -e /proc/net/if_inet6 ]]; then
+    drop_ipv6_listeners "$NGINX_AVAILABLE" "$SITE_NGINX_AVAILABLE"
+fi
+NGINX_OK=1
+if ! NGINX_TEST_OUTPUT=$(nginx -t 2>&1); then
+    printf '%s\n' "$NGINX_TEST_OUTPUT" >&2
+    if [[ $SELF_UPDATE -ne 1 ]]; then
+        exit 1
+    fi
+    NGINX_PROBLEM=$(printf '%s\n' "$NGINX_TEST_OUTPUT" | grep -m1 -E '\[(emerg|alert|crit)\]' | cut -c1-240 || true)
+    restore_nginx_files
+    if nginx -t >/dev/null 2>&1; then
+        note "The new Nginx configuration was refused by nginx -t (${NGINX_PROBLEM:-no details}) and was not applied; the previous one is still in use."
+    else
+        NGINX_OK=0
+        note "Nginx's configuration test fails (${NGINX_PROBLEM:-no details}) even with the previous files, so Nginx was left as it is."
+    fi
+else
+    printf '%s\n' "$NGINX_TEST_OUTPUT"
+fi
+rm -rf "$NGINX_SNAPSHOT"
 
 echo "[7/8] Starting services"
 systemctl daemon-reload
-systemctl enable --now nginx
-systemctl reload nginx
+if [[ $NGINX_OK -eq 1 ]]; then
+    systemctl enable --now nginx
+    if ! systemctl reload nginx; then
+        if [[ $SELF_UPDATE -eq 1 ]]; then
+            note "Nginx could not be reloaded, so it is still using its previous configuration."
+        else
+            exit 1
+        fi
+    fi
+fi
 systemctl enable webmanager
 systemctl restart webmanager
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
@@ -544,7 +760,11 @@ elif [[ $SELF_UPDATE -eq 0 ]]; then
 fi
 
 echo "[8/8] Configuring UFW when it is already active"
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+if [[ $SELF_UPDATE -eq 1 ]]; then
+    # The updater's sandbox cannot change firewall rules, and an update does not
+    # change which ports WebManager uses.
+    echo "Firewall rules are left as they are during an update."
+elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
     ufw allow 8080/tcp
     if [[ -n $SITE_BASE_DOMAIN ]]; then
         ufw allow 80/tcp
@@ -608,7 +828,7 @@ payload = {
     "available_commit": commit,
     "update_available": False,
     "message": "WebManager was installed successfully by manual setup.",
-    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle)
@@ -629,8 +849,53 @@ if [[ -n $OLD_VENV && -e $OLD_VENV ]]; then
         || echo "Warning: could not remove the previous Python environment." >&2
 fi
 
-SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+# Only for the closing message. `hostname -I` needs a netlink socket, which the
+# updater's sandbox forbids; under `set -e -o pipefail` that failure used to
+# make every automatic update fail (and roll back) after it had installed.
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
 SERVER_IP=${SERVER_IP:-SERVER_IP}
+
+# Tell the server this one joined about our address, so it lists us without
+# anyone typing it in there. Never fatal: the admin can add us by hand.
+if [[ $SELF_UPDATE -eq 0 && $ANNOUNCE -eq 1 ]]; then
+    ANNOUNCE_TARGET=${REPLICA_OF:-${PEERS%%,*}}
+    if [[ -z $ANNOUNCE_URL && $SERVER_IP != SERVER_IP ]]; then
+        ANNOUNCE_URL="http://$SERVER_IP:8080"
+    fi
+    if [[ -z $ANNOUNCE_TARGET || -z $ANNOUNCE_URL ]]; then
+        echo "Could not work out this server's address to announce; add it in the other server's Servers panel."
+    elif python3 - "$ANNOUNCE_TARGET" "$PEER_TOKEN" "$ANNOUNCE_URL" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+target, token, own = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
+request = urllib.request.Request(
+    target + "/mesh/register",
+    data=json.dumps({"url": own}).encode(),
+    headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    urllib.request.urlopen(request, timeout=20).read()
+except urllib.error.HTTPError as exc:
+    try:
+        detail = json.loads(exc.read().decode()).get("error", "")
+    except Exception:
+        detail = ""
+    print(f"The other server refused the announcement (HTTP {exc.code}). {detail}", file=sys.stderr)
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"Could not reach the other server to announce: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        echo "Announced $ANNOUNCE_URL to $ANNOUNCE_TARGET; it now appears in that server's Servers panel."
+    else
+        echo "Could not announce this server. Add $ANNOUNCE_URL in the other server's Servers panel instead."
+    fi
+fi
 
 echo
 echo "============================================================"

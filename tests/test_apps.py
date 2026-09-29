@@ -2,6 +2,8 @@
 shared fixtures (borrowed below without re-running its tests)."""
 
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
@@ -10,6 +12,7 @@ from webmanager import apps
 from webmanager.db import get_db
 from webmanager.nginx import build_app_config
 from webmanager.services import RuntimeErrorDetail, RuntimeManager
+from webmanager.usage_sampler import UsageSampler
 
 from tests import test_app as base
 
@@ -55,7 +58,7 @@ class FakeRuntime:
     def remove_images(self, site_id, keep=None):
         self.calls.append(("remove_images", site_id, keep))
 
-    def inspect(self, name):
+    def inspect(self, name, timeout=30):
         container = self.containers.get(name)
         if container is None:
             return None
@@ -91,7 +94,7 @@ class FakeRuntime:
     def remove_volume(self, site_id):
         self.volumes_removed.append(site_id)
 
-    def logs(self, name, tail=200):
+    def logs(self, name, tail=200, timeout=30):
         return "listening on 8080"
 
     def running_app_names(self):
@@ -124,6 +127,46 @@ class FakeRuntime:
         # caller's scratch directory may be gone right after.
         content = Path(tar_path).read_bytes()
         self.calls.append(("restore_data", volume_name, content))
+
+
+class BuildFailureSummaryTests(unittest.TestCase):
+    OUTPUT = (
+        "#0 building with \"default\" instance using docker driver\n"
+        "#1 [internal] load build definition from Dockerfile\n"
+        "#1 DONE 0.0s\n"
+        "#4 [1/4] FROM docker.io/library/busybox:latest@sha256:abc\n"
+        "#4 DONE 0.0s\n"
+        "#6 [2/4] RUN make build\n"
+        "#6 0.312 make: *** No rule to make target 'build'.  Stop.\n"
+        "#6 ERROR: process \"/bin/sh -c make build\" did not complete successfully: exit code: 2\n"
+        "------\n > [2/4] RUN make build:\n0.312 make: *** No rule to make target 'build'.  Stop.\n------\n"
+        "Dockerfile:2\n"
+        "ERROR: failed to build: failed to solve: process \"/bin/sh -c make build\" "
+        "did not complete successfully: exit code: 2\n"
+    )
+
+    def test_the_reason_comes_first_and_progress_noise_is_dropped(self):
+        reason, tidy = apps.summarize_build_failure(self.OUTPUT)
+        self.assertEqual(
+            reason,
+            'process "/bin/sh -c make build" did not complete successfully: exit code: 2',
+        )
+        self.assertIn("No rule to make target", tidy)
+        self.assertNotIn("DONE", tidy)
+        self.assertNotIn("[internal]", tidy)
+
+    def test_long_output_is_cut_on_a_line_boundary_and_keeps_the_end(self):
+        noisy = "\n".join(f"line {i:04d} " + "x" * 60 for i in range(400)) + "\nERROR: failed to build: boom\n"
+        reason, tidy = apps.summarize_build_failure(noisy, limit=500)
+        self.assertEqual(reason, "boom")
+        self.assertLessEqual(len(tidy), 500)
+        self.assertTrue(tidy.startswith("line "))
+        self.assertTrue(tidy.endswith("ERROR: failed to build: boom"))
+
+    def test_output_without_a_recognisable_error_still_returns_its_tail(self):
+        reason, tidy = apps.summarize_build_failure("something odd happened\n")
+        self.assertEqual(reason, "")
+        self.assertEqual(tidy, "something odd happened")
 
 
 class AppHostingTests(unittest.TestCase):
@@ -529,7 +572,7 @@ class AppHostingTests(unittest.TestCase):
         self.assertEqual(self.fake.volumes_removed, [site_id])
         self.assertNotIn(self.fake.container_name(site_id), self.fake.containers)
 
-    def test_approved_source_update_rebuilds_app_in_background(self):
+    def _apply_update_with_app_status(self, status):
         _, repository_id = self.owner()
         self.deploy(repository_id)
         site_id = self.site()["id"]
@@ -540,7 +583,7 @@ class AppHostingTests(unittest.TestCase):
             (pending / name).write_text((repository_root / name).read_text(), encoding="utf-8")
         with self.app.app_context():
             database = get_db()
-            database.execute("UPDATE sites SET status = 'running' WHERE id = ?", (site_id,))
+            database.execute("UPDATE sites SET status = ? WHERE id = ?", (status, site_id))
             database.execute(
                 "UPDATE repositories SET local_path = ?, pending_path = ?, pending_commit = ? WHERE id = ?",
                 (str(repository_root), str(pending), "b" * 40, repository_id),
@@ -553,9 +596,24 @@ class AppHostingTests(unittest.TestCase):
             patch.object(runtime, "restart_site") as restart,
         ):
             result = self.app.extensions["repository_refresh_manager"].apply_pending(repository_id)
+        return site_id, result, start, restart
+
+    def test_approved_source_update_rebuilds_app_in_background(self):
+        site_id, result, start, restart = self._apply_update_with_app_status("running")
         self.assertEqual(result.status, "applied")
         start.assert_called_once_with(site_id)
         restart.assert_not_called()
+
+    def test_an_update_retries_an_app_that_was_left_in_error(self):
+        # The update is often the fix for whatever made the app fail.
+        site_id, result, start, _restart = self._apply_update_with_app_status("error")
+        self.assertEqual(result.status, "applied")
+        start.assert_called_once_with(site_id)
+
+    def test_an_update_leaves_a_deliberately_stopped_app_stopped(self):
+        _site_id, result, start, _restart = self._apply_update_with_app_status("stopped")
+        self.assertEqual(result.status, "applied")
+        start.assert_not_called()
 
     # -- usage monitoring & separate sites/apps views -------------------------
     def test_apps_view_only_lists_apps_and_sites_view_excludes_them(self):
@@ -621,6 +679,83 @@ class AppHostingTests(unittest.TestCase):
         response = self.client.get("/admin/apps")
         self.assertEqual(response.status_code, 403)
         self.assertTrue(user_id)
+
+    # -- speed: pages never wait on the container runtime -----------------------
+    def test_app_pages_do_not_wait_for_docker_stats(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+        real_stats = self.fake.stats_many
+        self.fake.stats_many = lambda names: (release.wait(10), real_stats(names))[1]
+        manager = self.app.extensions["runtime_manager"]
+        manager.usage = UsageSampler(manager._sample_usage, pause=0.01)
+
+        began = time.monotonic()
+        for url in ("/?view=apps", f"/sites/{site_id}", f"/sites/{site_id}/status.json", "/apps/stats.json"):
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+        self.assertLess(time.monotonic() - began, 3.0, "a page waited for the slow `docker stats`")
+        self.assertEqual(self.client.get("/apps/stats.json").get_json(), {})
+
+        release.set()
+        deadline = time.monotonic() + 3
+        data = {}
+        while not data and time.monotonic() < deadline:
+            data = self.client.get("/apps/stats.json").get_json()
+            time.sleep(0.02)
+        self.assertEqual(data[str(site_id)]["memory_used"], "12MiB")
+
+    def test_runtime_reachability_is_remembered_between_page_loads(self):
+        manager = self.app.extensions["runtime_manager"]
+        calls = []
+        self.fake.available = lambda: calls.append(1) or (True, "fake")
+
+        for _ in range(3):
+            self.assertTrue(manager.apps_status()[0])
+
+        self.assertEqual(len(calls), 1)
+
+    def test_an_unreachable_runtime_is_checked_again_soon(self):
+        manager = self.app.extensions["runtime_manager"]
+        manager.RUNTIME_DOWN_SECONDS = 0
+        answers = [(False, "cannot connect to the daemon"), (True, "27.0")]
+        self.fake.available = lambda: answers.pop(0)
+
+        ready, message = manager.apps_status()
+        self.assertFalse(ready)
+        self.assertIn("cannot connect to the daemon", message)
+        self.assertTrue(manager.apps_status()[0])
+
+    def test_a_container_that_stops_mid_reading_does_not_blank_every_app(self):
+        manager = self.app.extensions["runtime_manager"]
+        self.fake.containers["webmanager-app-1"] = {"status": "running", "hash": "h", "image": "i"}
+        real_stats = self.fake.stats_many
+        attempts = []
+        # docker stats fails for every name if one of them is gone by then.
+        self.fake.stats_many = lambda names: {} if not attempts.append(1) and len(attempts) == 1 else real_stats(names)
+
+        self.assertIn("webmanager-app-1", manager._sample_usage())
+        self.assertEqual(len(attempts), 2)
+
+    def test_site_log_only_reads_the_end_of_a_large_file(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        log = Path(self.app.config["LOG_ROOT"]) / f"site-{site_id}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("\n".join(f"line {i:06d} " + "x" * 50 for i in range(20000)) + "\n", encoding="utf-8")
+
+        page = self.client.get(f"/sites/{site_id}")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"line 019999", page.data)
+        self.assertIn(b"line 019920", page.data)
+        self.assertNotIn(b"line 019919", page.data)  # only the last 80 lines
+        self.assertNotIn(b"line 000000", page.data)
 
     def test_docs_page_renders_app_hosting_section(self):
         self.owner()

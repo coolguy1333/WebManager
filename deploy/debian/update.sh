@@ -15,6 +15,22 @@ ENV_FILE=/etc/webmanager/updater.env
 NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager
 SITE_NGINX_AVAILABLE=/etc/nginx/sites-available/webmanager-sites
 APP_ENV_FILE=/etc/webmanager/webmanager.env
+# Present when a super admin switched on installing new versions by themselves.
+AUTO_FILE=$STATE_DIR/requests/auto-install
+# What went wrong the last time a version was tried (.commit/.message/.detail).
+# It keeps the System page showing why, instead of going back to "update
+# available", and stops an automatic install hammering a version that fails.
+FAILURE_RECORD=$STATE_DIR/last-failure
+AUTO_RETRY_MINUTES=360
+# install.sh appends anything worth telling the admin here (for example that a
+# new Nginx configuration was refused and the old one kept).
+NOTES_FILE=$STATE_DIR/install-notes
+# Big data that an update cannot damage and that can be rebuilt (repository
+# checkouts, logs, container data backups) is left out of the pre-update
+# backup; the database, keys and settings are what a rollback needs.
+DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"
+REPOSITORY=
+BRANCH=
 
 if [[ $EUID -ne 0 ]]; then
     echo "Run the WebManager updater as root or through systemd." >&2
@@ -37,21 +53,31 @@ write_status() {
     local installed=${2:-}
     local available=${3:-}
     local message=${4:-}
+    local detail=${5:-}
+    local automatic=0
     local temporary
+    [[ -e $AUTO_FILE ]] && automatic=1
     temporary=$(mktemp "$STATE_DIR/status.XXXXXX")
-    python3 - "$temporary" "$state" "$installed" "$available" "$message" <<'PY'
+    python3 - "$temporary" "$state" "$installed" "$available" "$message" \
+        "$detail" "$REPOSITORY" "$BRANCH" "$automatic" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-path, state, installed, available, message = sys.argv[1:]
+path, state, installed, available, message, detail, repository, branch, automatic = sys.argv[1:]
 payload = {
     "state": state,
     "installed_commit": installed or None,
     "available_commit": available or None,
     "update_available": bool(available and available != installed),
     "message": message,
+    # What went wrong, for the System page (the tail of the failing output).
+    "detail": detail[-3500:] or None,
+    # The source this updater follows, so the app checks the same one.
+    "repository": repository or None,
+    "branch": branch or None,
+    "auto_install": automatic == "1",
     # No "UTC"/"Z" suffix: matches the plain "YYYY-MM-DD HH:MM:SS" convention
     # used for every other stored timestamp, which the "ago" filter and
     # admin._auto_request_program_check() parse with datetime.fromisoformat().
@@ -98,7 +124,8 @@ wait_for_webmanager() {
 
 sync_data_backup() {
     local destination=$1
-    python3 - "$DATA_DIR" "$destination" <<'PY'
+    # shellcheck disable=SC2086
+    python3 - "$DATA_DIR" "$destination" $DATA_BACKUP_EXCLUDES <<'PY'
 import os
 import shutil
 import stat
@@ -107,6 +134,8 @@ from pathlib import Path
 
 source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
+# Top-level entries that are not part of the backup (large and rebuildable).
+excluded = set(sys.argv[3:])
 
 
 def remove_path(path):
@@ -126,19 +155,24 @@ def copy_owner(source_path, destination_path, follow_symlinks=True):
     )
 
 
-def sync_directory(source_dir, destination_dir):
+def sync_directory(source_dir, destination_dir, top_level=False):
     if destination_dir.is_symlink() or (
         destination_dir.exists() and not destination_dir.is_dir()
     ):
         remove_path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
 
-    source_names = {entry.name for entry in source_dir.iterdir()}
+    skipped = excluded if top_level else set()
+    source_names = {
+        entry.name for entry in source_dir.iterdir() if entry.name not in skipped
+    }
     for old_entry in destination_dir.iterdir():
         if old_entry.name not in source_names:
             remove_path(old_entry)
 
     for source_entry in source_dir.iterdir():
+        if source_entry.name in skipped:
+            continue
         destination_entry = destination_dir / source_entry.name
         if source_entry.is_symlink():
             target = os.readlink(source_entry)
@@ -171,8 +205,48 @@ def sync_directory(source_dir, destination_dir):
 
 
 destination.mkdir(parents=True, exist_ok=True)
-sync_directory(source, destination)
+sync_directory(source, destination, top_level=True)
 PY
+}
+
+is_excluded_from_data_backup() {
+    [[ " $DATA_BACKUP_EXCLUDES " == *" $1 "* ]]
+}
+
+# How much disk the data backup will take (KB), leaving out what is excluded.
+data_backup_size_kb() {
+    local total=0 entry kb
+    for entry in "$DATA_DIR"/* "$DATA_DIR"/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        is_excluded_from_data_backup "$(basename "$entry")" && continue
+        kb=$(du -sk -- "$entry" 2>/dev/null | cut -f1 || true)
+        total=$((total + ${kb:-0}))
+    done
+    echo "$total"
+}
+
+# Put the data back the way it was before the update: what the backup holds
+# returns, what the update newly created at the top level goes, and the
+# excluded (never backed up, never touched) directories stay exactly as they are.
+restore_data_backup() {
+    local source=$1
+    local destination=$2
+    local entry name
+    install -d "$destination"
+    for entry in "$destination"/* "$destination"/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        name=$(basename "$entry")
+        is_excluded_from_data_backup "$name" && continue
+        if [[ ! -e "$source/$name" && ! -L "$source/$name" ]]; then
+            rm -rf -- "$entry"
+        fi
+    done
+    for entry in "$source"/* "$source"/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        name=$(basename "$entry")
+        rm -rf -- "${destination:?}/$name"
+        cp -a -- "$entry" "$destination/$name"
+    done
 }
 
 restore_directory_contents() {
@@ -188,11 +262,45 @@ NEW_COMMIT=
 APPROVED_COMMIT=
 UPDATE_STAGE=checking
 TEST_LOG=
+PIP_LOG=
+INSTALL_LOG=
+WORK_DIR=
+FIRST_TEST_FAILURE=
+FAILURE_MESSAGE=
+AUTO_INSTALL=0
 SERVICE_WAS_STOPPED=0
 UPDATE_COMPLETED=0
+
+# The failing tests (if any), then the end of a log: what the System page shows
+# an admin who wants to know why an update was not installed.
+summarize_log() {
+    local log=$1
+    [[ -s $log ]] || return 0
+    {
+        grep -E '^(FAIL|ERROR): ' "$log" | head -n 15 || true
+        echo '---'
+        tail -n 30 "$log"
+    } | cut -c1-300 | tail -c 3500
+}
+
+remember_failure() {
+    local message=$1
+    local detail=${2:-}
+    if [[ -n $NEW_COMMIT ]]; then
+        printf '%s\n' "$message" >"$FAILURE_RECORD.message" || true
+        printf '%s\n' "$detail" >"$FAILURE_RECORD.detail" || true
+        printf '%s\n' "$NEW_COMMIT" >"$FAILURE_RECORD.commit" || true
+    fi
+}
+
+forget_failure() {
+    rm -f "$FAILURE_RECORD.commit" "$FAILURE_RECORD.message" "$FAILURE_RECORD.detail"
+}
+
 record_failure() {
     local exit_code=$?
     local message
+    local detail=
     trap - ERR
     if [[ -n $APPROVED_COMMIT ]]; then
         rm -f "$REQUEST_FILE"
@@ -202,18 +310,23 @@ record_failure() {
                 ;;
             installing_dependencies)
                 message="The approved update could not install its test dependencies. Check network and Python package logs."
+                detail=$(summarize_log "$PIP_LOG")
+                if [[ -n $FIRST_TEST_FAILURE ]]; then
+                    # The real reason is the failed tests, not the retry's pip run.
+                    message="The approved update failed its application tests, and a retry in a clean Python environment could not be set up (its dependencies could not be installed)."
+                    detail=$FIRST_TEST_FAILURE
+                fi
                 ;;
             running_tests)
-                message="The approved update failed its application test suite. Review the updater journal."
-                if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
-                    message="$message Last test output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
-                fi
+                message="The approved update failed its application test suite, so it was not installed."
+                detail=$(summarize_log "$TEST_LOG")
+                ;;
+            checking_space)
+                message=$FAILURE_MESSAGE
                 ;;
             preflighting_install)
                 message="The approved update could not start safely with a copy of the installed data. The running installation was not stopped."
-                if [[ -n $TEST_LOG && -s $TEST_LOG ]]; then
-                    message="$message Last preflight output: $(tail -n 12 "$TEST_LOG" | tr '\n' ' ' | cut -c1-1600)"
-                fi
+                detail=$(summarize_log "$TEST_LOG")
                 ;;
             verifying_install)
                 message="The approved update installed, but WebManager did not pass its final health check. The previous version will be restored."
@@ -222,11 +335,12 @@ record_failure() {
                 message="The approved update failed validation before installation. Review the updater journal."
                 ;;
         esac
-        write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "$message"
+        remember_failure "$message" "$detail"
+        write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message" "$detail"
     else
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "The GitHub update check failed. Review the updater service logs."
+            "The GitHub update check failed. Review the updater service logs." \
+            "$(summarize_log "$WORK_DIR/check.log" 2>/dev/null || true)"
     fi
     exit "$exit_code"
 }
@@ -287,14 +401,20 @@ git -c protocol.file.allow=never clone \
     --no-tags \
     -- \
     "$REPOSITORY" \
-    "$SOURCE_DIR"
+    "$SOURCE_DIR" 2>&1 | tee "$WORK_DIR/check.log"
 
 NEW_COMMIT=$(git -C "$SOURCE_DIR" rev-parse HEAD)
 
 if [[ -n $INSTALLED_COMMIT && $NEW_COMMIT != "$INSTALLED_COMMIT" ]]; then
     if ! git -C "$SOURCE_DIR" cat-file -e "${INSTALLED_COMMIT}^{commit}" 2>/dev/null; then
+        # The clone is shallow, and a server that has not updated for a while
+        # can be further behind than it reaches. Fetch the rest before judging.
+        git -c protocol.file.allow=never -C "$SOURCE_DIR" fetch --quiet --unshallow --no-tags origin \
+            "$BRANCH" 2>/dev/null || true
+    fi
+    if ! git -C "$SOURCE_DIR" cat-file -e "${INSTALLED_COMMIT}^{commit}" 2>/dev/null; then
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "The installed commit is not in fetched history; manual review is required."
+            "The installed commit is not in $REPOSITORY's $BRANCH history, so WebManager cannot tell whether the update is safe. Install it once by hand: git pull && sudo bash setup.sh"
         exit 1
     fi
     if ! git -C "$SOURCE_DIR" merge-base --is-ancestor "$INSTALLED_COMMIT" "$NEW_COMMIT"; then
@@ -306,25 +426,53 @@ fi
 
 if [[ ! -r $REQUEST_FILE ]]; then
     if [[ -n $INSTALLED_COMMIT && $NEW_COMMIT == "$INSTALLED_COMMIT" ]]; then
+        forget_failure
         write_status "current" "$INSTALLED_COMMIT" "$NEW_COMMIT" "WebManager is current."
-    else
+        exit 0
+    fi
+    FAILED_COMMIT=
+    if [[ -r "$FAILURE_RECORD.commit" ]]; then
+        FAILED_COMMIT=$(tr -d '[:space:]' <"$FAILURE_RECORD.commit")
+    fi
+    if [[ -n $FAILED_COMMIT && $FAILED_COMMIT != "$NEW_COMMIT" ]]; then
+        forget_failure    # a newer version has replaced the one that failed
+        FAILED_COMMIT=
+    fi
+    if [[ -n $FAILED_COMMIT ]] \
+        && { [[ ! -e $AUTO_FILE ]] \
+            || [[ -n $(find "$FAILURE_RECORD.commit" -mmin "-$AUTO_RETRY_MINUTES" 2>/dev/null) ]]; }; then
+        # This very version was tried and failed. Keep saying so (with the
+        # reason) rather than offering it as if nothing had happened.
+        RETRY_HINT="Approve it again to retry."
+        if [[ -e $AUTO_FILE ]]; then
+            RETRY_HINT="It is not retried automatically for a few hours; use Try again to run it now."
+        fi
+        write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+            "$(cat "$FAILURE_RECORD.message" 2>/dev/null || true) $RETRY_HINT" \
+            "$(cat "$FAILURE_RECORD.detail" 2>/dev/null || true)"
+        exit 0
+    fi
+    if [[ ! -e $AUTO_FILE ]]; then
         write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
             "An update is available and waiting for super-admin approval."
+        exit 0
     fi
-    exit 0
-fi
-
-APPROVED_COMMIT=$(tr -d '[:space:]' <"$REQUEST_FILE")
-if [[ ! $APPROVED_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
-    rm -f "$REQUEST_FILE"
-    write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "The update approval was invalid."
-    exit 1
-fi
-if [[ $APPROVED_COMMIT != "$NEW_COMMIT" ]]; then
-    rm -f "$REQUEST_FILE"
-    write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-        "A newer commit appeared after approval. Review and approve the new commit."
-    exit 0
+    # Automatic installation is on: a new version counts as approved.
+    AUTO_INSTALL=1
+    APPROVED_COMMIT=$NEW_COMMIT
+else
+    APPROVED_COMMIT=$(tr -d '[:space:]' <"$REQUEST_FILE")
+    if [[ ! $APPROVED_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
+        rm -f "$REQUEST_FILE"
+        write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "The update approval was invalid."
+        exit 1
+    fi
+    if [[ $APPROVED_COMMIT != "$NEW_COMMIT" ]]; then
+        rm -f "$REQUEST_FILE"
+        write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+            "A newer commit appeared after approval. Review and approve the new commit."
+        exit 0
+    fi
 fi
 if [[ -n $INSTALLED_COMMIT && $NEW_COMMIT == "$INSTALLED_COMMIT" ]]; then
     rm -f "$REQUEST_FILE"
@@ -357,9 +505,17 @@ write_status "testing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
     "Testing the super-admin-approved update."
 TEST_PYTHON=
 TEST_LOG="$WORK_DIR/application-tests.log"
+PIP_LOG="$WORK_DIR/pip.log"
 run_application_tests() {
     local python=$1
-    "$python" -m unittest discover \
+    local name
+    local clean_environment=()
+    # The tests must see a blank slate, not this server's own settings (the
+    # service's environment file exports WEBMANAGER_* values to this script).
+    while IFS= read -r name; do
+        clean_environment+=(-u "$name")
+    done < <(compgen -e | grep '^WEBMANAGER_' || true)
+    env ${clean_environment[@]+"${clean_environment[@]}"} "$python" -m unittest discover \
         -s "$SOURCE_DIR/tests" \
         -t "$SOURCE_DIR" \
         -v 2>&1 | tee "$TEST_LOG"
@@ -375,7 +531,7 @@ create_test_environment() {
         --retries 5 \
         --timeout 30 \
         -q \
-        -r "$SOURCE_DIR/requirements.txt"
+        -r "$SOURCE_DIR/requirements.txt" 2>&1 | tee "$PIP_LOG"
 }
 
 if [[ -x "$APP_DIR/.venv/bin/python" ]] \
@@ -385,6 +541,9 @@ if [[ -x "$APP_DIR/.venv/bin/python" ]] \
     echo "Reusing installed Python dependencies because requirements are unchanged."
     UPDATE_STAGE=running_tests
     if ! run_application_tests "$TEST_PYTHON"; then
+        # Keep why it failed: if the clean environment cannot even be built,
+        # this (not the pip error) is what the admin needs to see.
+        FIRST_TEST_FAILURE=$(summarize_log "$TEST_LOG")
         echo "Tests failed with installed dependencies; retrying in a clean environment."
         create_test_environment
         UPDATE_STAGE=running_tests
@@ -478,6 +637,22 @@ print("Candidate data migration, Nginx generation, and health check passed.")
 PY
 cat "$TEST_LOG"
 
+UPDATE_STAGE=checking_space
+# Older backups go first (the two newest stay, so three with this one), then
+# make sure this one and the installation itself will fit before touching anything.
+find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+    | sort -nr \
+    | tail -n +3 \
+    | cut -d' ' -f2- \
+    | xargs -r rm -rf
+needed_kb=$(( $(du -sk "$APP_DIR" | cut -f1) + $(du -sk "$CONFIG_DIR" | cut -f1) + $(data_backup_size_kb) ))
+needed_kb=$(( needed_kb * 12 / 10 + 262144 ))
+available_kb=$(df -Pk "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')
+if (( available_kb < needed_kb )); then
+    FAILURE_MESSAGE="Not enough free disk space to back WebManager up before updating (about $((needed_kb / 1024)) MB needed, $((available_kb / 1024)) MB free for $BACKUP_ROOT). Free some space and approve the update again. Nothing was changed."
+    false
+fi
+
 UPDATE_STAGE=backing_up
 BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-${INSTALLED_COMMIT:-unknown}"
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
@@ -525,7 +700,7 @@ rollback() {
         message="Update failed and the application directory could not be restored."
     fi
     if [[ $DATA_BACKUP_COMPLETE -eq 1 ]]; then
-        if restore_directory_contents "$DATA_BACKUP_DIR" "$DATA_DIR"; then
+        if restore_data_backup "$DATA_BACKUP_DIR" "$DATA_DIR"; then
             message=${message:-"Update failed. Application and persistent data were restored."}
         else
             echo "Could not restore the persistent data directory." >&2
@@ -576,8 +751,9 @@ rollback() {
         journalctl -u webmanager -n 80 --no-pager >&2 || true
         message="$message WebManager did not restart successfully; inspect journalctl -u webmanager."
     fi
-    rm -f "$REQUEST_FILE"
-    write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message"
+    rm -f "$REQUEST_FILE" "$NOTES_FILE"
+    remember_failure "$message" "$(summarize_log "$INSTALL_LOG")"
+    write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message" "$(summarize_log "$INSTALL_LOG")"
     exit "$exit_code"
 }
 trap rollback ERR
@@ -591,9 +767,12 @@ DATA_BACKUP_COMPLETE=1
 
 write_status "installing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
     "Installing the approved update."
+INSTALL_LOG="$WORK_DIR/install.log"
+rm -f "$NOTES_FILE"
 WEBMANAGER_UPDATE_REPOSITORY="$REPOSITORY" \
 WEBMANAGER_UPDATE_BRANCH="$BRANCH" \
-    bash "$SOURCE_DIR/deploy/debian/install.sh" --self-update
+WEBMANAGER_INSTALL_NOTES_FILE="$NOTES_FILE" \
+    bash "$SOURCE_DIR/deploy/debian/install.sh" --self-update 2>&1 | tee "$INSTALL_LOG"
 
 UPDATE_STAGE=verifying_install
 write_status "installing" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
@@ -606,10 +785,22 @@ fi
 printf '%s\n' "$NEW_COMMIT" >"$APP_DIR/.installed-commit"
 chmod 0644 "$APP_DIR/.installed-commit"
 rm -f "$REQUEST_FILE"
+forget_failure
 UPDATE_COMPLETED=1
 trap - ERR
-write_status "current" "$NEW_COMMIT" "$NEW_COMMIT" \
-    "The approved update was installed successfully. Persistent data was preserved."
+SUCCESS_MESSAGE="The approved update was installed successfully. Persistent data was preserved."
+if [[ $AUTO_INSTALL -eq 1 ]]; then
+    SUCCESS_MESSAGE="The update was installed automatically. Persistent data was preserved."
+fi
+INSTALL_NOTES=
+if [[ -r $NOTES_FILE ]]; then
+    INSTALL_NOTES=$(tr '\n' ' ' <"$NOTES_FILE")
+fi
+rm -f "$NOTES_FILE"
+if [[ -n ${INSTALL_NOTES// /} ]]; then
+    SUCCESS_MESSAGE="$SUCCESS_MESSAGE Note: ${INSTALL_NOTES% }"
+fi
+write_status "current" "$NEW_COMMIT" "$NEW_COMMIT" "$SUCCESS_MESSAGE"
 
 find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
     | sort -nr \

@@ -12,7 +12,7 @@
       <text class="ea-code" x="110" y="86" text-anchor="middle">{{ code }}</text>
     </svg>
   </div>
-  <p class="eyebrow">{{ {404: "Not found", 403: "No access", 401: "Signed out", 400: "Bad request", 405: "Not allowed", 413: "Too large", 500: "Server error"}.get(code, "Error") }}</p>
+  <p class="eyebrow">{{ {404: "Not found", 403: "No access", 401: "Signed out", 400: "Bad request", 405: "Not allowed", 413: "Too large", 500: "Server error", 502: "Unavailable"}.get(code, "Error") }}</p>
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
   {% if code == 404 %}<p class="error-path"><code>{{ request.path }}</code></p>{% endif %}

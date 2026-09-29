@@ -17,10 +17,13 @@ import atexit
 import hashlib
 import hmac
 import json
+import os
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -47,6 +50,70 @@ def _hash_token(token: str) -> bytes:
     return hashlib.sha256(token.encode("utf-8")).digest()
 
 
+# Sharing can be switched on from the System page instead of by editing
+# /etc/webmanager/webmanager.env: the token and the servers added there live in
+# the data folder (the web service can't write its own settings file).
+def _saved_path(app, name: str) -> Path:
+    return Path(app.config.get("MESH_STATE_DIR") or app.instance_path) / name
+
+
+def load_saved_token(app) -> str:
+    try:
+        token = _saved_path(app, "peer-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return token if len(token) >= MIN_TOKEN_LENGTH else ""
+
+
+def save_token(app, token: str):
+    path = _saved_path(app, "peer-token")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+
+
+def normalize_peer_url(value) -> str | None:
+    """The bare address (scheme://host[:port]) of a server, or None if it isn't one."""
+    text = str(value or "").strip()
+    if "://" not in text:
+        text = "http://" + text
+    parts = urlsplit(text.rstrip("/"))
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+        or parts.path not in {"", "/"}
+    ):
+        return None
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
+
+
+def load_saved_peers(app) -> list[str]:
+    try:
+        data = json.loads(_saved_path(app, "peers.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    urls = [normalize_peer_url(item) for item in data] if isinstance(data, list) else []
+    return list(dict.fromkeys(url for url in urls if url))
+
+
+def save_peers(app, urls: list[str]):
+    path = _saved_path(app, "peers.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(sorted(urls)) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def local_status(app) -> dict:
     """What this server reports about itself to a polling peer. Aggregate
     counts only - no site names, hostnames, or repository details."""
@@ -69,7 +136,7 @@ def local_status(app) -> dict:
             """
         ).fetchone()
         apps = {"total": row["total"], "running": row["running"] or 0}
-    metrics = system_metrics.collect(app)
+    metrics = system_metrics.collect_basic(app)
     installed_commit = read_update_status().get("installed_commit")
     return {
         "hostname": metrics.get("hostname"),
@@ -83,12 +150,18 @@ def local_status(app) -> dict:
     }
 
 
+explain_failure = peer_http.explain_failure
+
+
 class MeshHub:
     """Polls sibling servers and authenticates their polls of us."""
 
     def __init__(self, app, urls: list[str], token: str):
         self.app = app
         self.urls = list(dict.fromkeys(url for url in urls if url))
+        # Servers added on the System page (removable there); the rest come
+        # from WEBMANAGER_PEERS / WEBMANAGER_REPLICA_OF.
+        self.saved_urls: set[str] = set()
         self.token = token
         self._token_hash = _hash_token(token) if token else None
         self._remote: dict[str, dict] = {}
@@ -97,13 +170,57 @@ class MeshHub:
         self._thread = None
         self._fails: dict[str, dict] = {}
         self._fails_lock = threading.Lock()
+        self.running = False  # set by start(): False in tests, so nothing polls
 
     def start(self):
+        self.running = True
         if not self.urls or (self._thread and self._thread.is_alive()):
             return
         self._thread = threading.Thread(target=self._run, name="webmanager-mesh", daemon=True)
         self._thread.start()
         atexit.register(self.stop)
+
+    def set_token(self, token: str):
+        self.token = token
+        self._token_hash = _hash_token(token) if token else None
+
+    def add_saved_url(self, url: str, persist: bool = True):
+        """Start tracking a server added on the System page (or that registered itself)."""
+        with self._lock:
+            if url not in self.urls:
+                self.urls.append(url)
+            self.saved_urls.add(url)
+            if persist:
+                save_peers(self.app, list(self.saved_urls))
+        if self.running:
+            threading.Thread(target=self._poll, args=(url,), daemon=True).start()
+            self.start()
+
+    def remove_saved_url(self, url: str) -> bool:
+        with self._lock:
+            if url not in self.saved_urls:
+                return False
+            self.saved_urls.discard(url)
+            if url in self.urls:
+                self.urls.remove(url)
+            self._remote.pop(url, None)
+            save_peers(self.app, list(self.saved_urls))
+        return True
+
+    def probe(self, url: str) -> tuple[bool, str | None, str | None]:
+        """Ask a server for its status with our token: (answers, error, hint)."""
+        req = urllib.request.Request(f"{url}/mesh/status", headers={"Accept": "application/json"})
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - admin/peer supplied URL, no redirects
+                body = json.loads(response.read(65536).decode("utf-8"))
+            if not isinstance(body, dict) or "sites" not in body:
+                return False, "It answered, but not like a WebManager server.", None
+            return True, None, None
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            message, hint = explain_failure(exc, TIMEOUT_SECONDS)
+            return False, message, hint
 
     def stop(self):
         self._stop_event.set()
@@ -114,12 +231,12 @@ class MeshHub:
     def _run(self):
         # Stagger the first round so a restart doesn't burst-poll every peer
         # at once; subsequent rounds poll all peers back-to-back every 20s.
-        for index, url in enumerate(self.urls):
+        for index, url in enumerate(list(self.urls)):
             if self._stop_event.wait(1 + index * 0.5):
                 return
             self._poll(url)
         while not self._stop_event.wait(POLL_SECONDS):
-            for url in self.urls:
+            for url in list(self.urls):
                 if self._stop_event.is_set():
                     return
                 self._poll(url)
@@ -138,40 +255,61 @@ class MeshHub:
                 body = json.loads(response.read().decode("utf-8"))
             if not isinstance(body, dict):
                 raise ValueError("Peer returned an unexpected response.")
+            now = time.time()
             with self._lock:
-                self._remote[url] = {"reachable": True, "error": None, "checked_at": time.time(), "data": body}
+                self._remote[url] = {
+                    "reachable": True, "error": None, "hint": None,
+                    "checked_at": now, "last_ok_at": now, "data": body,
+                }
             if was_reachable is False:
                 self.app.logger.info("Mesh peer %s is reachable again.", url)
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            message = str(getattr(exc, "reason", None) or exc)
+            message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             with self._lock:
                 previous = self._remote.get(url, {})
                 self._remote[url] = {
                     "reachable": False,
                     "error": message,
+                    "hint": hint,
                     "checked_at": time.time(),
+                    "last_ok_at": previous.get("last_ok_at"),
                     # Keep the last known data so the panel can still show
                     # "last seen" figures for a peer that's gone offline.
                     "data": previous.get("data"),
                 }
             if was_reachable is not False:
-                self.app.logger.warning("Mesh peer %s is unreachable: %s", url, message)
+                self.app.logger.warning("Mesh peer %s is unreachable: %s (%s)", url, message, hint)
+
+    def _last_seen(self, epoch):
+        """"3 minutes ago" for the last successful poll, or None if never."""
+        if not epoch:
+            return None
+        moment = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch))
+        try:
+            return self.app.jinja_env.filters["ago"](moment)
+        except Exception:  # never let a label break the panel
+            return moment
 
     def entries(self) -> list[dict]:
         """One entry per configured peer, for the admin panel."""
         with self._lock:
             snapshot = {url: dict(value) for url, value in self._remote.items()}
+            urls = list(self.urls)
+            saved = set(self.saved_urls)
         results = []
-        for url in self.urls:
+        for url in urls:
             remote = snapshot.get(url, {})
             data = remote.get("data") or {}
             results.append(
                 {
                     "url": url,
+                    "removable": url in saved,
                     "hostname": data.get("hostname") or url.replace("https://", "").replace("http://", ""),
                     "reachable": bool(remote.get("reachable")),
                     "error": remote.get("error"),
+                    "hint": remote.get("hint"),
                     "checked_at": remote.get("checked_at"),
+                    "last_seen": self._last_seen(remote.get("last_ok_at")),
                     "version": data.get("version"),
                     "sites": data.get("sites"),
                     "apps_enabled": data.get("apps_enabled"),
@@ -228,6 +366,28 @@ def mesh_status():
     response = jsonify(local_status(current_app))
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@bp.post("/mesh/register")
+def mesh_register():
+    """A server that was just set up against this one announces its own
+    address, so it appears in the Servers panel without anyone typing it in.
+    Needs the shared token (the same trust as everything else in the group),
+    and the address must answer with that token before it is kept."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None:
+        return jsonify({"error": "Mesh federation is not available."}), 404
+    if not hub.authorize_sensitive(request.headers.get("Authorization", ""), request.remote_addr or ""):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+    payload = request.get_json(silent=True)
+    url = normalize_peer_url(payload.get("url") if isinstance(payload, dict) else None)
+    if url is None:
+        return jsonify({"error": "Send {\"url\": \"http://this-server:8080\"}."}), 400
+    ok, error, hint = hub.probe(url)
+    if not ok:
+        return jsonify({"error": f"{url} did not answer: {error}", "hint": hint}), 400
+    hub.add_saved_url(url)
+    return jsonify({"ok": True, "url": url})
 
 
 @bp.get("/mesh/secret-key")

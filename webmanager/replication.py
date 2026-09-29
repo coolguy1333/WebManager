@@ -34,11 +34,22 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
 
+from . import db as database_module
 from . import peer_http
 
 DB_POLL_SECONDS = 15
+# The primary tells replicas where its data directory is, so a replica whose
+# own directory differs can rewrite the absolute paths stored in the database.
+DATA_DIR_HEADER = "X-WebManager-Data-Dir"
+# Absolute-path columns in the mirrored database (see _rebase_paths).
+_PATH_COLUMNS = (
+    ("repositories", "local_path"),
+    ("repositories", "pending_path"),
+    ("sites", "document_root"),
+    ("sites", "nginx_config"),
+)
 TIMEOUT_SECONDS = 30
 # Headers that must not be copied verbatim between the original request/
 # response and the forwarded one - either because they're connection-
@@ -76,8 +87,10 @@ def fetch_secret_key(primary_url: str, token: str, timeout: float = 10) -> str:
     try:
         with peer_http.open_peer(req, timeout=timeout) as response:  # noqa: S310 - configured primary URL
             key = response.read().decode("utf-8").strip()
-    except (urllib.error.URLError, OSError) as exc:
-        raise ReplicationError(f"Could not fetch the secret key from {primary_url}: {exc}") from exc
+    except (urllib.error.URLError, OSError) as exc:  # HTTPError is a URLError
+        raise ReplicationError(
+            f"Could not fetch the secret key from {primary_url}: {peer_http.describe_failure(exc, timeout)}"
+        ) from exc
     if not key:
         raise ReplicationError(f"{primary_url} returned an empty secret key.")
     return key
@@ -106,7 +119,9 @@ def find_or_create_user_via_primary(manager, claims: dict) -> int:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ReplicationError(f"The primary rejected the sign-in: {detail}") from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise ReplicationError(f"Could not reach primary {manager.primary_url}: {exc}") from exc
+        raise ReplicationError(
+            f"Could not reach primary {manager.primary_url}: {peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
+        ) from exc
     user_id = payload.get("user_id")
     if not isinstance(user_id, int):
         raise ReplicationError("Primary returned an unexpected response.")
@@ -124,6 +139,31 @@ def _validate_snapshot(path):
         raise ReplicationError(f"Downloaded database snapshot is not a valid database: {exc}") from exc
     finally:
         connection.close()
+
+
+def _prepare_snapshot(path, primary_data_dir: str, own_data_dir: str):
+    """Make a downloaded snapshot usable by this server before it goes live:
+    upgrade its structure when the primary runs another version, and point
+    absolute paths at this server's own data directory when that differs."""
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        database_module.migrate_structure(connection)
+        if primary_data_dir and primary_data_dir.rstrip("/") != own_data_dir.rstrip("/"):
+            _rebase_paths(connection, primary_data_dir.rstrip("/"), own_data_dir.rstrip("/"))
+        connection.commit()
+    except sqlite3.DatabaseError as exc:
+        raise ReplicationError(f"Could not prepare the downloaded database: {exc}") from exc
+    finally:
+        connection.close()
+
+
+def _rebase_paths(connection, old_root: str, new_root: str):
+    for table, column in _PATH_COLUMNS:
+        connection.execute(
+            f"UPDATE {table} SET {column} = REPLACE({column}, ?, ?) WHERE {column} LIKE ?",
+            (old_root, new_root, f"%{old_root}%"),
+        )
 
 
 class ReplicationManager:
@@ -198,11 +238,16 @@ class ReplicationManager:
                 with peer_http.open_peer(req, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - configured primary URL
                     if response.status != 200:
                         raise ReplicationError(f"Primary returned HTTP {response.status}.")
+                    primary_data_dir = response.headers.get(DATA_DIR_HEADER, "") or ""
                     with os.fdopen(descriptor, "wb") as handle:
                         shutil.copyfileobj(response, handle)
             except urllib.error.URLError as exc:
-                raise ReplicationError(f"Could not reach primary {self.primary_url}: {exc}") from exc
+                raise ReplicationError(
+                    f"Could not reach primary {self.primary_url}: "
+                    f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
+                ) from exc
             _validate_snapshot(temporary_name)
+            _prepare_snapshot(temporary_name, primary_data_dir, str(self.app.instance_path))
             os.chmod(temporary_name, 0o640)
             os.replace(temporary_name, database_path)
         except Exception:
@@ -243,7 +288,24 @@ class ReplicationManager:
             status = exc.code
             response_headers = list(exc.headers.items())
         except (urllib.error.URLError, OSError) as exc:
-            return jsonify({"error": f"The primary server ({self.primary_url}) could not be reached: {exc}"}), 502
+            detail = (
+                f"The primary server ({self.primary_url}) could not be reached: "
+                f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
+            )
+            if request.accept_mimetypes.best_match(["text/html", "application/json"]) == "text/html":
+                return (
+                    render_template(
+                        "error.html",
+                        title="Primary server unavailable",
+                        message=(
+                            "This server forwards changes to its primary, which can't be reached "
+                            "right now, so nothing was saved. Try again in a moment."
+                        ),
+                        error_code=502,
+                    ),
+                    502,
+                )
+            return jsonify({"error": detail}), 502
         relayed = Response(body, status=status)
         for key, value in response_headers:
             if key.lower() in _DO_NOT_FORWARD_RESPONSE_HEADERS:
@@ -332,4 +394,5 @@ def db_snapshot():
 
     response = current_app.response_class(stream(), mimetype="application/octet-stream")
     response.headers["Cache-Control"] = "no-store"
+    response.headers[DATA_DIR_HEADER] = str(current_app.instance_path)
     return response

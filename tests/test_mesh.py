@@ -43,6 +43,60 @@ class MeshHubUnitTests(unittest.TestCase):
         self.assertEqual(entry["hostname"], "peer1")
         self.assertEqual(entry["sites"], {"total": 2, "running": 2})
 
+    def test_failures_come_with_a_plain_language_hint(self):
+        import urllib.error
+
+        def hint(exc):
+            return mesh.explain_failure(exc)[1]
+
+        not_found = urllib.error.HTTPError("http://x/mesh/status", 404, "Not Found", {}, None)
+        self.assertIn("isn't reaching a WebManager", hint(not_found))
+        unauthorised = urllib.error.HTTPError("http://x/mesh/status", 401, "Unauthorized", {}, None)
+        self.assertIn("peer token", hint(unauthorised))
+        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        self.assertIn("Nothing is listening", hint(refused))
+        unresolved = urllib.error.URLError(OSError("[Errno -2] Name or service not known"))
+        self.assertIn("hostname could not be found", hint(unresolved))
+        self.assertIn("Check the address", hint(ValueError("bad json")))
+        self.assertIn("No answer", hint(TimeoutError("timed out")))
+
+    def test_a_failed_poll_records_the_hint_and_when_the_peer_was_last_seen(self):
+        import urllib.error
+        from unittest.mock import patch
+
+        hub = mesh.MeshHub(None, ["https://peer.example"], token="")
+        not_found = urllib.error.HTTPError("https://peer.example/mesh/status", 404, "Not Found", {}, None)
+        from webmanager import peer_http
+
+        class _Ok:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"hostname": "peer1"}'
+
+        class _Quiet:
+            def info(self, *args): pass
+            def warning(self, *args): pass
+
+        hub.app = type("A", (), {"logger": _Quiet()})()
+        with patch.object(peer_http, "open_peer", return_value=_Ok()):
+            hub._poll("https://peer.example")
+        first = hub.entries()[0]
+        self.assertTrue(first["reachable"])
+        self.assertIsNone(first["hint"])
+        with patch.object(peer_http, "open_peer", side_effect=not_found):
+            hub._poll("https://peer.example")
+        entry = hub.entries()[0]
+        self.assertFalse(entry["reachable"])
+        self.assertEqual(entry["error"], "HTTP 404")
+        self.assertIn("isn't reaching a WebManager", entry["hint"])
+        self.assertTrue(entry["last_seen"])  # it worked a moment ago
+        self.assertEqual(entry["hostname"], "peer1")  # last known data is kept
+
     def test_authorize_incoming_is_public_without_a_token(self):
         hub = mesh.MeshHub(None, [], token="")
         self.assertTrue(hub.authorize_incoming("", "1.2.3.4"))
@@ -145,7 +199,7 @@ class MeshEndpointTests(unittest.TestCase):
         self.login_user(admin_id)
         response = self.client.get("/admin/?section=updates")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"No other servers configured", response.data)
+        self.assertIn(b"Turn on server sharing", response.data)
 
     def test_admin_servers_panel_shows_a_configured_peer(self):
         admin_id = self.add_user("root", is_admin=True)
@@ -171,6 +225,25 @@ class MeshEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"peer1", response.data)
         self.assertIn(b"2/3 running", response.data)
+
+    def test_admin_servers_panel_explains_why_a_peer_is_unreachable(self):
+        admin_id = self.add_user("root", is_admin=True)
+        self.login_user(admin_id)
+        hub = self.app.extensions["mesh_hub"]
+        hub.urls = ["http://192.168.10.20"]
+        hub._remote["http://192.168.10.20"] = {
+            "reachable": False,
+            "error": "HTTP 404",
+            "hint": "HTTP 404: that address answered, but it isn't reaching a WebManager.",
+            "checked_at": 2.0,
+            "last_ok_at": None,
+            "data": None,
+        }
+        page = self.client.get("/admin/?section=updates").data.decode("utf-8")
+        self.assertIn("Unreachable", page)
+        # The reason is shown on the row itself, not hidden in a tooltip.
+        self.assertIn("isn&#39;t reaching a WebManager", page)
+        self.assertIn("Never reached yet.", page)
 
     def test_admin_servers_panel_flags_missing_token(self):
         admin_id = self.add_user("root", is_admin=True)
@@ -206,6 +279,35 @@ class MeshSelfExclusionTests(unittest.TestCase):
                 }
             )
             self.assertEqual(app.extensions["mesh_hub"].urls, ["https://sibling.example"])
+
+    def test_a_replica_watches_its_primary_even_when_it_is_shared_by_hostname(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(root / "test.sqlite3"),
+                "REPOSITORY_ROOT": str(root / "repositories"),
+                "NGINX_ROOT": str(root / "nginx"),
+                "LOG_ROOT": str(root / "logs"),
+                "GOOGLE_REDIRECT_URI": "https://replica.example/auth/google/callback",
+                "MESH_PEERS": "",
+                "MESH_TOKEN": "shared-secret-0123456789",
+            }
+            first = create_app(config)
+            # What a mirrored database looks like: the primary's dashboard
+            # domain is the primary's own hostname.
+            with first.app_context():
+                from webmanager.db import get_db
+
+                database = get_db()
+                database.execute("UPDATE dashboard_domains SET is_primary = 0")
+                database.execute(
+                    "INSERT INTO dashboard_domains (name, is_primary) VALUES ('primary.example', 1)"
+                )
+                database.commit()
+            app = create_app({**config, "REPLICA_OF": "https://primary.example"})
+            self.assertEqual(app.extensions["mesh_hub"].urls, ["https://primary.example"])
 
     def test_peer_urls_without_a_scheme_are_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1415,6 +1415,17 @@ class WebManagerTestCase(unittest.TestCase):
                 update_status.check_upstream(repo, "nope", installed)["message"],
             )
 
+        with mock.patch("subprocess.run") as run:
+            run.return_value = fake(f"{latest}\trefs/heads/main\n")
+            unknown = update_status.check_upstream(repo, "main", None)
+            self.assertEqual(unknown["state"], "available")
+            self.assertTrue(unknown["update_available"])
+            self.assertIn("couldn't be identified", unknown["message"])
+            # A recorded abbreviated commit still counts as the same version.
+            self.assertEqual(
+                update_status.check_upstream(repo, "main", latest[:12])["state"], "current"
+            )
+
         bad = update_status.check_upstream("https://evil.example/x.git", "main", installed)
         self.assertEqual(bad["state"], "error")
 
@@ -1444,6 +1455,32 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn(b"new version is available", response.data)
         self.assertIn(latest[:12].encode(), response.data)
         self.assertIn(b"systemctl enable --now webmanager-update.path", response.data)
+
+    def test_install_button_is_disabled_while_the_updater_is_off(self):
+        Path(self.app.config["PROGRAM_UPDATE_STATUS_FILE"]).write_text(
+            json.dumps(
+                {
+                    "state": "available",
+                    "installed_commit": "b" * 40,
+                    "available_commit": "a" * 40,
+                    "update_available": True,
+                    "message": "Update available.",
+                    "checked_at": "2026-06-11 12:00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.login_user(self.add_user("root-admin", is_admin=True))
+
+        self.app.config["UPDATER_ACTIVE"] = False
+        off = self.client.get("/admin/?section=updates").data.decode("utf-8")
+        self.assertRegex(off, r'<button class="btn btn-primary" type="submit" disabled[^>]*>')
+        self.assertIn("Approve and install", off)
+
+        self.app.config["UPDATER_ACTIVE"] = True
+        on = self.client.get("/admin/?section=updates").data.decode("utf-8")
+        self.assertNotRegex(on, r'<button class="btn btn-primary" type="submit" disabled')
+        self.assertIn("Approve and install", on)
 
     def test_install_is_refused_when_the_updater_is_off(self):
         self.app.config["UPDATER_ACTIVE"] = False
@@ -2122,6 +2159,24 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertEqual(analytics["visitors"], 1)
         self.assertEqual(analytics["bytes"], 512)
         self.assertEqual(analytics["top_paths"], [("/docs", 1)])
+
+    def test_site_analytics_ignores_other_sites_that_only_mention_the_host(self):
+        log_path = Path(self.app.config["NGINX_ROOT"]) / "access.log"
+        entries = [
+            {"time": "2026-06-11T12:00:00+00:00", "host": "demo.example", "status": 200,
+             "bytes": 10, "client": "203.0.113.5", "uri": "/"},
+            # Another site whose request happens to contain this site's hostname.
+            {"time": "2026-06-11T12:01:00+00:00", "host": "other.example", "status": 200,
+             "bytes": 99, "client": "203.0.113.6", "uri": "/redirect?to=demo.example"},
+            {"time": "2026-06-11T12:02:00+00:00", "host": "DEMO.example", "status": 404,
+             "bytes": 5, "client": "203.0.113.7", "uri": "/missing"},
+        ]
+        log_path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+
+        analytics = site_analytics(log_path, "demo.example", days=3650)
+
+        self.assertEqual(analytics["requests"], 2)
+        self.assertEqual(analytics["bytes"], 15)
 
     def test_not_found_page_has_navigation_and_status_code(self):
         user_id = self.add_user("alice")
@@ -3015,6 +3070,52 @@ class ServiceUnitTests(unittest.TestCase):
         )
         validate_site_config(config, root, 8123, hostnames, 8090)
 
+    def test_nginx_site_gateway_template_is_valid_nginx(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        # Opt-in: `nginx -t` opens listening sockets, so it must never run as
+        # part of the tests that gate a program update on a production server.
+        if not os.environ.get("WEBMANAGER_TEST_NGINX"):
+            self.skipTest("set WEBMANAGER_TEST_NGINX=1 to run the real nginx syntax check")
+        nginx = shutil.which("nginx")
+        if not nginx:
+            self.skipTest("nginx is not installed")
+        root = Path(__file__).resolve().parent.parent
+        template = (root / "deploy" / "debian" / "nginx-sites.conf").read_text(
+            encoding="utf-8"
+        )
+        rendered = template.replace("@SITE_GATEWAY_PORT@", "18190").replace(
+            "@APP_PORT@", "15100"
+        )
+        self.assertNotIn("@SITE_GATEWAY_PORT@", rendered)
+        self.assertNotIn("@APP_PORT@", rendered)
+        # Use unprivileged ports and skip IPv6 so the syntax test runs anywhere.
+        rendered = (
+            rendered.replace("listen 80;", "listen 18181;")
+            .replace("listen 8080 default_server;", "listen 18180 default_server;")
+        )
+        rendered = "\n".join(
+            line for line in rendered.splitlines() if "listen [::]" not in line
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory) / "nginx.conf"
+            main.write_text(
+                f"pid {directory}/nginx.pid;\nerror_log {directory}/error.log;\n"
+                "events {}\nhttp {\n"
+                f"  client_body_temp_path {directory}/a;\n  proxy_temp_path {directory}/b;\n"
+                f"  fastcgi_temp_path {directory}/c;\n  uwsgi_temp_path {directory}/d;\n"
+                f"  scgi_temp_path {directory}/e;\n  access_log off;\n{rendered}\n}}\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [nginx, "-t", "-c", str(main), "-p", directory],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_runtime_requirements_include_authlib_requests_integration(self):
         root = Path(__file__).resolve().parent.parent
         requirements = (root / "requirements.txt").read_text(
@@ -3054,7 +3155,12 @@ class ServiceUnitTests(unittest.TestCase):
             "Tests failed with installed dependencies; retrying in a clean environment.",
             updater,
         )
-        self.assertIn("Last test output:", updater)
+        # A failed update says why: the failing tests and the end of the output,
+        # and a retry that cannot even be set up does not hide the real failure.
+        self.assertIn("summarize_log()", updater)
+        self.assertIn("compgen -e | grep '^WEBMANAGER_'", updater)
+        self.assertIn("The approved update failed its application test suite", updater)
+        self.assertIn("FIRST_TEST_FAILURE=$(summarize_log", updater)
         self.assertIn("UPDATE_STAGE=installing_dependencies", updater)
         self.assertIn("UPDATE_STAGE=preflighting_install", updater)
         self.assertIn("source.backup(target)", updater)
@@ -3153,9 +3259,30 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Preparing the data backup while WebManager remains online.", updater)
         self.assertIn('sync_data_backup "$DATA_BACKUP_DIR"', updater)
         self.assertIn(
-            'restore_directory_contents "$DATA_BACKUP_DIR" "$DATA_DIR"',
+            'restore_data_backup "$DATA_BACKUP_DIR" "$DATA_DIR"',
             updater,
         )
+        # Big rebuildable data is not backed up, so a rollback must never wipe
+        # it: it only puts back what the backup holds.
+        self.assertIn(
+            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"', updater
+        )
+        self.assertNotIn('restore_directory_contents "$DATA_BACKUP_DIR"', updater)
+        self.assertIn("Not enough free disk space", updater)
+        self.assertLess(
+            updater.index("UPDATE_STAGE=checking_space"),
+            updater.index("UPDATE_STAGE=backing_up"),
+        )
+        # Installing by themselves: on only when a super admin asked for it, and
+        # a version that keeps failing is not hammered every 15 minutes.
+        self.assertIn("AUTO_FILE=$STATE_DIR/requests/auto-install", updater)
+        self.assertIn("AUTO_INSTALL=1", updater)
+        self.assertIn('FAILURE_RECORD=$STATE_DIR/last-failure', updater)
+        self.assertIn("AUTO_RETRY_MINUTES=360", updater)
+        # A server far behind the tip is still judged (the clone is shallow).
+        self.assertIn("fetch --quiet --unshallow", updater)
+        # The web app is told which repository and branch the updater follows.
+        self.assertIn('"repository": repository or None', updater)
         self.assertNotIn("webmanager-data.tar.gz", updater)
         self.assertIn("waiting for super-admin approval", updater)
         self.assertIn("OnUnitActiveSec=15min", timer)
@@ -3164,26 +3291,51 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("requests/check", path_unit)
         self.assertIn("ProtectSystem=full", service)
         self.assertIn("ReadWritePaths=/opt/webmanager", service)
+        # Paths that may not exist on every server are optional ("-"), or the
+        # service would refuse to start at all.
         self.assertIn(
-            "ReadWritePaths=/etc/nginx/sites-available",
+            "ReadWritePaths=-/etc/nginx/sites-available",
             service,
         )
+        self.assertIn("ReadWritePaths=-/etc/logrotate.d", service)
         self.assertIn(
             "ReadWritePaths=/usr/local/sbin",
             service,
         )
         self.assertIn("--self-update", installer)
+        # An update never fails just because Nginx refuses the new files: it
+        # puts the old ones back and says so. Servers without IPv6 keep working.
+        self.assertIn("restore_nginx_files()", installer)
+        self.assertIn("was not applied; the previous one is still in use", installer)
+        self.assertIn("drop_ipv6_listeners", installer)
+        self.assertIn("/proc/net/if_inet6", installer)
+        # The updater's sandbox cannot change firewall rules.
+        self.assertIn("Firewall rules are left as they are during an update.", installer)
+        self.assertIn("awk '{print $1}' || true)", installer)
+        self.assertIn("--auto-update)", installer)
+        self.assertIn("ensure_replication_location", installer)
+        self.assertIn('set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"', installer)
         self.assertIn(
             "https://github.com/coolguy1333/WebManager.git", installer
         )
         self.assertIn("Keeping existing $UPDATER_ENV", installer)
         self.assertIn("webmanager-update.timer", installer)
         self.assertIn("webmanager-update.path", installer)
-        self.assertIn("site gateway the explicit", installer)
+        sites_template = (
+            root / "deploy" / "debian" / "nginx-sites.conf"
+        ).read_text(encoding="utf-8")
+        self.assertIn("nginx-sites.conf", installer)
+        self.assertIn("@SITE_GATEWAY_PORT@", installer)
+        self.assertIn("site gateway the explicit", sites_template)
         self.assertIn("server_name $DASHBOARD_HOST", installer)
-        self.assertIn("listen 8080 default_server;", installer)
-        self.assertIn("listen [::]:8080 default_server;", installer)
-        self.assertIn(r"proxy_set_header Host \$host;", installer)
+        self.assertIn("listen 8080 default_server;", sites_template)
+        self.assertIn("listen [::]:8080 default_server;", sites_template)
+        self.assertIn("proxy_set_header Host $host;", sites_template)
+        # Other servers reach the peer endpoints by IP address, and a
+        # visitor-supplied client-IP header is only believed from a trusted edge.
+        self.assertIn("$webmanager_upstream_port", sites_template)
+        self.assertIn("location ^~ /replication/", sites_template)
+        self.assertIn("$webmanager_trusted_edge", sites_template)
         self.assertIn("webmanager-uninstall", installer)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_PUBLIC_SCHEME "https"',
@@ -3219,7 +3371,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Hosted site base domain", google_setup)
         self.assertIn("CONFIGURED_SITE_BASE_DOMAIN", google_setup)
         self.assertIn("server_name $PUBLIC_HOST", google_setup)
-        self.assertIn("configured site hostnames at the loopback gateway", google_setup)
+        self.assertIn("nginx-sites.conf", google_setup)
         self.assertIn(
             'set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$SITE_PUBLIC_SCHEME"',
             google_setup,
@@ -3501,6 +3653,7 @@ class SecurityRegressionTests(unittest.TestCase):
             "try_files /../../../etc/passwd =404;",
             "rewrite ^ /../secret.key break;",
             "ssi on;",
+            "stub_status;",
         ]
         for attack in attacks:
             with self.subTest(attack=attack):
@@ -3517,6 +3670,23 @@ class SecurityRegressionTests(unittest.TestCase):
             "    disable_symlinks on;\n    location ~ ^/old/(.*)$ { return 301 $scheme://$host/new/$1; }",
         )
         validate_site_config(safe, root, 43100, ["demo.webmanager.example"], 43099)
+
+    def test_config_editor_rejects_listen_parameters(self):
+        root = Path(self.temp_directory.name) / "listen"
+        root.mkdir()
+        hostnames = ["demo.webmanager.example"]
+        base = build_site_config("Demo", root, "index.html", 43100, True, hostnames, 43099)
+        for parameters in ("default_server", "ssl", "proxy_protocol", "reuseport"):
+            with self.subTest(parameters=parameters):
+                config = base.replace(
+                    "    listen 127.0.0.1:43099;",
+                    f"    listen 127.0.0.1:43099 {parameters};",
+                    1,
+                )
+                self.assertNotEqual(config, base)
+                with self.assertRaises(NginxConfigError):
+                    validate_site_config(config, root, 43100, hostnames, 43099)
+        validate_site_config(base, root, 43100, hostnames, 43099)
 
     def test_generated_config_cannot_be_injected_through_site_name(self):
         root = Path(self.temp_directory.name) / "inject"

@@ -574,6 +574,23 @@ if (siteToolbar) {
   apply();
 }
 
+// Runs `task` now and then every `every` ms while the tab is visible, never
+// starting one while the last is still waiting for the server (a slow server
+// would otherwise be buried in requests). With `again`, it also runs once
+// about a second in: the server's first reading of a busy figure needs a
+// moment, so the page fills in without waiting a whole interval.
+const poll = (task, { every = 2000, again = false } = {}) => {
+  let running = false;
+  const tick = async () => {
+    if (running || document.hidden) return;
+    running = true;
+    try { await task(); } finally { running = false; }
+  };
+  tick();
+  if (again) window.setTimeout(tick, 1000);
+  window.setInterval(tick, every);
+};
+
 // ---------- System: live resource usage ----------
 const metricsPanel = document.querySelector("[data-metrics]");
 if (metricsPanel) {
@@ -610,10 +627,33 @@ if (metricsPanel) {
       if (!peer) return;
       const statusCell = row.querySelector('[data-mesh-stat="status"]');
       if (statusCell) {
-        statusCell.innerHTML = peer.reachable
-          ? '<span class="badge badge-success"><span class="dot"></span>Online</span>'
-          : `<span class="badge badge-danger" title="${peer.error ? String(peer.error).replace(/"/g, "&quot;") : ""}"><span class="dot"></span>Unreachable</span>`;
+        const badge = document.createElement("span");
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        badge.append(dot);
+        if (peer.reachable) {
+          badge.className = "badge badge-success";
+          badge.append("Online");
+        } else if (peer.checked_at) {
+          badge.className = "badge badge-danger";
+          badge.title = peer.error || "";
+          badge.append("Unreachable");
+        } else {
+          badge.className = "badge";
+          badge.textContent = "Checking…";
+        }
+        statusCell.replaceChildren(badge);
       }
+      const problem = row.querySelector("[data-mesh-problem]");
+      if (problem) {
+        const failed = !peer.reachable && Boolean(peer.checked_at);
+        problem.hidden = !failed;
+        if (failed) {
+          const seen = peer.last_seen ? ` Last seen ${peer.last_seen}.` : " Never reached yet.";
+          problem.textContent = (peer.hint || peer.error || "") + seen;
+        }
+      }
+      row.toggleAttribute("data-mesh-empty", !peer.version && !peer.sites && (peer.cpu_percent === null || peer.cpu_percent === undefined));
       setMesh(row, "version", peer.version || "—");
       setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
       setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
@@ -659,8 +699,7 @@ if (metricsPanel) {
       meshLive?.classList.add("stale");
     }
   };
-  refresh();
-  window.setInterval(refresh, 2000);
+  poll(refresh);
 }
 
 // ---------- Apps: live container usage (list views) ----------
@@ -685,7 +724,7 @@ if (appsLive) {
       // Leave the last known values on screen; try again next tick.
     }
   };
-  window.setInterval(refreshAppsList, 2000);
+  poll(refreshAppsList, { again: true });
 }
 
 // ---------- App page: live container status & usage ----------
@@ -713,13 +752,26 @@ if (appStatus) {
       // Leave the last known values on screen; try again next tick.
     }
   };
-  window.setInterval(refreshAppStatus, 2000);
+  poll(refreshAppStatus, { again: true });
 }
 
 // Reload while an app is building/starting so the page reflects the result.
+// Some panels cap how often they reload (data-auto-refresh-max) so a check
+// that never finishes can't keep the page reloading forever.
 const autoRefresh = document.querySelector("[data-auto-refresh]");
+const autoRefreshKey = `webmanager.autoRefresh:${window.location.pathname}`;
 if (autoRefresh) {
-  window.setTimeout(() => window.location.reload(), Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+  const limit = Number(autoRefresh.dataset.autoRefreshMax || 0);
+  let attempts = 0;
+  try { attempts = Number(window.sessionStorage.getItem(autoRefreshKey) || 0); } catch { /* storage unavailable */ }
+  if (!limit || attempts < limit) {
+    window.setTimeout(() => {
+      try { window.sessionStorage.setItem(autoRefreshKey, String(attempts + 1)); } catch { /* ignore */ }
+      window.location.reload();
+    }, Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+  }
+} else {
+  try { window.sessionStorage.removeItem(autoRefreshKey); } catch { /* ignore */ }
 }
 
 // ---------- App deploy form: subdomain is optional at the domain root ----------
@@ -734,4 +786,22 @@ document.querySelectorAll("[data-app-address]").forEach((address) => {
   };
   root.addEventListener("change", update);
   update();
+});
+
+// ---------- Servers: keep the copy-paste join commands in step with the address ----------
+document.querySelectorAll("[data-join]").forEach((panel) => {
+  const address = panel.querySelector("[data-join-address]");
+  if (!address) return;
+  const update = () => {
+    const value = address.value.trim().replace(/\/+$/, "") || "http://THIS-SERVER:8080";
+    panel.querySelectorAll("[data-join-command]").forEach((code) => {
+      const command = code.dataset.joinCommand
+        .replace("{address}", value)
+        .replace("{token}", code.dataset.joinToken);
+      const lines = code.textContent.split("\n");
+      lines[lines.length - 1] = command;
+      code.textContent = lines.join("\n");
+    });
+  };
+  address.addEventListener("input", update);
 });
