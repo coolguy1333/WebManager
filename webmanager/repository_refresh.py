@@ -418,7 +418,9 @@ class RepositoryRefreshManager:
         runtime = self.app.extensions.get("runtime_manager")
         if runtime:
             for site in affected_sites:
-                if site["status"] not in ("running", "starting"):
+                # A site left in 'error' is retried too: the update is often
+                # the fix. A deliberately stopped site stays stopped.
+                if site["status"] not in ("running", "starting", "error"):
                     continue
                 if site["kind"] == "app":
                     # Builds can take minutes: rebuild in the background so an

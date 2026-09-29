@@ -126,6 +126,46 @@ class FakeRuntime:
         self.calls.append(("restore_data", volume_name, content))
 
 
+class BuildFailureSummaryTests(unittest.TestCase):
+    OUTPUT = (
+        "#0 building with \"default\" instance using docker driver\n"
+        "#1 [internal] load build definition from Dockerfile\n"
+        "#1 DONE 0.0s\n"
+        "#4 [1/4] FROM docker.io/library/busybox:latest@sha256:abc\n"
+        "#4 DONE 0.0s\n"
+        "#6 [2/4] RUN make build\n"
+        "#6 0.312 make: *** No rule to make target 'build'.  Stop.\n"
+        "#6 ERROR: process \"/bin/sh -c make build\" did not complete successfully: exit code: 2\n"
+        "------\n > [2/4] RUN make build:\n0.312 make: *** No rule to make target 'build'.  Stop.\n------\n"
+        "Dockerfile:2\n"
+        "ERROR: failed to build: failed to solve: process \"/bin/sh -c make build\" "
+        "did not complete successfully: exit code: 2\n"
+    )
+
+    def test_the_reason_comes_first_and_progress_noise_is_dropped(self):
+        reason, tidy = apps.summarize_build_failure(self.OUTPUT)
+        self.assertEqual(
+            reason,
+            'process "/bin/sh -c make build" did not complete successfully: exit code: 2',
+        )
+        self.assertIn("No rule to make target", tidy)
+        self.assertNotIn("DONE", tidy)
+        self.assertNotIn("[internal]", tidy)
+
+    def test_long_output_is_cut_on_a_line_boundary_and_keeps_the_end(self):
+        noisy = "\n".join(f"line {i:04d} " + "x" * 60 for i in range(400)) + "\nERROR: failed to build: boom\n"
+        reason, tidy = apps.summarize_build_failure(noisy, limit=500)
+        self.assertEqual(reason, "boom")
+        self.assertLessEqual(len(tidy), 500)
+        self.assertTrue(tidy.startswith("line "))
+        self.assertTrue(tidy.endswith("ERROR: failed to build: boom"))
+
+    def test_output_without_a_recognisable_error_still_returns_its_tail(self):
+        reason, tidy = apps.summarize_build_failure("something odd happened\n")
+        self.assertEqual(reason, "")
+        self.assertEqual(tidy, "something odd happened")
+
+
 class AppHostingTests(unittest.TestCase):
     setUp_base = base.WebManagerTestCase.setUp
     tearDown = base.WebManagerTestCase.tearDown
@@ -529,7 +569,7 @@ class AppHostingTests(unittest.TestCase):
         self.assertEqual(self.fake.volumes_removed, [site_id])
         self.assertNotIn(self.fake.container_name(site_id), self.fake.containers)
 
-    def test_approved_source_update_rebuilds_app_in_background(self):
+    def _apply_update_with_app_status(self, status):
         _, repository_id = self.owner()
         self.deploy(repository_id)
         site_id = self.site()["id"]
@@ -540,7 +580,7 @@ class AppHostingTests(unittest.TestCase):
             (pending / name).write_text((repository_root / name).read_text(), encoding="utf-8")
         with self.app.app_context():
             database = get_db()
-            database.execute("UPDATE sites SET status = 'running' WHERE id = ?", (site_id,))
+            database.execute("UPDATE sites SET status = ? WHERE id = ?", (status, site_id))
             database.execute(
                 "UPDATE repositories SET local_path = ?, pending_path = ?, pending_commit = ? WHERE id = ?",
                 (str(repository_root), str(pending), "b" * 40, repository_id),
@@ -553,9 +593,24 @@ class AppHostingTests(unittest.TestCase):
             patch.object(runtime, "restart_site") as restart,
         ):
             result = self.app.extensions["repository_refresh_manager"].apply_pending(repository_id)
+        return site_id, result, start, restart
+
+    def test_approved_source_update_rebuilds_app_in_background(self):
+        site_id, result, start, restart = self._apply_update_with_app_status("running")
         self.assertEqual(result.status, "applied")
         start.assert_called_once_with(site_id)
         restart.assert_not_called()
+
+    def test_an_update_retries_an_app_that_was_left_in_error(self):
+        # The update is often the fix for whatever made the app fail.
+        site_id, result, start, _restart = self._apply_update_with_app_status("error")
+        self.assertEqual(result.status, "applied")
+        start.assert_called_once_with(site_id)
+
+    def test_an_update_leaves_a_deliberately_stopped_app_stopped(self):
+        _site_id, result, start, _restart = self._apply_update_with_app_status("stopped")
+        self.assertEqual(result.status, "applied")
+        start.assert_not_called()
 
     # -- usage monitoring & separate sites/apps views -------------------------
     def test_apps_view_only_lists_apps_and_sites_view_excludes_them(self):
