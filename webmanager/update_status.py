@@ -98,12 +98,22 @@ def update_source():
     return repository, branch or "main"
 
 
+def _same_commit(installed, available):
+    """Installed commits are sometimes recorded abbreviated."""
+    return bool(
+        installed and available
+        and (available == installed or (len(installed) >= 7 and available.startswith(installed)))
+    )
+
+
 def _result(state, message, installed, available):
     return {
         "state": state,
         "installed_commit": installed,
         "available_commit": available,
-        "update_available": bool(available and installed and not available.startswith(installed) and available != installed),
+        # Like the updater service: when the installed commit is unknown, the
+        # latest one is offered rather than reporting nothing.
+        "update_available": bool(available and not _same_commit(installed, available)),
         "message": message,
         "checked_at": _now(),
     }
@@ -132,12 +142,17 @@ def check_upstream(repository, branch, installed, timeout=20):
                 result = _result("error", f"Could not reach GitHub: {detail[-1] if detail else 'git failed'}", installed, None)
             elif available is None:
                 result = _result("error", f"Branch {branch} was not found on {repository}.", installed, None)
-            elif installed and (available == installed or (len(installed) >= 7 and available.startswith(installed))):
+            elif _same_commit(installed, available):
                 result = _result("current", "WebManager is current.", installed, available)
             elif installed:
                 result = _result("available", "An update is available and waiting for super-admin approval.", installed, available)
             else:
-                result = _result("error", "The installed version is unknown, so it can't be compared with GitHub.", installed, available)
+                result = _result(
+                    "available",
+                    "The installed version couldn't be identified, so the latest version is offered. "
+                    "Installing it records exactly what is installed.",
+                    installed, available,
+                )
         except FileNotFoundError:
             result = _result("error", "Git is not installed on this server.", installed, None)
         except subprocess.TimeoutExpired:

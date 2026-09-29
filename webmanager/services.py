@@ -16,6 +16,8 @@ from .nginx import (
     build_app_config,
     build_main_config,
     build_paused_site_config,
+    drop_ipv6_listeners,
+    ipv6_loopback_available,
     route_site_config,
     upgrade_legacy_site_config,
     validate_site_config,
@@ -24,6 +26,17 @@ from .nginx import (
 
 class RuntimeErrorDetail(RuntimeError):
     pass
+
+
+def _tidy_nginx_output(text: str) -> str:
+    """Nginx repeats the same failure several times while it retries (bind()
+    errors, for example); show each distinct line once."""
+    seen = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and line not in seen:
+            seen.append(line)
+    return "\n".join(seen)
 
 
 def port_is_available(port: int) -> bool:
@@ -692,6 +705,13 @@ class RuntimeManager:
         return port is None or f"--port {port}" in command
 
     def _write_all_nginx_configs(self, database, activating_site_id=None):
+        # A host without IPv6 can't open [::1]; Nginx would refuse to start.
+        if ipv6_loopback_available():
+            def emit(path, text):
+                path.write_text(text, encoding="utf-8")
+        else:
+            def emit(path, text):
+                path.write_text(drop_ipv6_listeners(text), encoding="utf-8")
         try:
             root = Path(self.app.config["NGINX_ROOT"])
             config_dir = root / "conf.d"
@@ -751,15 +771,23 @@ class RuntimeManager:
                             raise RuntimeErrorDetail(str(exc)) from exc
                         self.app.logger.error("App %s config: %s", site["id"], exc)
                         continue
-                    (config_dir / f"{site['id']}-{site['slug']}.conf").write_text(config, encoding="utf-8")
+                    emit(config_dir / f"{site['id']}-{site['slug']}.conf", config)
                     continue
+                site_config = site["nginx_config"]
                 try:
                     hostnames = site_hostnames(database, site)
                     gateway_port = (
                         self.app.config["SITE_GATEWAY_PORT"] if hostnames else None
                     )
+                    if hostnames:
+                        # A config copied from another server (a replica's
+                        # mirror) names that server's gateway port; point it
+                        # at ours. A no-op for a config already routed here.
+                        site_config = route_site_config(
+                            site_config, site["port"], hostnames, gateway_port
+                        )
                     validate_site_config(
-                        site["nginx_config"],
+                        site_config,
                         site["document_root"],
                         site["port"],
                         hostnames,
@@ -786,17 +814,16 @@ class RuntimeManager:
                     except NginxConfigError:
                         placeholder = ""
                     if placeholder:
-                        (config_dir / f"{site['id']}-{site['slug']}.paused.conf").write_text(
-                            placeholder, encoding="utf-8"
-                        )
+                        emit(config_dir / f"{site['id']}-{site['slug']}.paused.conf", placeholder)
                     continue
                 path = config_dir / f"{site['id']}-{site['slug']}.conf"
-                path.write_text(site["nginx_config"], encoding="utf-8")
+                emit(path, site_config)
 
             for filename, placeholder in paused_configs.items():
-                (config_dir / filename).write_text(placeholder, encoding="utf-8")
+                emit(config_dir / filename, placeholder)
 
-            (root / "nginx.conf").write_text(
+            emit(
+                root / "nginx.conf",
                 build_main_config(
                     root,
                     config_dir,
@@ -819,7 +846,6 @@ class RuntimeManager:
                     ),
                     self.app.config["PORT"],
                 ),
-                encoding="utf-8",
             )
         except OSError as exc:
             raise RuntimeErrorDetail(f"Could not write the managed Nginx configuration: {exc}") from exc
@@ -849,7 +875,7 @@ class RuntimeManager:
         except OSError as exc:
             raise RuntimeErrorDetail(f"Could not run Nginx: {exc}") from exc
         if result.returncode != 0:
-            raise RuntimeErrorDetail((result.stderr or result.stdout).strip() or "Nginx command failed.")
+            raise RuntimeErrorDetail(_tidy_nginx_output(result.stderr or result.stdout) or "Nginx command failed.")
         return result
 
     def _reload_nginx(self):

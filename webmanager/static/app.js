@@ -636,6 +636,7 @@ if (metricsPanel) {
           problem.textContent = (peer.hint || peer.error || "") + seen;
         }
       }
+      row.toggleAttribute("data-mesh-empty", !peer.version && !peer.sites && (peer.cpu_percent === null || peer.cpu_percent === undefined));
       setMesh(row, "version", peer.version || "—");
       setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
       setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
@@ -739,9 +740,22 @@ if (appStatus) {
 }
 
 // Reload while an app is building/starting so the page reflects the result.
+// Some panels cap how often they reload (data-auto-refresh-max) so a check
+// that never finishes can't keep the page reloading forever.
 const autoRefresh = document.querySelector("[data-auto-refresh]");
+const autoRefreshKey = `webmanager.autoRefresh:${window.location.pathname}`;
 if (autoRefresh) {
-  window.setTimeout(() => window.location.reload(), Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+  const limit = Number(autoRefresh.dataset.autoRefreshMax || 0);
+  let attempts = 0;
+  try { attempts = Number(window.sessionStorage.getItem(autoRefreshKey) || 0); } catch { /* storage unavailable */ }
+  if (!limit || attempts < limit) {
+    window.setTimeout(() => {
+      try { window.sessionStorage.setItem(autoRefreshKey, String(attempts + 1)); } catch { /* ignore */ }
+      window.location.reload();
+    }, Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+  }
+} else {
+  try { window.sessionStorage.removeItem(autoRefreshKey); } catch { /* ignore */ }
 }
 
 // ---------- App deploy form: subdomain is optional at the domain root ----------

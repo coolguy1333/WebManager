@@ -204,6 +204,12 @@ The default installation uses:
 
 Port `5000` should not be exposed publicly. Debian's system Nginx forwards dashboard traffic from port `8080` to `127.0.0.1:5000`.
 
+Requests to port `8080` that are addressed to a bare IP (for example
+`http://192.168.10.20:8080`, which is how other WebManager servers reach this
+one on a private network, and how you can open the dashboard before setting up
+a hostname) go to WebManager itself; requests for a hostname go to the site
+gateway as described below.
+
 Each deployed site receives one internal port from `8100` through `8999`.
 System Nginx accepts wildcard HTTP traffic on port `80` and forwards it to the
 loopback-only gateway on port `8090`. HTTPS can terminate at an upstream
@@ -752,22 +758,38 @@ repository details. See the in-app **Docs** page for the full reference.
 
 ### Setting up a new peer server with one command
 
-On the **primary**, set `WEBMANAGER_PEER_TOKEN` in `/etc/webmanager/webmanager.env`
-(`openssl rand -hex 24`) and restart it. Then, on the new server:
+Peers reach each other at the dashboard address. On a private network that
+can simply be the server's IP and port `8080` (for example
+`http://192.168.10.20:8080`); otherwise use its public `https://` address. A
+hosted site's address, or port 80, does **not** work (it returns the site
+gateway's 404 page).
 
-```bash
-git clone https://github.com/coolguy1333/WebManager.git webmanager && cd webmanager
-bash setup.sh \
-  --replica-of https://primary.example.com \
-  --peer-token <the same token>
-```
+1. **On the primary**, update it and set a shared token, then restart it:
 
-`--replica-of` makes it a mirror of that primary; use `--peers
-https://other.example.com,...` instead (or as well) to only list servers to
-monitor. The primary must be reachable from the new server, since the
-replica fetches its session key at startup. Add the new server's Google
-sign-in redirect URI (`https://<its dashboard address>/auth/google/callback`)
-to your Google OAuth client.
+   ```bash
+   cd webmanager && git pull && sudo bash setup.sh   # teaches Nginx to route IP-addressed peer requests
+   openssl rand -hex 24                              # copy the output
+   sudo nano /etc/webmanager/webmanager.env          # set WEBMANAGER_PEER_TOKEN=<that token>
+   sudo systemctl restart webmanager
+   ```
+
+2. **On the new server**:
+
+   ```bash
+   git clone https://github.com/coolguy1333/WebManager.git webmanager && cd webmanager
+   bash setup.sh \
+     --replica-of http://PRIMARY-IP:8080 \
+     --peer-token <the same token>
+   ```
+
+`--replica-of` makes it a mirror of that primary (use `--peers
+https://other.example.com,...` instead, or as well, to only list servers to
+monitor). Before changing anything, setup checks that the primary answers with
+that token and tells you exactly what is wrong if it doesn't (wrong address,
+wrong token, primary not updated, firewall); `--skip-primary-check` installs
+anyway. Add the new server's Google sign-in redirect URI
+(`https://<its dashboard address>/auth/google/callback`) to your Google OAuth
+client.
 
 ### Replication: turning peers into real replicas
 
@@ -800,6 +822,13 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   if the old primary comes back on its own it has no way to know it's been
   superseded, so point it at the new primary (or take it offline) to avoid
   two servers both accepting writes.
+
+Every server in the group is fully trusted: a replica holds the primary's
+secret key (so it can sign sessions and decrypt saved app variables) and a
+complete copy of its database. Only add servers you would give admin access.
+App data volumes are copied while the app runs, so a database that is mid-write
+at that instant is captured mid-write; SQLite and Postgres recover from that on
+start, but a replica is not a point-in-time backup.
 
 See the in-app **Docs** page for the full setup, security model, and
 troubleshooting.

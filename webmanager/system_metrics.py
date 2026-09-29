@@ -165,6 +165,18 @@ def load_average():
         return None
 
 
+def collect_basic(app):
+    """Just the headline figures a peer's Servers panel shows. Unlike
+    collect(), it never walks the repository/log directories, so answering a
+    peer's poll stays fast however much is hosted here."""
+    return {
+        "hostname": socket.gethostname(),
+        "cpu_percent": cpu_percent(),
+        "memory": memory(),
+        "disk": disk(Path(app.instance_path)),
+    }
+
+
 def collect(app):
     config = app.config
     data_dir = Path(app.instance_path)

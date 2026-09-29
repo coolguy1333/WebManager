@@ -642,7 +642,7 @@ payload = {
     "available_commit": commit,
     "update_available": False,
     "message": "WebManager was installed successfully by manual setup.",
-    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle)

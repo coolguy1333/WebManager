@@ -1415,6 +1415,17 @@ class WebManagerTestCase(unittest.TestCase):
                 update_status.check_upstream(repo, "nope", installed)["message"],
             )
 
+        with mock.patch("subprocess.run") as run:
+            run.return_value = fake(f"{latest}\trefs/heads/main\n")
+            unknown = update_status.check_upstream(repo, "main", None)
+            self.assertEqual(unknown["state"], "available")
+            self.assertTrue(unknown["update_available"])
+            self.assertIn("couldn't be identified", unknown["message"])
+            # A recorded abbreviated commit still counts as the same version.
+            self.assertEqual(
+                update_status.check_upstream(repo, "main", latest[:12])["state"], "current"
+            )
+
         bad = update_status.check_upstream("https://evil.example/x.git", "main", installed)
         self.assertEqual(bad["state"], "error")
 
@@ -3020,6 +3031,10 @@ class ServiceUnitTests(unittest.TestCase):
         import subprocess
         import tempfile
 
+        # Opt-in: `nginx -t` opens listening sockets, so it must never run as
+        # part of the tests that gate a program update on a production server.
+        if not os.environ.get("WEBMANAGER_TEST_NGINX"):
+            self.skipTest("set WEBMANAGER_TEST_NGINX=1 to run the real nginx syntax check")
         nginx = shutil.which("nginx")
         if not nginx:
             self.skipTest("nginx is not installed")
@@ -3233,7 +3248,7 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("proxy_set_header Host $host;", sites_template)
         # Other servers reach the peer endpoints by IP address, and a
         # visitor-supplied client-IP header is only believed from a trusted edge.
-        self.assertIn("location ^~ /mesh/", sites_template)
+        self.assertIn("$webmanager_upstream_port", sites_template)
         self.assertIn("location ^~ /replication/", sites_template)
         self.assertIn("$webmanager_trusted_edge", sites_template)
         self.assertIn("webmanager-uninstall", installer)

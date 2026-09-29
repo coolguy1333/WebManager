@@ -2,9 +2,10 @@
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from webmanager.db import get_db
-from webmanager.nginx import build_site_config
+from webmanager.nginx import build_site_config, drop_ipv6_listeners
 
 from tests import test_app as base
 
@@ -138,6 +139,24 @@ class RestoreSitesTests(unittest.TestCase):
 
         self.assertEqual(self.statuses(), {"site0": "error", "site1": "error"})
 
+    def test_a_config_mirrored_from_a_server_with_another_gateway_port_is_repointed(self):
+        [site_id] = self.make_sites(1)
+        foreign = build_site_config(
+            "Demo", self.site_root, "index.html", 43100, True,
+            ["site0.webmanager.example"], 43050,  # the other server's gateway port
+        )
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET nginx_config = ? WHERE id = ?", (foreign, site_id))
+            database.commit()
+
+        self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+
+        self.assertEqual(self.statuses(), {"site0": "running"})
+        written = self.written_configs()["1-site0.conf"]
+        self.assertIn("127.0.0.1:43099", written)  # this server's gateway
+        self.assertNotIn("43050", written)
+
     def test_stopped_sites_are_left_alone(self):
         self.make_sites(2, status="stopped")
 
@@ -145,6 +164,63 @@ class RestoreSitesTests(unittest.TestCase):
 
         self.assertEqual(self.statuses(), {"site0": "stopped", "site1": "stopped"})
         self.assertEqual(self.nginx_calls(), [])
+
+    def written_configs(self):
+        root = Path(self.app.config["NGINX_ROOT"])
+        return {
+            path.name: path.read_text(encoding="utf-8")
+            for path in [root / "nginx.conf", *sorted((root / "conf.d").glob("*.conf"))]
+        }
+
+    def test_ipv6_listeners_are_left_out_when_the_host_has_no_ipv6(self):
+        self.make_sites(2)
+        with patch("webmanager.services.ipv6_loopback_available", return_value=False):
+            self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+
+        configs = self.written_configs()
+        self.assertGreaterEqual(len(configs), 3)
+        for name, text in configs.items():
+            self.assertNotIn("[::", text, name)
+            if name != "nginx.conf":
+                self.assertIn("listen 127.0.0.1:", text, name)
+        # The stored config stays dual-stack so it still works on a server that has IPv6.
+        with self.app.app_context():
+            stored = get_db().execute("SELECT nginx_config FROM sites LIMIT 1").fetchone()[0]
+        self.assertIn("[::1]", stored)
+
+    def test_ipv6_listeners_are_kept_when_the_host_has_ipv6(self):
+        self.make_sites(1)
+        with patch("webmanager.services.ipv6_loopback_available", return_value=True):
+            self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+
+        self.assertTrue(any("[::1]" in text for text in self.written_configs().values()))
+
+    def test_drop_ipv6_listeners_only_removes_ipv6_listen_lines(self):
+        config = (
+            "server {\n"
+            "    listen 127.0.0.1:8090;\n"
+            "    listen [::1]:8090;\n"
+            "    listen [::]:80 default_server;\n"
+            "    server_name demo.example;\n"
+            "}\n"
+        )
+        self.assertEqual(
+            drop_ipv6_listeners(config),
+            "server {\n    listen 127.0.0.1:8090;\n    server_name demo.example;\n}\n",
+        )
+
+    def test_repeated_nginx_error_lines_are_shown_once(self):
+        from webmanager.services import _tidy_nginx_output
+
+        noisy = (
+            "nginx: [emerg] bind() to 127.0.0.1:5300 failed (98: Address already in use)\n" * 5
+            + "nginx: [emerg] still could not bind()\n"
+        )
+        self.assertEqual(
+            _tidy_nginx_output(noisy),
+            "nginx: [emerg] bind() to 127.0.0.1:5300 failed (98: Address already in use)\n"
+            "nginx: [emerg] still could not bind()",
+        )
 
     def test_restoring_the_gateway_does_nothing_without_nginx(self):
         self.app.config["NGINX_BINARY"] = "definitely-not-installed-nginx"

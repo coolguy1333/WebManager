@@ -28,7 +28,7 @@
 
 {% if sites %}
 <div class="toolbar" data-site-toolbar>
-  <label class="search grow"><span class="visually-hidden">Search sites</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search by name, domain, source, owner…" data-site-search></label>
+  <label class="search grow"><span class="visually-hidden">Search sites</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search sites…" data-site-search></label>
   <div class="segmented" role="radiogroup" aria-label="Status filter">
     <label><input type="radio" name="site_status" value="all" checked><span>All <b data-status-count="all">{{ sites|length }}</b></span></label>
     <label><input type="radio" name="site_status" value="running"><span>Running <b data-status-count="running">{{ summary.running }}</b></span></label>

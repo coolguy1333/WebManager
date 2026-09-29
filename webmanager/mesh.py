@@ -69,7 +69,7 @@ def local_status(app) -> dict:
             """
         ).fetchone()
         apps = {"total": row["total"], "running": row["running"] or 0}
-    metrics = system_metrics.collect(app)
+    metrics = system_metrics.collect_basic(app)
     installed_commit = read_update_status().get("installed_commit")
     return {
         "hostname": metrics.get("hostname"),
