@@ -387,7 +387,7 @@
     <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
       {{ ui.csrf() }}
       <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="btn btn-primary" type="submit">{{ ui.icon('download', 14) }}Approve and install</button>
+      <button class="btn btn-primary" type="submit"{% if updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}Approve and install</button>
     </form>
     {% endif %}
   </div>
@@ -403,7 +403,7 @@
     {% if not source_updates.total %}
     <p class="muted">No Git sources are connected yet.</p>
     {% elif not source_updates.pending and not source_updates.failed %}
-    <p class="muted">All {{ source_updates.total }} source{{ "" if source_updates.total == 1 else "s" }} are up to date as of their last check.</p>
+    <p class="muted">{% if source_updates.total == 1 %}The one source is{% else %}All {{ source_updates.total }} sources are{% endif %} up to date as of the last check.</p>
     {% endif %}
     {% for repo in source_updates.pending %}
     <div class="record-actions">

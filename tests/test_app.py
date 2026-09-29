@@ -1456,6 +1456,32 @@ class WebManagerTestCase(unittest.TestCase):
         self.assertIn(latest[:12].encode(), response.data)
         self.assertIn(b"systemctl enable --now webmanager-update.path", response.data)
 
+    def test_install_button_is_disabled_while_the_updater_is_off(self):
+        Path(self.app.config["PROGRAM_UPDATE_STATUS_FILE"]).write_text(
+            json.dumps(
+                {
+                    "state": "available",
+                    "installed_commit": "b" * 40,
+                    "available_commit": "a" * 40,
+                    "update_available": True,
+                    "message": "Update available.",
+                    "checked_at": "2026-06-11 12:00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.login_user(self.add_user("root-admin", is_admin=True))
+
+        self.app.config["UPDATER_ACTIVE"] = False
+        off = self.client.get("/admin/?section=updates").data.decode("utf-8")
+        self.assertRegex(off, r'<button class="btn btn-primary" type="submit" disabled[^>]*>')
+        self.assertIn("Approve and install", off)
+
+        self.app.config["UPDATER_ACTIVE"] = True
+        on = self.client.get("/admin/?section=updates").data.decode("utf-8")
+        self.assertNotRegex(on, r'<button class="btn btn-primary" type="submit" disabled')
+        self.assertIn("Approve and install", on)
+
     def test_install_is_refused_when_the_updater_is_off(self):
         self.app.config["UPDATER_ACTIVE"] = False
         user_id = self.add_user("root-admin", is_admin=True)
