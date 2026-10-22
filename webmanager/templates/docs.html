@@ -131,7 +131,7 @@
       <tbody>
         <tr><td><code>type</code></td><td>Yes</td><td>Must be <code>"app"</code>.</td></tr>
         <tr><td><code>health</code></td><td>Yes</td><td>A path starting with <code>/</code>.</td></tr>
-        <tr><td><code>memory_mb</code></td><td>No</td><td>Whole number, 64–4096. Defaults to the installation's default (usually 256).</td></tr>
+        <tr><td><code>memory_mb</code></td><td>No</td><td>Whole number, 64–4096. Defaults to the installation's default (usually 256). The app's <strong>Resources</strong> page can override it.</td></tr>
         <tr><td><code>env</code></td><td>No</td><td>Up to 100 settings shown on the Variables page.</td></tr>
       </tbody>
     </table>
@@ -222,7 +222,7 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
         <tr><td>App build fails</td><td>Read <strong>Build log</strong> on the app's page. The base image must be downloadable from the server.</td></tr>
         <tr><td>"…didn't pass its health check"</td><td>Check the app logs on its page. Common causes: listening on the wrong host/port, <code>/data</code> not writable, or a required variable still unset.</td></tr>
         <tr><td>"Saved app settings could not be decrypted"</td><td>The server's secret key changed since the values were saved. Re-enter them under Variables.</td></tr>
-        <tr><td>App restarts repeatedly</td><td>Check the restart count on the app's page — usually it's being killed for using more memory than its limit; raise <code>memory_mb</code>.</td></tr>
+        <tr><td>App restarts repeatedly</td><td>Check the restart count on the app's page — usually it's being killed for using more memory than its limit; raise its memory under <strong>Resources</strong> on the app's page (it applies without a restart).</td></tr>
         <tr><td>Deploying is greyed out for a folder</td><td>It's missing a <code>Dockerfile</code> or a valid <code>webmanager.json</code> — the reason is shown on the folder picker.</td></tr>
         {% endif %}
         <tr><td>Can't see a site/app someone else owns</td><td>Ask an administrator to grant you view or manage access under People &amp; access, or add you to a pool.</td></tr>

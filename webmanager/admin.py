@@ -35,7 +35,7 @@ from .domains import (
 )
 import secrets
 
-from . import mesh, quotas, system_metrics
+from . import app_limits, mesh, quotas, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -1212,8 +1212,10 @@ def apps_dashboard():
     ).fetchall()
     stats = runtime.stats_for_sites([row["id"] for row in apps_rows])
     ready, message = runtime.apps_status()
+    allocation = app_limits.allocation(apps_rows, current_app.config)
     return render_template(
         "admin/apps.html",
+        allocation=allocation,
         title="App hosting",
         active_section="apps",
         apps=apps_rows,

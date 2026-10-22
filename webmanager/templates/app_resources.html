@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <a class="back-link" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ ui.icon('arrow-left', 14) }}{{ site.name }}</a>
+    <h1>Resources</h1>
+    <p>How much memory and CPU this app's container may use, and how many processes it may start. Leave a box empty to use the default shown in it.</p>
+  </div>
+</header>
+
+<form class="stack" method="post" autocomplete="off" data-loading>
+  {{ ui.csrf() }}
+  <section class="card">
+    <div class="card-body stack">
+      <label class="field">
+        <span>Memory (MB)</span>
+        <input type="number" name="memory_mb" inputmode="numeric" min="{{ min_memory }}" max="{{ caps.memory_mb }}" step="1" value="{{ shown.memory_mb if shown.memory_mb is not none else '' }}" placeholder="{{ defaults.memory_mb }}">
+        <small class="hint">
+          {{ min_memory }}–{{ caps.memory_mb }} MB. Default {{ defaults.memory_mb }} MB{% if site.app_memory_mb is none %} (from the app's <code>webmanager.json</code>){% endif %}.
+          {% if live %}Using {{ live.memory_used }} right now.{% endif %}
+          An app that goes over is stopped and restarted by the container runtime, so give it some room.
+        </small>
+      </label>
+      <label class="field">
+        <span>CPU (cores)</span>
+        <input type="number" name="cpus" inputmode="decimal" min="{{ min_cpus }}" max="{{ '%g'|format(caps.cpus) }}" step="0.05" value="{{ shown.cpus if shown.cpus is not none else '' }}" placeholder="{{ '%g'|format(defaults.cpus) }}">
+        <small class="hint">{{ '%g'|format(min_cpus) }}–{{ '%g'|format(caps.cpus) }} cores (1 is one full core; 0.5 is half of one). Default {{ '%g'|format(defaults.cpus) }}. A busy app is slowed down, not stopped.</small>
+      </label>
+      <label class="field">
+        <span>Processes and threads</span>
+        <input type="number" name="pids" inputmode="numeric" min="{{ min_pids }}" max="{{ caps.pids }}" step="1" value="{{ shown.pids if shown.pids is not none else '' }}" placeholder="{{ defaults.pids }}">
+        <small class="hint">{{ min_pids }}–{{ caps.pids }}. Default {{ defaults.pids }}. Stops a runaway app from starting thousands of them.</small>
+      </label>
+      <p class="hint">This server has {{ host.cpus }} CPU core{{ "" if host.cpus == 1 else "s" }}{% if host.memory_mb %} and {{ host.memory_mb }} MB of memory{% endif %}.{% if not is_admin_user %} Only an administrator can go above {{ caps.memory_mb }} MB or {{ '%g'|format(caps.cpus) }} cores.{% endif %}</p>
+    </div>
+  </section>
+
+  {% if allocation %}
+  <section class="card">
+    <div class="card-body stack">
+      <h3>All apps on this server</h3>
+      <dl class="facts">
+        <div><dt>Apps</dt><dd>{{ allocation.apps }}</dd></div>
+        <div><dt>Memory limits added up</dt><dd>{{ allocation.memory_mb }} MB{% if allocation.host_memory_mb %} of {{ allocation.host_memory_mb }} MB{% endif %}</dd></div>
+        <div><dt>CPU limits added up</dt><dd>{{ allocation.cpus }} of {{ allocation.host_cpus }}</dd></div>
+      </dl>
+      {% if allocation.memory_over or allocation.cpus_over %}
+      <div class="alert warning">{{ ui.icon('alert') }}<div class="alert-body"><strong>The limits add up to more than this server has.</strong>That works while the apps are quiet, but if they get busy together some will be slowed down or killed. This count includes this page's saved values, not the ones you are typing.</div></div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <div class="alert info">{{ ui.icon('info') }}<div class="alert-body">If the app is running, new limits take effect straight away without a restart. Lowering memory below what the app is using now can make it restart.</div></div>
+
+  <div class="sticky-bar">
+    <div><strong>Save resources</strong><small>Empty boxes use the defaults.</small></div>
+    <div class="actions">
+      <a class="btn btn-ghost" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Cancel</a>
+      <button class="btn" type="submit" name="reset" value="1" formnovalidate data-confirm-button="Go back to the default memory, CPU and process limits?">Reset to defaults</button>
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </div>
+</form>
+{% endblock %}

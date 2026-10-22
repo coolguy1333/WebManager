@@ -1163,6 +1163,8 @@ WEBMANAGER_APPS_ENABLED=0
 WEBMANAGER_CONTAINER_RUNTIME=
 WEBMANAGER_APP_DEFAULT_MEMORY_MB=256
 WEBMANAGER_APP_CPUS=0.5
+WEBMANAGER_APP_MAX_MEMORY_MB=4096
+WEBMANAGER_APP_MAX_CPUS=2
 WEBMANAGER_APP_START_TIMEOUT=60
 WEBMANAGER_DEBUG=0
 PYTHONUNBUFFERED=1
@@ -1198,7 +1200,9 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_APPS_ENABLED` | `0` | Turns on [app hosting](docs/APP_HOSTING.md); use `deploy/debian/enable-apps.sh` rather than editing by hand |
 | `WEBMANAGER_CONTAINER_RUNTIME` | empty | Container CLI for apps; empty auto-detects `docker`, then `podman` |
 | `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | `256` | Memory limit for apps that don't set `memory_mb` |
-| `WEBMANAGER_APP_CPUS` | `0.5` | CPU limit per app |
+| `WEBMANAGER_APP_CPUS` | `0.5` | Default CPU limit per app (each app can be changed on its **Resources** page) |
+| `WEBMANAGER_APP_MAX_MEMORY_MB` | `4096` | The most memory an app's owner may give one app on its Resources page (super admins can go up to the machine's memory) |
+| `WEBMANAGER_APP_MAX_CPUS` | `2` | The most CPU cores an app's owner may give one app (super admins can go up to the machine's cores) |
 | `WEBMANAGER_APP_START_TIMEOUT` | `60` | Seconds an app has to pass its health check |
 | `WEBMANAGER_DEBUG` | `0` | Flask debugging; keep disabled in production |
 

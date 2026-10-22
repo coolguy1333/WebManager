@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 
-from . import apps as app_support
+from . import app_limits, apps as app_support
 from .db import get_db
 from .domains import site_hostname, site_hostnames
 from .usage_sampler import UsageSampler
@@ -229,8 +229,7 @@ class RuntimeManager:
         commit = database.execute(
             "SELECT current_commit FROM repositories WHERE id = ?", (site["repository_id"],)
         ).fetchone()["current_commit"]
-        memory = site["app_memory_mb"] or manifest["memory_mb"]
-        cpus = self.app.config["APP_CPUS"]
+        limits = app_limits.effective(site, self.app.config, manifest["memory_mb"])
         image = runtime.image_name(site_id, (commit or "manual")[:12])
         name = runtime.container_name(site_id)
         previous_name = runtime.container_name(site_id, "-previous")
@@ -240,14 +239,35 @@ class RuntimeManager:
         try:
             if not runtime.image_exists(image):
                 runtime.build(site_id, Path(site["document_root"]), (commit or "manual")[:12], log_path)
-            digest = app_support.config_hash(image, env, memory, cpus, site["port"])
+            digest = app_support.config_hash(image, env, site["port"])
             current = runtime.inspect(name)
             already_running = (
                 current is not None
                 and current["State"]["Status"] == "running"
-                and current["Config"]["Labels"].get("webmanager.config") == digest
+                and self._is_current_container(runtime, current, image, env, site["port"], digest)
             )
+            if already_running and not force:
+                # Limits are not part of what makes a container "the same":
+                # a change is applied to the running container, no restart.
+                actual = runtime.limits_of(current)
+                wanted = (limits["memory_mb"], round(limits["cpus"], 2), limits["pids"])
+                if actual != wanted:
+                    try:
+                        runtime.update_limits(
+                            name,
+                            memory_mb=limits["memory_mb"],
+                            cpus=limits["cpus"],
+                            pids_limit=limits["pids"],
+                        )
+                    except app_support.AppError:
+                        already_running = False  # replace it with one that has them
             if force or not already_running:
+                # Pick up a limit saved while this was building.
+                fresh = database.execute(
+                    "SELECT app_memory_mb, app_cpus, app_pids FROM sites WHERE id = ?", (site_id,)
+                ).fetchone()
+                if fresh is not None:
+                    limits = app_limits.effective(fresh, self.app.config, manifest["memory_mb"])
                 runtime.remove(previous_name)
                 previous = None
                 if current is not None:
@@ -263,9 +283,10 @@ class RuntimeManager:
                     name=name,
                     host_port=site["port"],
                     env=env,
-                    memory_mb=memory,
-                    cpus=cpus,
+                    memory_mb=limits["memory_mb"],
+                    cpus=limits["cpus"],
                     config_hash=digest,
+                    pids_limit=limits["pids"],
                 )
                 healthy, message = app_support.wait_until_healthy(
                     site["port"],
@@ -304,6 +325,64 @@ class RuntimeManager:
         if rolled_back:
             raise RuntimeErrorDetail(restore_error)
         return "container"
+
+    @staticmethod
+    def _is_current_container(runtime, info, image, env, host_port, digest) -> bool:
+        """Is this running container the one these settings describe?"""
+        label = info["Config"]["Labels"].get("webmanager.config")
+        if label == digest:
+            return True
+        # Containers made before limits left the hash carry the old label: it
+        # still matches when it was made from the limits the container has now.
+        memory_mb, cpus, _pids = runtime.limits_of(info)
+        if memory_mb is None or cpus is None:
+            return False
+        return label == app_support.legacy_config_hash(image, env, memory_mb, cpus, host_port)
+
+    def apply_app_limits(self, site_id: int) -> str:
+        """Put an app's saved memory/CPU/process limits into effect now.
+
+        Returns "applied" (changed on the running container, no restart),
+        "restarting" (the runtime couldn't change it live, so the container is
+        being replaced), "saved" (not running: used the next time it starts) or
+        "busy" (it is building or starting and will pick them up)."""
+        database = get_db()
+        site = database.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+        runtime = self.container_runtime
+        if site is None or runtime is None:
+            return "saved"
+        lock = self._app_lock(site_id)
+        if not lock.acquire(blocking=False):
+            return "busy"
+        released = False
+        try:
+            name = runtime.container_name(site_id)
+            info = runtime.inspect(name, timeout=PAGE_CALL_TIMEOUT)
+            if info is None or info["State"]["Status"] != "running":
+                return "saved"
+            limits = app_limits.effective(
+                site, self.app.config, app_limits.manifest_memory(site, self.app.config)
+            )
+            try:
+                runtime.update_limits(
+                    name,
+                    memory_mb=limits["memory_mb"],
+                    cpus=limits["cpus"],
+                    pids_limit=limits["pids"],
+                )
+            except app_support.AppError as exc:
+                self.app.logger.warning(
+                    "App %s: could not change limits on the running container (%s); replacing it.",
+                    site_id, exc,
+                )
+                lock.release()
+                released = True
+                self.start_app_async(site_id, force=True)
+                return "restarting"
+            return "applied"
+        finally:
+            if not released:
+                lock.release()
 
     def _stop_app(self, site):
         database = get_db()

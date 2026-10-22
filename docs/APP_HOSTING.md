@@ -75,7 +75,9 @@ changing):
 | `WEBMANAGER_APPS_ENABLED` | `0` | Master switch. |
 | `WEBMANAGER_CONTAINER_RUNTIME` | auto | Path or name of the runtime CLI. Auto-detects `docker`, then `podman`. Docker is the tested and supported runtime. |
 | `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | `256` | Memory limit for apps whose `webmanager.json` doesn't set `memory_mb`. |
-| `WEBMANAGER_APP_CPUS` | `0.5` | CPU limit for every app. |
+| `WEBMANAGER_APP_CPUS` | `0.5` | Default CPU limit for an app (changeable per app, see Resources below). |
+| `WEBMANAGER_APP_MAX_MEMORY_MB` | `4096` | Most memory an app's owner may give one app. Super admins can go up to the machine's memory. |
+| `WEBMANAGER_APP_MAX_CPUS` | `2` | Most CPU cores an app's owner may give one app. Super admins can go up to the machine's cores. |
 | `WEBMANAGER_APP_START_TIMEOUT` | `60` | Seconds an app has to pass its health check after starting. |
 
 ## 2. Security model (read this first)
@@ -222,7 +224,7 @@ These can't be listed in `webmanager.json` or changed in the dashboard:
 |---|---|---|
 | `type` | Yes | Must be `"app"`. |
 | `health` | Yes | Path starting with `/`, e.g. `"/health"`. |
-| `memory_mb` | No | Whole number, 64–4096. Defaults to `WEBMANAGER_APP_DEFAULT_MEMORY_MB` (256). |
+| `memory_mb` | No | Whole number, 64–4096. Defaults to `WEBMANAGER_APP_DEFAULT_MEMORY_MB` (256). It is the app's *default*: the **Resources** page can override it per app. |
 | `env` | No | Up to 100 settings shown on the app's **Variables** page. |
 
 Each `env` entry:
@@ -327,7 +329,28 @@ restores into `/data`.)
 | Build fails | **Build log** on the app page. Base images must be downloadable from the server. |
 | *didn't pass its health check* | App logs on the app page. Usually: listening on the wrong port/host, `/data` not writable, or a required variable missing. |
 | *Saved app settings could not be decrypted* | WebManager's `secret.key` changed. Re-enter the variables. |
-| App restarts repeatedly | **Restarts** count on the app page; often out of memory. Raise `memory_mb`. |
+| App restarts repeatedly | **Restarts** count on the app page; often out of memory. Raise its memory under **Resources** on the app page (no restart needed), or raise `memory_mb` in `webmanager.json`. |
+
+### Changing how much an app gets (Resources)
+
+Every app has a **Resources** button on its page. It sets, per app:
+
+| Setting | Default | Range |
+|---|---|---|
+| Memory (MB) | the app's `memory_mb`, else `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | 64 up to the owner cap (`WEBMANAGER_APP_MAX_MEMORY_MB`) |
+| CPU (cores) | `WEBMANAGER_APP_CPUS` | 0.1 up to the owner cap (`WEBMANAGER_APP_MAX_CPUS`), at most the machine's cores |
+| Processes and threads | 256 | 16 to 1024 |
+
+Leave a box empty to use the default; a later change to the default (or to
+`webmanager.json`) then reaches that app too. Super admins can go above the
+owner caps, up to what the machine has, and see how far all the apps' limits
+add up (also on **App hosting**).
+
+If the app is running, the new limits take effect straight away **without a
+restart** (`docker update`); if the runtime can't do that, the container is
+replaced as for any other change. Memory and swap are the same value, so an
+app that goes over its memory limit is killed and restarted by the runtime:
+leave headroom, and lower it with care.
 
 ## 8. Example: Uptime-Monitor
 
