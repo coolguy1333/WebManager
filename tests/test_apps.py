@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
-from webmanager import apps
+from webmanager import app_limits, apps
 from webmanager.db import get_db
 from webmanager.nginx import build_app_config
 from webmanager.services import RuntimeErrorDetail, RuntimeManager
@@ -42,6 +42,8 @@ class FakeRuntime:
     container_name = staticmethod(apps.ContainerRuntime.container_name)
     volume_name = staticmethod(apps.ContainerRuntime.volume_name)
     image_name = staticmethod(apps.ContainerRuntime.image_name)
+    limits_of = staticmethod(apps.ContainerRuntime.limits_of)
+    fail_live_update = False
 
     def available(self):
         return True, "fake"
@@ -62,9 +64,15 @@ class FakeRuntime:
         container = self.containers.get(name)
         if container is None:
             return None
+        memory_mb, cpus, pids = container.get("limits", (None, None, None))
         return {
             "State": {"Status": container["status"], "StartedAt": "2026-01-01T00:00:00Z"},
             "Config": {"Labels": {"webmanager.config": container["hash"]}, "Image": container["image"]},
+            "HostConfig": {
+                "Memory": memory_mb * 1048576 if memory_mb else 0,
+                "NanoCpus": int(cpus * 1e9) if cpus else 0,
+                "PidsLimit": pids or 0,
+            },
             "RestartCount": 0,
         }
 
@@ -72,9 +80,18 @@ class FakeRuntime:
         container = self.containers.get(name)
         return container["status"] if container else None
 
-    def run(self, *, site_id, image, name, host_port, env, memory_mb, cpus, config_hash):
+    def run(self, *, site_id, image, name, host_port, env, memory_mb, cpus, config_hash, pids_limit=256):
         self.calls.append(("run", name, dict(env), memory_mb))
-        self.containers[name] = {"status": "running", "hash": config_hash, "image": image, "env": dict(env)}
+        self.containers[name] = {
+            "status": "running", "hash": config_hash, "image": image, "env": dict(env),
+            "limits": (memory_mb, round(cpus, 2), pids_limit),
+        }
+
+    def update_limits(self, name, *, memory_mb, cpus, pids_limit):
+        self.calls.append(("update_limits", name, memory_mb, cpus, pids_limit))
+        if self.fail_live_update:
+            raise apps.AppError("update is not supported here")
+        self.containers[name]["limits"] = (memory_mb, round(cpus, 2), pids_limit)
 
     def stop(self, name, timeout=10):
         self.calls.append(("stop", name))
@@ -376,7 +393,9 @@ class AppHostingTests(unittest.TestCase):
         response, start = self.deploy(repository_id)
         site = self.site()
         self.assertEqual(site["kind"], "app")
-        self.assertEqual(site["app_memory_mb"], 128)
+        # Nothing is customised: the manifest's memory stays the live default,
+        # so changing webmanager.json later still reaches this app.
+        self.assertIsNone(site["app_memory_mb"])
         self.assertIn(f"/sites/{site['id']}/variables", response.headers["Location"])
         start.assert_not_called()
 
@@ -756,6 +775,183 @@ class AppHostingTests(unittest.TestCase):
         self.assertIn(b"line 019920", page.data)
         self.assertNotIn(b"line 019919", page.data)  # only the last 80 lines
         self.assertNotIn(b"line 000000", page.data)
+
+    # -- resources: memory, CPU and process limits per app -----------------------
+    def running_app(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        self.start_now(site_id)
+        return site_id, self.fake.container_name(site_id)
+
+    def save_resources(self, site_id, **form):
+        return self.client.post(
+            f"/sites/{site_id}/resources", data={"_csrf_token": self.csrf(), **form}
+        )
+
+    def runs(self):
+        return [call for call in self.fake.calls if call[0] == "run"]
+
+    def test_resources_page_shows_the_defaults_and_this_servers_size(self):
+        site_id, _name = self.running_app()
+        page = self.client.get(f"/sites/{site_id}/resources")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn('placeholder="128"', html)  # the manifest's memory is the default
+        self.assertIn('placeholder="0.5"', html)
+        self.assertIn('placeholder="256"', html)
+        self.assertIn("CPU core", html)
+
+    def test_other_people_cannot_open_or_change_an_apps_resources(self):
+        site_id, _name = self.running_app()
+        self.login_user(self.add_user("mallory", "mallory@example.com"))
+        self.assertEqual(self.client.get(f"/sites/{site_id}/resources").status_code, 404)
+        self.assertEqual(self.save_resources(site_id, memory_mb="512").status_code, 404)
+        self.assertIsNone(self.site()["app_memory_mb"])
+
+    def test_new_limits_reach_a_running_app_without_restarting_it(self):
+        site_id, name = self.running_app()
+        runs_before = len(self.runs())
+
+        response = self.save_resources(site_id, memory_mb="512", cpus="1.25", pids="300")
+
+        self.assertIn(response.status_code, (302, 303))
+        site = self.site()
+        self.assertEqual((site["app_memory_mb"], site["app_cpus"], site["app_pids"]), (512, 1.25, 300))
+        self.assertIn(("update_limits", name, 512, 1.25, 300), self.fake.calls)
+        self.assertEqual(len(self.runs()), runs_before, "the container must not be replaced")
+        page = self.client.get(f"/sites/{site_id}").get_data(as_text=True)
+        self.assertIn("512 MB", page)
+        self.assertIn("1.25 cores", page)
+
+    def test_limits_saved_for_a_stopped_app_are_used_when_it_starts(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+
+        self.save_resources(site_id, memory_mb="700", cpus="0.75", pids="64")
+        self.start_now(site_id)
+
+        name = self.fake.container_name(site_id)
+        self.assertEqual(self.fake.containers[name]["limits"], (700, 0.75, 64))
+        self.assertEqual([call for call in self.fake.calls if call[0] == "update_limits"], [])
+
+    def test_a_runtime_that_cannot_change_limits_live_replaces_the_container(self):
+        site_id, _name = self.running_app()
+        self.fake.fail_live_update = True
+        with patch.object(RuntimeManager, "start_app_async", return_value=True) as start:
+            self.save_resources(site_id, memory_mb="512")
+        start.assert_called_once_with(site_id, force=True)
+
+    def test_blank_boxes_and_reset_go_back_to_the_defaults(self):
+        site_id, name = self.running_app()
+        self.save_resources(site_id, memory_mb="512", cpus="1", pids="100")
+
+        self.save_resources(site_id, memory_mb="", cpus="", pids="")
+        site = self.site()
+        self.assertEqual((site["app_memory_mb"], site["app_cpus"], site["app_pids"]), (None, None, None))
+        self.assertEqual(self.fake.containers[name]["limits"], (128, 0.5, 256))
+
+        self.save_resources(site_id, memory_mb="512")
+        self.save_resources(site_id, reset="1", memory_mb="999")
+        self.assertIsNone(self.site()["app_memory_mb"])
+
+    def test_nonsense_is_refused_and_nothing_changes(self):
+        site_id, _name = self.running_app()
+        for form in (
+            {"memory_mb": "lots"}, {"memory_mb": "10"}, {"memory_mb": "-5"}, {"memory_mb": "nan"},
+            {"cpus": "0"}, {"cpus": "inf"}, {"cpus": "abc"}, {"pids": "1"}, {"pids": "9999999"},
+        ):
+            with self.subTest(form=form):
+                response = self.save_resources(site_id, **form)
+                self.assertEqual(response.status_code, 422)
+        site = self.site()
+        self.assertEqual((site["app_memory_mb"], site["app_cpus"], site["app_pids"]), (None, None, None))
+
+    def test_owners_stop_at_the_server_caps_but_super_admins_may_go_higher(self):
+        self.app.config["APP_MAX_MEMORY_MB"] = 1024
+        self.app.config["APP_MAX_CPUS"] = 1
+        site_id, _name = self.running_app()
+        with patch.object(app_limits, "host_capacity", return_value={"memory_mb": 16384, "cpus": 8}):
+            self.assertEqual(self.save_resources(site_id, memory_mb="2048").status_code, 422)
+            self.assertEqual(self.save_resources(site_id, cpus="1.5").status_code, 422)
+            self.assertIn(self.save_resources(site_id, memory_mb="1024", cpus="1").status_code, (302, 303))
+
+            self.login_user(self.add_user("root", is_admin=True))
+            self.assertIn(self.save_resources(site_id, memory_mb="8192", cpus="6").status_code, (302, 303))
+        site = self.site()
+        self.assertEqual((site["app_memory_mb"], site["app_cpus"]), (8192, 6.0))
+
+    def test_a_value_an_admin_set_above_the_cap_survives_the_owner_saving_other_fields(self):
+        self.app.config["APP_MAX_MEMORY_MB"] = 1024
+        site_id, _name = self.running_app()
+        with self.app.app_context():
+            get_db().execute("UPDATE sites SET app_memory_mb = 3000").connection.commit()
+        with patch.object(app_limits, "host_capacity", return_value={"memory_mb": 16384, "cpus": 8}):
+            response = self.save_resources(site_id, memory_mb="3000", cpus="0.75")
+        self.assertIn(response.status_code, (302, 303))
+        self.assertEqual(self.site()["app_cpus"], 0.75)
+
+    def test_starting_an_app_applies_changed_limits_to_the_running_container(self):
+        site_id, name = self.running_app()
+        runs_before = len(self.runs())
+        with self.app.app_context():
+            get_db().execute("UPDATE sites SET app_memory_mb = 300, app_pids = 99").connection.commit()
+
+        self.start_now(site_id)
+
+        self.assertEqual(len(self.runs()), runs_before)
+        self.assertEqual(self.fake.containers[name]["limits"], (300, 0.5, 99))
+
+    def test_containers_made_before_limits_left_the_hash_are_adopted_not_replaced(self):
+        site_id, name = self.running_app()
+        container = self.fake.containers[name]
+        container["hash"] = apps.legacy_config_hash(
+            container["image"], container["env"], 128, 0.5, self.site()["port"]
+        )
+        runs_before = len(self.runs())
+
+        self.start_now(site_id)
+
+        self.assertEqual(len(self.runs()), runs_before, "updating WebManager must not restart every app")
+
+    def test_changed_settings_still_replace_the_container(self):
+        site_id, _name = self.running_app()
+        runs_before = len(self.runs())
+        self.store(site_id, {"ADMIN_PASSWORD": "a-different-one"})
+        self.start_now(site_id)
+        self.assertEqual(len(self.runs()), runs_before + 1)
+
+    def test_changing_the_manifest_memory_reaches_apps_nobody_customised(self):
+        site_id, name = self.running_app()
+        (self.root / "webmanager.json").write_text(
+            json.dumps({**MANIFEST, "memory_mb": 512}), encoding="utf-8"
+        )
+        self.start_now(site_id)
+        self.assertEqual(self.fake.containers[name]["limits"][0], 512)
+
+    def test_an_apps_own_manifest_cannot_ask_for_more_than_the_owner_cap(self):
+        self.app.config["APP_MAX_MEMORY_MB"] = 256
+        site = {"app_memory_mb": None, "app_cpus": None, "app_pids": None}
+        self.assertEqual(app_limits.effective(site, self.app.config, 4096)["memory_mb"], 256)
+        # ...while a value an administrator set on the app itself stands.
+        site["app_memory_mb"] = 1024
+        self.assertEqual(app_limits.effective(site, self.app.config, 4096)["memory_mb"], 1024)
+
+    def test_admins_see_all_limits_added_up(self):
+        self.running_app()
+        self.login_user(self.add_user("root", is_admin=True))
+        with patch.object(app_limits, "host_capacity", return_value={"memory_mb": 100, "cpus": 1}):
+            page = self.client.get("/admin/apps").get_data(as_text=True)
+        self.assertIn("128 MB of this server's 100 MB", page)
+        self.assertIn("more than the server has", page)
+
+    def test_cpus_are_never_set_above_what_the_machine_has(self):
+        site = {"app_memory_mb": None, "app_cpus": 64.0, "app_pids": None}
+        with patch.object(app_limits, "host_capacity", return_value={"memory_mb": 8192, "cpus": 4}):
+            self.assertEqual(app_limits.effective(site, self.app.config)["cpus"], 4.0)
 
     def test_docs_page_renders_app_hosting_section(self):
         self.owner()

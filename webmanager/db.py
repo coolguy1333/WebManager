@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS sites (
     kind TEXT NOT NULL DEFAULT 'static',
     app_env TEXT,
     app_memory_mb INTEGER,
+    app_cpus REAL,
+    app_pids INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, slug)
@@ -335,6 +337,8 @@ def _migrate_sites(database):
         "kind": "TEXT NOT NULL DEFAULT 'static'",
         "app_env": "TEXT",
         "app_memory_mb": "INTEGER",
+        "app_cpus": "REAL",
+        "app_pids": "INTEGER",
     }.items():
         if column not in columns:
             database.execute(f"ALTER TABLE sites ADD COLUMN {column} {definition}")

@@ -45,7 +45,8 @@
   </div>
   {% endfor %}
 </div>
-<p class="hint mt-16">CPU, memory and network figures come from <code>docker stats</code> and only appear for running apps; they refresh every 2 seconds while this page is open.</p>
+<p class="hint mt-16">Limits set across all apps add up to {{ allocation.memory_mb }} MB{% if allocation.host_memory_mb %} of this server's {{ allocation.host_memory_mb }} MB{% endif %} and {{ allocation.cpus }} of {{ allocation.host_cpus }} CPU core{{ '' if allocation.host_cpus == 1 else 's' }}.{% if allocation.memory_over or allocation.cpus_over %} <strong>That is more than the server has</strong>; apps that get busy together may be slowed down or killed.{% endif %} Change an app's limits from its page, under Resources.</p>
+<p class="hint">CPU, memory and network figures come from <code>docker stats</code> and only appear for running apps; they refresh every 2 seconds while this page is open.</p>
 {% else %}
 <section class="card empty">
   <span class="record-icon">{{ ui.icon('box', 22) }}</span>

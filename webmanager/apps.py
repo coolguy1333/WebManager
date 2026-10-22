@@ -45,6 +45,10 @@ MAX_VARIABLES = 100
 MAX_VALUE_LENGTH = 8192
 MIN_MEMORY_MB = 64
 MAX_MEMORY_MB = 4096
+MIN_CPUS = 0.1
+DEFAULT_PIDS_LIMIT = 256
+MIN_PIDS = 16
+MAX_PIDS = 8192
 IGNORED_FOLDERS = {".git", "node_modules", ".venv", "venv", "__pycache__", "vendor"}
 BACKUPS_TO_KEEP = 3
 
@@ -380,7 +384,37 @@ class ContainerRuntime:
         info = self.inspect(name)
         return info["State"]["Status"] if info else None
 
-    def run(self, *, site_id, image, name, host_port, env, memory_mb, cpus, config_hash):
+    @staticmethod
+    def limits_of(info: dict | None) -> tuple[int | None, float | None, int | None]:
+        """(memory MB, CPUs, process limit) a container actually has, from
+        ``inspect``; None for anything the runtime doesn't report."""
+        host = (info or {}).get("HostConfig") or {}
+        memory = host.get("Memory")
+        nano = host.get("NanoCpus")
+        pids = host.get("PidsLimit")
+        return (
+            round(memory / 1048576) if memory else None,
+            round(nano / 1e9, 2) if nano else None,
+            int(pids) if pids and int(pids) > 0 else None,
+        )
+
+    def update_limits(self, name: str, *, memory_mb: int, cpus: float, pids_limit: int):
+        """Change a running container's limits without restarting it. Memory
+        and swap are set together (swap equals memory: none beyond the limit)."""
+        self._run(
+            [
+                "update",
+                "--memory", f"{memory_mb}m",
+                "--memory-swap", f"{memory_mb}m",
+                "--cpus", format_cpus(cpus),
+                "--pids-limit", str(pids_limit),
+                name,
+            ],
+            timeout=30,
+        )
+
+    def run(self, *, site_id, image, name, host_port, env, memory_mb, cpus, config_hash,
+            pids_limit=DEFAULT_PIDS_LIMIT):
         """Start a hardened container. Variables go through a 0600 env-file so
         secrets never appear in the process list."""
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -404,8 +438,8 @@ class ContainerRuntime:
                     "--security-opt", "no-new-privileges",
                     "--memory", f"{memory_mb}m",
                     "--memory-swap", f"{memory_mb}m",
-                    "--cpus", str(cpus),
-                    "--pids-limit", "256",
+                    "--cpus", format_cpus(cpus),
+                    "--pids-limit", str(pids_limit),
                     "--publish", f"127.0.0.1:{host_port}:{CONTAINER_PORT}",
                     "--volume", f"{self.volume_name(site_id)}:{DATA_MOUNT}",
                     "--env-file", env_path,
@@ -543,7 +577,21 @@ def _parse_percent(text: str) -> float | None:
         return None
 
 
-def config_hash(image: str, env: dict, memory_mb: int, cpus: float, host_port: int) -> str:
+def format_cpus(cpus: float) -> str:
+    return format(round(float(cpus), 2), "g")
+
+
+def config_hash(image: str, env: dict, host_port: int) -> str:
+    """What makes a running container the wrong one and so means replacing it.
+    Memory, CPU and process limits are not part of it: they are changed on the
+    running container instead (see ``ContainerRuntime.update_limits``)."""
+    payload = json.dumps([image, sorted(env.items()), host_port])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def legacy_config_hash(image: str, env: dict, memory_mb: int, cpus: float, host_port: int) -> str:
+    """The label containers created before limits left the hash carry; used to
+    recognise them as still current instead of replacing every app on update."""
     payload = json.dumps([image, sorted(env.items()), memory_mb, cpus, host_port])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 

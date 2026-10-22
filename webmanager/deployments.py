@@ -16,6 +16,7 @@ from .access_control import (
     has_permission,
     site_access_levels,
 )
+from . import app_limits
 from .analytics import aggregate_analytics
 from .db import get_db
 from .domains import (
@@ -1253,12 +1254,12 @@ def deploy_app(repository_id):
             INSERT INTO sites (
                 user_id, repository_id, domain_id, use_domain_root, name, slug,
                 folder, document_root, index_file, port, spa_fallback,
-                nginx_config, status, kind, app_memory_mb
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 0, '', 'stopped', 'app', ?)
+                nginx_config, status, kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 0, '', 'stopped', 'app')
             """,
             (
                 owner_id, repository_id, domain["id"], int(use_domain_root), name, slug,
-                folder, str(selected), port, manifest["memory_mb"],
+                folder, str(selected), port,
             ),
         )
         database.commit()
@@ -1357,6 +1358,84 @@ def app_variables(site_id):
     ), (422 if errors else 200)
 
 
+@bp.route("/sites/<int:site_id>/resources", methods=("GET", "POST"))
+@login_required
+def app_resources(site_id):
+    """How much memory, CPU and how many processes this app's container gets."""
+    site = owned_site(site_id, manage=True)
+    if site["kind"] != "app":
+        abort(404)
+    manifest, _manifest_error = app_manifest(site)
+    manifest_memory = manifest["memory_mb"] if manifest else None
+    config = current_app.config
+    is_admin_user = bool(g.user["is_admin"])
+    limits_cap = app_limits.caps(config, is_admin_user)
+    default_values = app_limits.defaults(config, manifest_memory)
+    current = {
+        "memory_mb": site["app_memory_mb"],
+        "cpus": site["app_cpus"],
+        "pids": site["app_pids"],
+    }
+    shown = dict(current)
+    problems = []
+    if request.method == "POST":
+        validate_csrf()
+        if request.form.get("reset") == "1":
+            values, problems = {"memory_mb": None, "cpus": None, "pids": None}, []
+        else:
+            values, problems = app_limits.parse_form(request.form, current, limits_cap)
+        shown = values
+        if not problems:
+            database = get_db()
+            database.execute(
+                """
+                UPDATE sites SET app_memory_mb = ?, app_cpus = ?, app_pids = ?,
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                """,
+                (values["memory_mb"], values["cpus"], values["pids"], site_id),
+            )
+            database.commit()
+            outcome = current_app.extensions["runtime_manager"].apply_app_limits(site_id)
+            flash(
+                {
+                    "applied": "Saved. The new limits are in effect now; the app did not restart.",
+                    "restarting": "Saved. This container runtime can't change limits on a running app, so it is restarting to apply them.",
+                    "busy": "Saved. The app is busy starting; restart it to be sure it uses the new limits.",
+                    "saved": "Saved. They apply the next time the app starts.",
+                }[outcome],
+                "warning" if outcome == "busy" else "success",
+            )
+            return redirect(url_for("deployments.site_detail", site_id=site_id))
+        for problem in problems:
+            flash(problem, "error")
+    runtime = current_app.extensions["runtime_manager"]
+    container_runtime = runtime.container_runtime
+    live = (
+        runtime.usage.latest().get(container_runtime.container_name(site_id))
+        if container_runtime is not None and site["status"] == "running"
+        else None
+    )
+    allocation = None
+    if is_admin_user:
+        app_sites = get_db().execute("SELECT * FROM sites WHERE kind = 'app'").fetchall()
+        allocation = app_limits.allocation(app_sites, config)
+    return render_template(
+        "app_resources.html",
+        title=f"Resources for {site['name']}",
+        site=site,
+        shown=shown,
+        defaults=default_values,
+        caps=limits_cap,
+        host=app_limits.host_capacity(),
+        live=live,
+        allocation=allocation,
+        is_admin_user=is_admin_user,
+        min_memory=app_support.MIN_MEMORY_MB,
+        min_cpus=app_support.MIN_CPUS,
+        min_pids=app_support.MIN_PIDS,
+    ), (422 if problems else 200)
+
+
 @bp.get("/docs")
 @login_required
 def docs():
@@ -1377,6 +1456,7 @@ def site_detail(site_id):
     database = get_db()
     hostname = site_hostname(database, site) or request_hostname()
     hostnames = site_hostnames(database, site) or [hostname]
+    manifest = app_manifest(site)[0] if site["kind"] == "app" else None
     return render_template(
         "site_detail.html",
         title=site["name"],
@@ -1398,7 +1478,14 @@ def site_detail(site_id):
             if site["kind"] == "app"
             else None
         ),
-        app_manifest=app_manifest(site)[0] if site["kind"] == "app" else None,
+        app_manifest=manifest,
+        app_limits=(
+            app_limits.effective(
+                site, current_app.config, (manifest or {}).get("memory_mb")
+            )
+            if manifest is not None or site["kind"] == "app"
+            else None
+        ),
         analytics=aggregate_analytics(
             Path(current_app.config["NGINX_ROOT"]) / "access.log",
             {site["id"]: hostnames},

@@ -87,6 +87,10 @@ def create_app(test_config=None):
         CONTAINER_RUNTIME=os.environ.get("WEBMANAGER_CONTAINER_RUNTIME", "").strip(),
         APP_DEFAULT_MEMORY_MB=int(os.environ.get("WEBMANAGER_APP_DEFAULT_MEMORY_MB", "256")),
         APP_CPUS=float(os.environ.get("WEBMANAGER_APP_CPUS", "0.5")),
+        # The most an app's owner may give one app on its Resources page
+        # (super admins can go up to what the machine has).
+        APP_MAX_MEMORY_MB=int(os.environ.get("WEBMANAGER_APP_MAX_MEMORY_MB", "4096")),
+        APP_MAX_CPUS=float(os.environ.get("WEBMANAGER_APP_MAX_CPUS", "2")),
         APP_START_TIMEOUT=int(os.environ.get("WEBMANAGER_APP_START_TIMEOUT", "60")),
         MAX_REPOSITORY_BYTES=int(os.environ.get("WEBMANAGER_MAX_REPOSITORY_MB", "1024")) * 1024 * 1024,
         AUTO_REFRESH_ENABLED=_env_flag("WEBMANAGER_AUTO_REFRESH_ENABLED", "1"),
