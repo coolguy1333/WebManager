@@ -14,6 +14,7 @@ UPDATER_SERVICE=/etc/systemd/system/webmanager-update.service
 UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
 UPDATER_PATH=/etc/systemd/system/webmanager-update.path
 UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
+DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_STATE=/var/lib/webmanager-updater
 PURGE_DATA=0
@@ -52,7 +53,7 @@ if [[ $PURGE_DATA -eq 1 ]] && command -v docker >/dev/null 2>&1; then
     docker volume ls -q --filter name=webmanager-app- | xargs -r docker volume rm >/dev/null 2>&1 || true
 fi
 
-rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT" "$UNINSTALL_COMMAND" "$LOGROTATE_FILE"
+rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT" "$UNINSTALL_COMMAND" "$DOCTOR_COMMAND" "$LOGROTATE_FILE"
 systemctl daemon-reload
 systemctl reset-failed webmanager webmanager-update.service 2>/dev/null || true
 

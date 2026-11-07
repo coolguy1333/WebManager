@@ -1,6 +1,7 @@
 /var/lib/webmanager/nginx/access.log /var/lib/webmanager/nginx/error.log {
     daily
-    rotate 14
+    # Analytics reports on the last 7, 30 or 90 days, so keep that much (compressed).
+    rotate 90
     compress
     delaycompress
     missingok

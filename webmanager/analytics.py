@@ -1,11 +1,22 @@
+import copy
+import gzip
 import json
+import re
+import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 
-MAX_LOG_BYTES = 8 * 1024 * 1024
+# The most log read for one report, across today's log and the rotated ones.
+MAX_LOG_BYTES = 32 * 1024 * 1024
+# The System page's health check visits each site; that is not traffic.
+HEALTH_PROBE_AGENT = "webmanager-health"
+_ROTATED_SUFFIX_RE = re.compile(r"\.(\d+)(?:\.gz)?")
+_cache: dict = {}
+_cache_lock = threading.Lock()
 
 
 def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 30):
@@ -15,8 +26,10 @@ def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 
         for value in ([hostname] if isinstance(hostname, str) else hostname)
     }
     requests = []
-    for record in _recent_records(Path(log_path), hostnames):
+    for record in _recent_records(Path(log_path), hostnames, cutoff):
         if str(record.get("host", "")).lower() not in hostnames:
+            continue
+        if record.get("agent") == HEALTH_PROBE_AGENT:
             continue
         try:
             recorded_at = datetime.fromisoformat(record["time"])
@@ -61,38 +74,110 @@ def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 
     }
 
 
-def _recent_records(path: Path, hostnames=None):
-    """Parsed JSON lines from the end of the log. When ``hostnames`` is given,
-    lines that can't be about one of them are skipped without being parsed,
-    which is most of a log on a server that hosts several sites."""
-    if not path.is_file():
-        return []
+def _log_files(path: Path) -> list[Path]:
+    """Today's log, then the rotated ones newest first (access.log.1,
+    access.log.2.gz, ...). logrotate starts a new log every day, so reading
+    only the current file would make a "last 30 days" report show hours."""
+    rotated = []
     try:
-        with path.open("rb") as handle:
-            size = handle.seek(0, 2)
-            handle.seek(max(0, size - MAX_LOG_BYTES))
-            if size > MAX_LOG_BYTES:
-                handle.readline()
-            lines = handle.readlines()
+        for candidate in path.parent.glob(path.name + ".*"):
+            match = _ROTATED_SUFFIX_RE.fullmatch(candidate.name[len(path.name):])
+            if match and candidate.is_file():
+                rotated.append((int(match.group(1)), candidate))
     except OSError:
+        pass
+    return ([path] if path.is_file() else []) + [file for _, file in sorted(rotated)]
+
+
+def _read_lines(file: Path, budget: int) -> list[bytes]:
+    """Up to ``budget`` bytes of whole lines (the end of a plain file, the
+    start of a compressed one)."""
+    try:
+        if file.suffix == ".gz":
+            with gzip.open(file, "rb") as handle:
+                data = handle.read(budget + 1)
+            lines = data.splitlines()
+            if len(data) > budget:
+                lines = lines[:-1]  # the last line was cut
+            return lines
+        with file.open("rb") as handle:
+            size = handle.seek(0, 2)
+            start = max(0, size - budget)
+            handle.seek(start)
+            if start:
+                handle.readline()
+            return handle.readlines()
+    except (OSError, EOFError, gzip.BadGzipFile):
         return []
 
+
+def _recent_records(path: Path, hostnames=None, since: datetime | None = None):
+    """Parsed JSON lines from the current and rotated logs, newest first, up
+    to MAX_LOG_BYTES. When ``hostnames`` is given, lines that can't be about
+    one of them are skipped without being parsed, which is most of a log on a
+    server that hosts several sites. Rotated logs last written before
+    ``since`` hold nothing newer and are not read."""
     wanted = [name.lower().encode("utf-8") for name in hostnames] if hostnames else None
     records = []
-    for line in lines:
-        if wanted is not None:
-            lowered = line.lower()
-            if not any(name in lowered for name in wanted):
+    budget = MAX_LOG_BYTES
+    for index, file in enumerate(_log_files(path)):
+        if budget <= 0:
+            break
+        if index and since is not None:
+            try:
+                if file.stat().st_mtime < since.timestamp():
+                    break  # this one and every older one is before the window
+            except OSError:
                 continue
-        try:
-            records.append(json.loads(line.decode("utf-8")))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
+        lines = _read_lines(file, budget)
+        budget -= sum(len(line) + 1 for line in lines)
+        for line in lines:
+            if wanted is not None:
+                lowered = line.lower()
+                if not any(name in lowered for name in wanted):
+                    continue
+            try:
+                records.append(json.loads(line.decode("utf-8")))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
     return records
 
 
+def _signature(path: Path) -> tuple:
+    parts = []
+    for file in _log_files(path):
+        try:
+            details = file.stat()
+        except OSError:
+            continue
+        parts.append((file.name, details.st_mtime_ns, details.st_size))
+    return tuple(parts)
+
+
 def aggregate_analytics(log_path: str | Path, site_hostnames: dict, days: int = 30):
-    """Summarise traffic for several sites in one pass over the access log.
+    """Summarise traffic for several sites (see ``_aggregate``). The answer is
+    kept for a minute while the logs are unchanged, so reloading or opening
+    several pages doesn't re-read them each time."""
+    path = Path(log_path)
+    key = (
+        _signature(path),
+        tuple(sorted((site_id, tuple(sorted(names))) for site_id, names in site_hostnames.items())),
+        days,
+        int(time.time() // 60),
+    )
+    with _cache_lock:
+        cached = _cache.get(key)
+    if cached is None:
+        cached = _aggregate(path, site_hostnames, days)
+        with _cache_lock:
+            if len(_cache) >= 16:
+                _cache.clear()
+            _cache[key] = cached
+    return copy.deepcopy(cached)
+
+
+def _aggregate(log_path: Path, site_hostnames: dict, days: int):
+    """Summarise traffic for several sites in one pass over the access logs.
 
     ``site_hostnames`` maps a site id to the hostnames it answers on. Returns
     overall totals plus a per-site breakdown and a zero-filled daily series so
@@ -121,9 +206,9 @@ def aggregate_analytics(log_path: str | Path, site_hostnames: dict, days: int = 
     transferred = 0
     requests = 0
 
-    for record in _recent_records(Path(log_path), host_to_site):
+    for record in _recent_records(Path(log_path), host_to_site, cutoff):
         site_id = host_to_site.get(str(record.get("host", "")).lower())
-        if site_id is None:
+        if site_id is None or record.get("agent") == HEALTH_PROBE_AGENT:
             continue
         try:
             recorded_at = datetime.fromisoformat(record["time"])

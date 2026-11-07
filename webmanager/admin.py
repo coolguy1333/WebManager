@@ -35,7 +35,7 @@ from .domains import (
 )
 import secrets
 
-from . import app_limits, mesh, quotas, system_metrics
+from . import app_limits, health, mesh, quotas, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -1185,6 +1185,18 @@ def system_metrics_json():
         abort(403)
     payload = system_metrics.collect(current_app)
     payload["mesh"] = current_app.extensions["mesh_hub"].entries()
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.get("/health.json")
+@login_required
+def health_json():
+    """Run the health checks now (System page)."""
+    if not is_admin():
+        abort(403)
+    payload = health.run_checks(health.gather_inputs(request.host))
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store"
     return response

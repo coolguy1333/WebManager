@@ -805,3 +805,54 @@ document.querySelectorAll("[data-join]").forEach((panel) => {
   };
   address.addEventListener("input", update);
 });
+
+// ---------- System: health checks ----------
+document.querySelectorAll("[data-health]").forEach((panel) => {
+  const list = panel.querySelector("[data-health-list]");
+  const badge = panel.querySelector("[data-health-badge]");
+  const button = panel.querySelector("[data-health-run]");
+  const symbols = { ok: "✓", info: "i", warn: "!", fail: "✕" };
+  const kinds = { ok: "success", info: "info", warn: "warning", fail: "error" };
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const render = (report) => {
+    const rows = report.checks.map((check) => {
+      const row = el("div", `alert ${kinds[check.status] || "info"}`);
+      row.append(el("span", "health-symbol", symbols[check.status] || "i"));
+      const body = el("div", "alert-body");
+      body.append(el("strong", "", check.title), document.createTextNode(` ${check.detail}`));
+      if (check.fix) {
+        const fix = el("div", "health-fix");
+        fix.append(el("span", "hint", "What to do: "), el("code", "", check.fix));
+        body.append(fix);
+      }
+      row.append(body);
+      return row;
+    });
+    list.replaceChildren(...rows);
+    const bad = report.counts.fail, warn = report.counts.warn;
+    badge.className = `badge ${bad ? "badge-danger" : warn ? "badge-warning" : "badge-success"}`;
+    badge.textContent = bad ? `${bad} problem${bad === 1 ? "" : "s"}` : warn ? `${warn} to look at` : "All good";
+  };
+  const run = async () => {
+    button.disabled = true;
+    badge.className = "badge";
+    badge.textContent = "Checking…";
+    try {
+      const response = await fetch(panel.dataset.healthUrl, { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(String(response.status));
+      render(await response.json());
+    } catch {
+      list.replaceChildren(el("p", "muted", "The checks couldn't be run just now. Try again."));
+      badge.textContent = "Unknown";
+    } finally {
+      button.disabled = false;
+    }
+  };
+  button.addEventListener("click", run);
+  run();
+});

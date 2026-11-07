@@ -979,3 +979,9 @@ fieldset.field legend { margin-bottom: 6px; }
 
 /* Copy-paste commands on the Servers panel wrap instead of scrolling sideways. */
 [data-join] pre { white-space: pre-wrap; word-break: break-all; }
+
+/* System page: health checks */
+[data-health-list] .alert { align-items: flex-start; }
+.health-symbol { flex: none; width: 1.25rem; font-weight: 700; text-align: center; }
+.health-fix { margin-top: 4px; }
+.health-fix code { white-space: pre-wrap; word-break: break-word; }
