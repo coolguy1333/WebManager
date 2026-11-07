@@ -14,6 +14,7 @@ UPDATER_SERVICE=/etc/systemd/system/webmanager-update.service
 UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
 UPDATER_PATH=/etc/systemd/system/webmanager-update.path
 UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
+DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
@@ -123,6 +124,7 @@ for required in \
     configure-google.sh \
     webmanager \
     deploy/debian/uninstall.sh \
+    deploy/debian/doctor.sh \
     deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
@@ -550,6 +552,13 @@ if ! install -o root -g root -m 0755 "$SCRIPT_DIR/uninstall.sh" "$UNINSTALL_COMM
         exit 1
     fi
 fi
+if ! install -o root -g root -m 0755 "$SCRIPT_DIR/doctor.sh" "$DOCTOR_COMMAND"; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred $DOCTOR_COMMAND until the next update."
+    else
+        exit 1
+    fi
+fi
 if ! install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-logrotate" "$LOGROTATE_FILE"; then
     if [[ $SELF_UPDATE -eq 1 ]]; then
         echo "The existing updater sandbox deferred $LOGROTATE_FILE until the next update."
@@ -916,6 +925,7 @@ if [[ -n $SITE_BASE_DOMAIN ]]; then
 else
     echo "Deployed site ports: $SITE_PORT_MIN-$SITE_PORT_MAX"
 fi
+echo "Something not working? Run: sudo webmanager-doctor"
 echo "Logs: journalctl -u webmanager -f"
 echo "Settings: $CONFIG_DIR/webmanager.env"
 if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then

@@ -119,6 +119,13 @@ class RotatedLogTests(unittest.TestCase):
         self.assertEqual(data["requests"], 2)
         self.assertEqual(data["visitors"], 2)
 
+    def test_the_health_checks_own_visits_are_not_traffic(self):
+        probe = json.dumps({"time": datetime.now(timezone.utc).isoformat(), "host": "demo.example",
+                            "status": 200, "bytes": 5, "client": "", "uri": "/", "agent": analytics.HEALTH_PROBE_AGENT})
+        self.write("access.log", [entry(0), probe, probe])
+        self.assertEqual(self.report()["requests"], 1)
+        self.assertEqual(analytics.site_analytics(self.log, "demo.example")["requests"], 1)
+
     def test_it_is_fine_when_there_is_no_log_yet(self):
         self.assertEqual(self.report()["requests"], 0)
 

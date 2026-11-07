@@ -2,6 +2,17 @@ import sys
 
 from webmanager import StartupError, create_app
 
+if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+    # `sudo webmanager-doctor`: check everything WebManager depends on, without
+    # starting it (and without needing to be able to sign in).
+    from webmanager.health import run_doctor
+
+    try:
+        raise SystemExit(run_doctor())
+    except StartupError as exc:
+        print(f"WebManager cannot start: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
 
 try:
     app = create_app()

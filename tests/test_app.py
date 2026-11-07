@@ -3313,6 +3313,8 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("Firewall rules are left as they are during an update.", installer)
         self.assertIn("awk '{print $1}' || true)", installer)
         self.assertIn("--auto-update)", installer)
+        self.assertIn("deploy/debian/doctor.sh", installer)
+        self.assertIn("sudo webmanager-doctor", installer)
         self.assertIn("ensure_replication_location", installer)
         self.assertIn('set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"', installer)
         self.assertIn(

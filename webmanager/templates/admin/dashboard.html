@@ -254,6 +254,16 @@
   </div>
 </section>
 
+{# ---------- Health checks ---------- #}
+<section class="card mb-24" data-health data-health-url="{{ url_for('admin.health_json') }}">
+  <div class="card-header">
+    <div><h2>Health checks</h2><p>Is everything WebManager depends on working? Anything wrong says what to do about it.</p></div>
+    <span class="badge" data-health-badge>Checking…</span>
+  </div>
+  <div class="card-body stack" data-health-list><p class="muted">Running the checks…</p></div>
+  <div class="card-footer end"><button class="btn" type="button" data-health-run>{{ ui.icon('refresh', 14) }}Check again</button></div>
+</section>
+
 {# ---------- Replication ---------- #}
 {% if replication.is_replica %}
 <section class="card mb-24">

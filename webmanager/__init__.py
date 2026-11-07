@@ -325,7 +325,9 @@ def create_app(test_config=None):
             peer_urls.append(saved_url)
     app.extensions["mesh_hub"] = mesh_hub
 
-    if not app.config.get("TESTING"):
+    # Background work (starting sites, polling peers, scheduled Git checks) is
+    # skipped under test and for one-off commands such as `run.py doctor`.
+    if not app.config.get("TESTING") and app.config.get("BACKGROUND_TASKS", True):
         if replication_manager.is_replica:
             # A replica mirrors config and data on their own schedules; it
             # doesn't start apps or run scheduled Git checks itself (see

@@ -1374,6 +1374,21 @@ Do not manually run WebManager as root.
 
 ## Logs and troubleshooting
 
+### First: let WebManager check itself
+
+When something isn't working, start here. On the server run:
+
+```bash
+sudo webmanager-doctor
+```
+
+It checks the web server in front of your sites, that each running site
+answers, the traffic log Analytics reads, free disk space, Google sign-in and
+cookie settings, wildcard DNS, Git, the updater, app hosting and other servers,
+and prints what is wrong with **what to do about it**. It works even when the
+dashboard or sign-in is broken. The same checks are on **System → Health
+checks** (press *Check again* after fixing something).
+
 ### Dashboard does not load
 
 Check the service:

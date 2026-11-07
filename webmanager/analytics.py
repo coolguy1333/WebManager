@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 # The most log read for one report, across today's log and the rotated ones.
 MAX_LOG_BYTES = 32 * 1024 * 1024
+# The System page's health check visits each site; that is not traffic.
+HEALTH_PROBE_AGENT = "webmanager-health"
 _ROTATED_SUFFIX_RE = re.compile(r"\.(\d+)(?:\.gz)?")
 _cache: dict = {}
 _cache_lock = threading.Lock()
@@ -26,6 +28,8 @@ def site_analytics(log_path: str | Path, hostname: str | list[str], days: int = 
     requests = []
     for record in _recent_records(Path(log_path), hostnames, cutoff):
         if str(record.get("host", "")).lower() not in hostnames:
+            continue
+        if record.get("agent") == HEALTH_PROBE_AGENT:
             continue
         try:
             recorded_at = datetime.fromisoformat(record["time"])
@@ -204,7 +208,7 @@ def _aggregate(log_path: Path, site_hostnames: dict, days: int):
 
     for record in _recent_records(Path(log_path), host_to_site, cutoff):
         site_id = host_to_site.get(str(record.get("host", "")).lower())
-        if site_id is None:
+        if site_id is None or record.get("agent") == HEALTH_PROBE_AGENT:
             continue
         try:
             recorded_at = datetime.fromisoformat(record["time"])
