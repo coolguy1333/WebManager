@@ -191,7 +191,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS site_acl_user_uq
 ON site_acl(site_id, user_id) WHERE user_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS site_acl_group_uq
 ON site_acl(site_id, group_id) WHERE group_id IS NOT NULL;
+
+-- Who did what, and what WebManager did by itself (user_id NULL).
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    user_id INTEGER,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT,
+    path TEXT,
+    ok INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS activity_created_idx ON activity(created_at);
+
+-- One row per site per day: how many times the watchdog looked, and how many
+-- of those found the site not answering.
+CREATE TABLE IF NOT EXISTS site_uptime (
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    checks INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, day)
+);
 """
+
+
+def get_setting(database, key, default=None):
+    row = database.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_setting(database, key, value):
+    """Store (or with None, remove) a setting. The caller commits."""
+    if value is None:
+        database.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+    else:
+        database.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
 
 
 def get_db():
@@ -508,6 +548,8 @@ def _migrate_repositories(database):
         "pending_commit": "TEXT",
         "pending_at": "TEXT",
         "dismissed_commit": "TEXT",
+        # Secret part of the URL a Git host calls to deploy on push.
+        "hook_token": "TEXT",
     }
     for column, definition in additions.items():
         if column not in columns:

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Activity</h1>
+    <p>Every change made through WebManager, and what it did by itself (restarts, backups, updates). Newest first.</p>
+  </div>
+  <form class="actions" method="get" role="search">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search person, action or site…" aria-label="Search activity">
+    <button class="btn" type="submit">Search</button>
+  </form>
+</header>
+
+{% if entries %}
+<div class="list activity-list" role="table" aria-label="Activity">
+  <div class="list-head" role="row">
+    <span role="columnheader">When</span>
+    <span role="columnheader">Who</span>
+    <span role="columnheader">What</span>
+  </div>
+  {% for entry in entries %}
+  <div class="list-row" role="row">
+    <div role="cell" class="row-meta" title="{{ entry.created_at }} UTC">{{ ui.when(entry.created_at) }}</div>
+    <div role="cell">{% if entry.user_id is none %}<span class="badge">{{ entry.actor }}</span>{% else %}{{ entry.actor }}{% endif %}</div>
+    <div role="cell">
+      <strong>{{ entry.action }}</strong>{% if not entry.ok %} <span class="badge badge-danger">Failed</span>{% endif %}
+      {% if entry.detail %}<br><small class="muted">{{ entry.detail }}</small>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<div class="actions mt-16">
+  {% if page > 1 %}<a class="btn btn-sm" href="{{ url_for('admin.activity_log', q=query, page=page - 1) }}">Newer</a>{% endif %}
+  {% if more %}<a class="btn btn-sm" href="{{ url_for('admin.activity_log', q=query, page=page + 1) }}">Older</a>{% endif %}
+</div>
+{% else %}
+<section class="card empty">
+  <span class="record-icon">{{ ui.icon('activity', 22) }}</span>
+  <h2>{{ "Nothing matches that search" if query else "Nothing recorded yet" }}</h2>
+  <p>{{ "Try a different word." if query else "Changes appear here as people use WebManager." }}</p>
+</section>
+{% endif %}
+{% endblock %}

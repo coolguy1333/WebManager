@@ -7,7 +7,10 @@ from pathlib import Path
 from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, auth, data_replication, db, deployments, domains, mesh, replication
+from . import (
+    activity, admin, auth, backups, data_replication, db, deployments, domains, hooks, mesh,
+    notifications, replication, watchdog,
+)
 from .data_replication import DataReplicationManager
 from .repository_refresh import RepositoryRefreshManager
 from .replication import ReplicationError, ReplicationManager
@@ -109,6 +112,10 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/check",
         ),
+        BACKUPS_ENABLED=_env_flag("WEBMANAGER_BACKUPS_ENABLED", "1"),
+        BACKUP_KEEP=int(os.environ.get("WEBMANAGER_BACKUP_KEEP", "14")),
+        WATCHDOG_ENABLED=_env_flag("WEBMANAGER_WATCHDOG_ENABLED", "1"),
+        SETTINGS_FILE=os.environ.get("WEBMANAGER_SETTINGS_FILE", "/etc/webmanager/webmanager.env"),
         # Blank: next to the install-request file, where the updater looks.
         PROGRAM_UPDATE_AUTO_FILE=os.environ.get(
             "WEBMANAGER_PROGRAM_UPDATE_AUTO_FILE", ""
@@ -192,6 +199,8 @@ def create_app(test_config=None):
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
     app.register_blueprint(mesh.bp)
+    app.register_blueprint(hooks.bp)
+    activity.register(app)
     app.register_blueprint(replication.bp)
     app.register_blueprint(data_replication.bp)
     replication_manager = ReplicationManager(app, app.config["REPLICA_OF"], app.config["MESH_TOKEN"])
@@ -315,6 +324,9 @@ def create_app(test_config=None):
                 url for url in peer_urls
                 if url == replica_of or urlsplit(url).hostname != self_host
             ]
+    app.extensions["notifier"] = notifications.Notifier(app)
+    app.extensions["backup_scheduler"] = backups.BackupScheduler(app)
+    app.extensions["watchdog"] = watchdog.Watchdog(app)
     mesh_hub = mesh.MeshHub(app, peer_urls, app.config["MESH_TOKEN"])
     for saved_url in mesh.load_saved_peers(app):
         # Servers added on the System page or that registered themselves.
@@ -353,6 +365,19 @@ def create_app(test_config=None):
                     "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
                 )
         mesh_hub.start()  # also lets servers added later be polled straight away
+        if app.config["BACKUPS_ENABLED"]:
+            app.extensions["backup_scheduler"].start()
+        if app.config["WATCHDOG_ENABLED"]:
+            app.extensions["watchdog"].start()
+        if not replication_manager.is_replica:
+            # After a restore on a new machine (or a lost disk) the checkouts
+            # are gone; clone them again without holding startup up.
+            import threading
+
+            threading.Thread(
+                target=backups.reclone_missing_sources, args=(app,),
+                name="webmanager-reclone", daemon=True,
+            ).start()
         from urllib.parse import urlsplit
 
         plain_http = [

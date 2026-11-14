@@ -830,6 +830,13 @@ class RuntimeManager:
             return False
         return port is None or f"--port {port}" in command
 
+    @staticmethod
+    def _has_content(site) -> bool:
+        if site["kind"] == "app":
+            return True
+        root = Path(site["document_root"])
+        return root.is_dir() and (root / site["index_file"]).is_file()
+
     def _write_all_nginx_configs(self, database, activating_site_id=None):
         # A host without IPv6 can't open [::1]; Nginx would refuse to start.
         if ipv6_loopback_available():
@@ -849,6 +856,14 @@ class RuntimeManager:
                 "SELECT * FROM sites WHERE status = 'running' OR id = ?",
                 (activating_site_id or -1,),
             ).fetchall()
+            # A site whose folder or index page has gone (a forced update
+            # removed it, a checkout was deleted) would answer every request
+            # with a bare 500. It gets the "temporarily unavailable" page
+            # instead; its own page says what is missing.
+            active = [
+                site for site in active
+                if site["id"] == activating_site_id or self._has_content(site)
+            ]
             expected_configs = {
                 f"{site['id']}-{site['slug']}.conf"
                 for site in active

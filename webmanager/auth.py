@@ -8,6 +8,7 @@ from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.flask_client import OAuth
 from flask import Blueprint, current_app, flash, g, redirect, render_template, request, session, url_for
 
+from . import activity
 from .access_control import has_permission
 from .db import get_db
 from .domains import dashboard_hostnames
@@ -286,6 +287,7 @@ def google_callback():
     session.clear()
     session["user_id"] = user_id
     session.permanent = True
+    activity.record_sign_in(current_app, user_id)
     return redirect(destination)
 
 

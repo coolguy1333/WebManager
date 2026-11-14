@@ -28,7 +28,7 @@ NOTES_FILE=$STATE_DIR/install-notes
 # Big data that an update cannot damage and that can be rebuilt (repository
 # checkouts, logs, container data backups) is left out of the pre-update
 # backup; the database, keys and settings are what a rollback needs.
-DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"
+DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups backups"
 REPOSITORY=
 BRANCH=
 
@@ -338,8 +338,12 @@ record_failure() {
         remember_failure "$message" "$detail"
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" "$message" "$detail"
     else
+        message="The GitHub update check failed. Review the updater service logs."
+        if [[ -n $WORK_DIR ]] && grep -qs "Remote branch .* not found" "$WORK_DIR/check.log"; then
+            message="The update branch '$BRANCH' no longer exists on $REPOSITORY (deleted or renamed). Set WEBMANAGER_UPDATE_BRANCH=main in $ENV_FILE, then press Check now."
+        fi
         write_status "error" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "The GitHub update check failed. Review the updater service logs." \
+            "$message" \
             "$(summarize_log "$WORK_DIR/check.log" 2>/dev/null || true)"
     fi
     exit "$exit_code"

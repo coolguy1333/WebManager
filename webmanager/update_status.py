@@ -174,7 +174,13 @@ def check_upstream(repository, branch, installed, timeout=20):
                 detail = (completed.stderr or completed.stdout).strip().splitlines()
                 result = _result("error", f"Could not reach GitHub: {detail[-1] if detail else 'git failed'}", installed, None)
             elif available is None:
-                result = _result("error", f"Branch {branch} was not found on {repository}.", installed, None)
+                result = _result(
+                    "error",
+                    f"Branch {branch} was not found on {repository} (it may have been deleted or renamed). "
+                    "Set WEBMANAGER_UPDATE_BRANCH=main in /etc/webmanager/updater.env and "
+                    "/etc/webmanager/webmanager.env, then restart WebManager.",
+                    installed, None,
+                )
             elif _same_commit(installed, available):
                 result = _result("current", "WebManager is current.", installed, available)
             elif installed:

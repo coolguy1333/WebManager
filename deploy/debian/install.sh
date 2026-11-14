@@ -15,6 +15,7 @@ UPDATER_TIMER=/etc/systemd/system/webmanager-update.timer
 UPDATER_PATH=/etc/systemd/system/webmanager-update.path
 UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
 DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
+RESTORE_COMMAND=/usr/local/sbin/webmanager-restore
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
@@ -125,6 +126,7 @@ for required in \
     webmanager \
     deploy/debian/uninstall.sh \
     deploy/debian/doctor.sh \
+    deploy/debian/restore.sh \
     deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
@@ -548,6 +550,13 @@ install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-update.path" "$UPDATER_P
 if ! install -o root -g root -m 0755 "$SCRIPT_DIR/uninstall.sh" "$UNINSTALL_COMMAND"; then
     if [[ $SELF_UPDATE -eq 1 ]]; then
         echo "The existing updater sandbox deferred $UNINSTALL_COMMAND until the next update."
+    else
+        exit 1
+    fi
+fi
+if ! install -o root -g root -m 0755 "$SCRIPT_DIR/restore.sh" "$RESTORE_COMMAND"; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred $RESTORE_COMMAND until the next update."
     else
         exit 1
     fi

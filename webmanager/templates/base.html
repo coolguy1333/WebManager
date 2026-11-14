@@ -73,6 +73,9 @@
           {{ ui.icon('box') }}<span>App hosting</span>
         </a>
         {% endif %}
+        <a class="{{ 'active' if ep == 'admin.activity_log' }}" href="{{ url_for('admin.activity_log') }}">
+          {{ ui.icon('activity') }}<span>Activity</span>
+        </a>
         <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'updates' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
           {{ ui.icon('cpu') }}<span>System</span>{% if nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}
         </a>

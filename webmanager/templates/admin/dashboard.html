@@ -264,6 +264,59 @@
   <div class="card-footer end"><button class="btn" type="button" data-health-run>{{ ui.icon('refresh', 14) }}Check again</button></div>
 </section>
 
+{# ---------- Backups ---------- #}
+<section class="card mb-24" id="backups">
+  <div class="card-header">
+    <div><h2>Backups</h2><p>{% if backups_enabled %}One is made every day; the newest {{ backup_keep }} are kept.{% else %}Automatic backups are off (<code>WEBMANAGER_BACKUPS_ENABLED=0</code>).{% endif %} A backup holds the database, the keys that protect it and this server's settings: everything needed to rebuild it.</p></div>
+    <span class="badge {{ 'badge-success' if backup_list and backup_list[0].age_seconds < 129600 else 'badge-warning' }}">{% if backup_list %}Last: {{ ui.when(backup_list[0].created_at) }}{% else %}None yet{% endif %}</span>
+  </div>
+  <div class="card-body stack">
+    {% if backup_list %}
+    <div class="list" role="table" aria-label="Backups">
+      {% for item in backup_list[:5] %}
+      <div class="list-row" role="row">
+        <div role="cell"><code>{{ item.name }}</code></div>
+        <div role="cell" class="row-meta">{{ ui.when(item.created_at) }} · {{ "%.0f"|format(item.size / 1024) }} KB</div>
+        <div role="cell" class="row-actions col-actions"><a class="btn btn-sm" href="{{ url_for('admin.download_backup', name=item.name) }}">{{ ui.icon('download', 14) }}Download</a></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if backup_list|length > 5 %}<p class="hint">{{ backup_list|length - 5 }} older backup{{ "" if backup_list|length == 6 else "s" }} are kept on the server in the data folder under <code>backups/</code>.</p>{% endif %}
+    {% else %}
+    <p class="muted">No backup has been made yet. The first automatic one is made a few minutes after WebManager starts.</p>
+    {% endif %}
+    <p class="hint">Backups stay on this server, so download one now and then and keep it somewhere else: it contains secrets, so treat it like a password. To restore, copy it to the server and run <code>sudo webmanager-restore FILE</code>. Sites are cloned again from their Git sources; app data has its own backups.</p>
+  </div>
+  <div class="card-footer end">
+    <form method="post" action="{{ url_for('admin.create_backup') }}" data-loading>
+      {{ ui.csrf() }}
+      <button class="btn" type="submit" data-loading-text="Backing up…">{{ ui.icon('download', 14) }}Back up now</button>
+    </form>
+  </div>
+</section>
+
+{# ---------- Notifications ---------- #}
+<section class="card mb-24" id="notifications">
+  <div class="card-header">
+    <div><h2>Notifications</h2><p>Get a message when a site stops answering or comes back, an update fails or is waiting for you, a backup fails, or the disk is nearly full.</p></div>
+    <span class="badge {{ 'badge-success' if notify_url else '' }}">{{ "On" if notify_url else "Off" }}</span>
+  </div>
+  <form method="post" action="{{ url_for('admin.save_notifications') }}" data-loading>
+    {{ ui.csrf() }}
+    <div class="card-body stack">
+      <label class="field">
+        <span>Webhook address</span>
+        <input type="url" name="webhook_url" value="{{ notify_url or '' }}" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false">
+        <small class="hint">A Discord or Slack webhook address works as it is (in Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL). Any other address gets a small JSON message. Leave empty to turn notifications off.</small>
+      </label>
+    </div>
+    <div class="card-footer end">
+      {% if notify_url %}<button class="btn" type="submit" formaction="{{ url_for('admin.test_notification') }}" formnovalidate>Send a test</button>{% endif %}
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</section>
+
 {# ---------- Replication ---------- #}
 {% if replication.is_replica %}
 <section class="card mb-24">

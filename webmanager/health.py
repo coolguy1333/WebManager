@@ -40,6 +40,22 @@ def _port_open(host, port, timeout=1.5):
         return False
 
 
+def probe_site(gateway_port: int, host: str, timeout: float = 2.5):
+    """Ask the site gateway for a site's home page the way a visitor's request
+    arrives. Returns the HTTP status, or None when nothing answered."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/",
+        headers={"Host": host, "User-Agent": analytics.HEALTH_PROBE_AGENT},
+    )
+    try:
+        with peer_http.open_peer(request, timeout=timeout) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except (urllib.error.URLError, OSError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Each check takes the plain `inputs` dict built on the request thread and may
 # block briefly (sockets, files); they run in parallel.
@@ -81,16 +97,7 @@ def check_sites(inputs):
         if not host:
             broken.append(f"{site['name']} (no public address)")
             continue
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{inputs['gateway_port']}/", headers={"Host": host, "User-Agent": analytics.HEALTH_PROBE_AGENT}
-        )
-        try:
-            with peer_http.open_peer(request, timeout=2.5) as response:
-                code = response.status
-        except urllib.error.HTTPError as exc:
-            code = exc.code
-        except (urllib.error.URLError, OSError):
-            code = None
+        code = probe_site(inputs["gateway_port"], host)
         if code is None or code >= 500:
             broken.append(f"{site['name']} ({'no answer' if code is None else f'error {code}'})")
     if not broken:

@@ -3265,7 +3265,7 @@ class ServiceUnitTests(unittest.TestCase):
         # Big rebuildable data is not backed up, so a rollback must never wipe
         # it: it only puts back what the backup holds.
         self.assertIn(
-            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"', updater
+            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups backups"', updater
         )
         self.assertNotIn('restore_directory_contents "$DATA_BACKUP_DIR"', updater)
         self.assertIn("Not enough free disk space", updater)
@@ -3314,6 +3314,11 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("awk '{print $1}' || true)", installer)
         self.assertIn("--auto-update)", installer)
         self.assertIn("deploy/debian/doctor.sh", installer)
+        self.assertIn("deploy/debian/restore.sh", installer)
+        restore = (root / "deploy" / "debian" / "restore.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl stop webmanager", restore)
+        self.assertIn("run.py restore", restore)
+        self.assertIn("--with-settings", restore)
         self.assertIn("sudo webmanager-doctor", installer)
         self.assertIn("ensure_replication_location", installer)
         self.assertIn('set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"', installer)

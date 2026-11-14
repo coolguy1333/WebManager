@@ -306,6 +306,32 @@
         </fieldset>
       </form>
 
+      <details class="inline-disclosure">
+        <summary>{{ ui.icon('link', 14) }}Deploy hook{% if repository.hook_token %} <span class="badge badge-success">On</span>{% endif %}</summary>
+        <div class="stack mt-16">
+          {% if repository.hook_token %}
+          <p class="hint">Call this address when you push and WebManager checks this source straight away instead of waiting for the next scheduled check. On GitHub: repository <strong>Settings → Webhooks → Add webhook</strong>, paste it as the Payload URL. Or from a script: <code>curl -X POST</code> it. Keep it secret.</p>
+          <div class="copy-row"><code data-copy-source>{{ request.host_url.rstrip('/') }}{{ url_for('hooks.deploy', token=repository.hook_token) }}</code><button class="btn btn-sm" type="button" data-copy>Copy</button></div>
+          <div class="actions">
+            <form method="post" action="{{ url_for('deployments.repository_hook', repository_id=repository.id) }}" data-confirm="Replace the address? The old one stops working, so update it wherever you pasted it.">
+              {{ ui.csrf() }}<input type="hidden" name="action" value="create">
+              <button class="btn btn-sm" type="submit">New address</button>
+            </form>
+            <form method="post" action="{{ url_for('deployments.repository_hook', repository_id=repository.id) }}" data-confirm="Turn the deploy hook off? The address stops working.">
+              {{ ui.csrf() }}<input type="hidden" name="action" value="remove">
+              <button class="btn btn-sm btn-ghost" type="submit">Turn off</button>
+            </form>
+          </div>
+          {% else %}
+          <p class="hint">Get a secret address that makes WebManager check this source the moment you push (for GitHub/GitLab webhooks or CI), instead of waiting for the next scheduled check.</p>
+          <form method="post" action="{{ url_for('deployments.repository_hook', repository_id=repository.id) }}">
+            {{ ui.csrf() }}<input type="hidden" name="action" value="create">
+            <button class="btn btn-sm" type="submit">Create deploy hook</button>
+          </form>
+          {% endif %}
+        </div>
+      </details>
+
       <div class="record-actions">
         <form method="post" action="{{ url_for('deployments.delete_repository', repository_id=repository.id) }}" data-confirm="Delete this source and every site created from it? This cannot be undone.">
           {{ ui.csrf() }}
