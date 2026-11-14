@@ -3337,7 +3337,10 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("server_name $DASHBOARD_HOST", installer)
         self.assertIn("listen 8080 default_server;", sites_template)
         self.assertIn("listen [::]:8080 default_server;", sites_template)
-        self.assertIn("proxy_set_header Host $host;", sites_template)
+        # Opened by IP address, WebManager must still see the port (it builds
+        # the join command and hook addresses from the address it was opened at).
+        self.assertIn("proxy_set_header Host $webmanager_upstream_host;", sites_template)
+        self.assertIn("$http_host;", sites_template)
         # Other servers reach the peer endpoints by IP address, and a
         # visitor-supplied client-IP header is only believed from a trusted edge.
         self.assertIn("$webmanager_upstream_port", sites_template)

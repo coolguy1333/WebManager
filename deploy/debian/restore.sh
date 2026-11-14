@@ -38,10 +38,12 @@ DATA_DIR=$(sed -n 's/^WEBMANAGER_DATA_DIR=//p' "$ENV_FILE" | tail -n 1)
 DATA_DIR=${DATA_DIR:-/var/lib/webmanager}
 
 # The service user must be able to read the file wherever it was copied to.
-STAGED=$(mktemp "$DATA_DIR/.restore.XXXXXX")
-trap 'rm -f "$STAGED"' EXIT
+STAGED_DIR=$(mktemp -d "$DATA_DIR/.restore.XXXXXX")
+trap 'rm -rf "$STAGED_DIR"' EXIT
+STAGED=$STAGED_DIR/$(basename -- "$BACKUP")
 cp -- "$BACKUP" "$STAGED"
-chown webmanager:webmanager "$STAGED"
+chown -R webmanager:webmanager "$STAGED_DIR"
+chmod 0700 "$STAGED_DIR"
 chmod 0600 "$STAGED"
 
 echo "Stopping WebManager"

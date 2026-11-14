@@ -877,9 +877,13 @@ def repository_hook(repository_id):
         database.execute(
             "UPDATE repositories SET hook_token = ? WHERE id = ?", (new_token(), repository_id)
         )
-        flash("Deploy hook ready. Copy its address from the source's Deploy hook section.", "success")
+        flash("Deploy hook ready. Copy its address below and add it as a webhook where you push.", "success")
     database.commit()
-    return action_redirect("deployments.dashboard", view="sources")
+    # Come back with this source (and its Deploy hook section) open.
+    return redirect(
+        url_for("deployments.dashboard", view="sources", hook=repository_id) + f"#source-{repository_id}",
+        code=303,
+    )
 
 
 @bp.post("/repositories/<int:repository_id>/updates/force")

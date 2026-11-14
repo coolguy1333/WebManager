@@ -78,6 +78,14 @@ class ActivityTests(Fixture):
         self.assertEqual(activity._label("deployments.stop_site"), "Stopped a site")
         self.assertEqual(activity._label("admin.some_new_thing"), "Some new thing")
 
+    def test_every_action_in_the_dashboard_has_a_plain_name(self):
+        endpoints = {
+            rule.endpoint for rule in self.app.url_map.iter_rules()
+            if "POST" in rule.methods and rule.endpoint.split(".")[0] in {"deployments", "admin", "auth"}
+        }
+        self.assertEqual(sorted(endpoints - set(activity.LABELS)), [])
+        self.assertEqual(sorted(set(activity.LABELS) - endpoints), [], "labels for actions that no longer exist")
+
     def test_only_admins_can_read_it_and_it_can_be_searched(self):
         with self.app.app_context():
             activity.record(get_db(), "Stopped a site", "Docs", user=None)

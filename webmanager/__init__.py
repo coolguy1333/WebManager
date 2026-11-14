@@ -479,6 +479,13 @@ def create_app(test_config=None):
             "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
         )
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        # Everything the pages use is served from here (no inline scripts or
+        # styles, no third-party assets), so nothing else is allowed to run.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'; form-action 'self'",
+        )
         if app.config["SESSION_COOKIE_SECURE"]:
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000"

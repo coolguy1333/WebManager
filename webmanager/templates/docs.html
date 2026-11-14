@@ -16,6 +16,7 @@
       {% if apps_enabled %}<li><a href="#app-hosting">App hosting</a></li>
       <li><a href="#manifest">webmanager.json reference</a></li>{% endif %}
       <li><a href="#updates">Git sources &amp; updates</a></li>
+      <li><a href="#production">Backups, alerts &amp; deploy hooks</a></li>
       <li><a href="#mesh">Multi-server mesh</a></li>
       <li><a href="#troubleshooting">Troubleshooting</a></li>
     </ul>
@@ -150,6 +151,19 @@
     </ul>
     <p>A pending or failed update shows on the source, and on every site/app it affects, until resolved.</p>
     <p>A failed check normally means the new commit would break something (a missing folder, index page, or app manifest) and is refused automatically. If you're sure that's fine, <strong>Force update anyway</strong> on the source skips that safety check and installs the commit immediately — the affected site(s) may go missing or fail their health check until you push a fix.</p>
+  </div>
+</section>
+
+<section class="card mb-16" id="production">
+  <div class="card-body prose">
+    <h2>Backups, alerts &amp; deploy hooks</h2>
+    <ul>
+      <li><strong>Deploy on push.</strong> Under <em>Sources</em>, open a source's <em>Deploy hook</em> and create one. Add the address as a webhook on GitHub or GitLab (or <code>curl -X POST</code> it from CI) and WebManager checks that source the moment you push. Whether the update installs by itself or waits for approval still follows the source's own setting.</li>
+      <li><strong>Uptime.</strong> WebManager checks every running site once a minute. Each site's page shows its uptime; an app that stops answering is started again, and so is the web server in front of the sites.</li>
+      <li><strong>Notifications</strong> (administrators, <em>System → Notifications</em>). Paste a Discord, Slack or other webhook address to be told when a site goes down or comes back, an update fails or is waiting, a backup fails, or the disk is nearly full.</li>
+      <li><strong>Backups</strong> (administrators, <em>System → Backups</em>). One is made every day; download one now and then and keep it elsewhere. Restore on the server with <code>sudo webmanager-restore FILE</code>; sites are cloned again from their Git sources by themselves.</li>
+      <li><strong>Activity</strong> (administrators). Every change, who made it and how it went, plus what WebManager did by itself.</li>
+    </ul>
   </div>
 </section>
 

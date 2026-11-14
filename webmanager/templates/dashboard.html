@@ -216,7 +216,8 @@
   {% for repository in repositories %}
   {% set update = repository_update_states[repository.id] %}
   {% set can_edit = manage_all or repository.user_id == g.user.id %}
-  <details class="record" {% if repository.pending_commit or update.state in ['failed', 'checking', 'updating'] %}open{% endif %}>
+  {% set hook_open = request.args.get('hook') == repository.id|string %}
+  <details class="record" id="source-{{ repository.id }}" {% if hook_open or repository.pending_commit or update.state in ['failed', 'checking', 'updating'] %}open{% endif %}>
     <summary>
       <span class="record-icon">{{ ui.icon('git', 18) }}</span>
       <span class="record-title"><strong>{{ repository.name }}</strong><small>{{ repository.url }}{% if repository.branch %} · {{ repository.branch }}{% endif %}</small></span>
@@ -306,7 +307,7 @@
         </fieldset>
       </form>
 
-      <details class="inline-disclosure">
+      <details class="inline-disclosure" {% if hook_open %}open{% endif %}>
         <summary>{{ ui.icon('link', 14) }}Deploy hook{% if repository.hook_token %} <span class="badge badge-success">On</span>{% endif %}</summary>
         <div class="stack mt-16">
           {% if repository.hook_token %}

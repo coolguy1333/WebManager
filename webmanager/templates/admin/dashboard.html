@@ -254,8 +254,12 @@
   </div>
 </section>
 
+<nav class="jump-links mb-16" aria-label="On this page">
+  <a href="#health">Health checks</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a><a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
+</nav>
+
 {# ---------- Health checks ---------- #}
-<section class="card mb-24" data-health data-health-url="{{ url_for('admin.health_json') }}">
+<section class="card mb-24" id="health" data-health data-health-url="{{ url_for('admin.health_json') }}">
   <div class="card-header">
     <div><h2>Health checks</h2><p>Is everything WebManager depends on working? Anything wrong says what to do about it.</p></div>
     <span class="badge" data-health-badge>Checking…</span>
@@ -272,7 +276,7 @@
   </div>
   <div class="card-body stack">
     {% if backup_list %}
-    <div class="list" role="table" aria-label="Backups">
+    <div class="list backup-list" role="table" aria-label="Backups">
       {% for item in backup_list[:5] %}
       <div class="list-row" role="row">
         <div role="cell"><code>{{ item.name }}</code></div>
@@ -458,7 +462,7 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
 </section>
 
 {# ---------- WebManager update ---------- #}
-<section class="card mb-24">
+<section class="card mb-24" id="updates">
   <div class="card-header">
     <div><h2>WebManager updates</h2><p>{% if update_auto_install %}Checked every 15 minutes. New versions are tested, backed up and installed by themselves, and rolled back if anything fails.{% else %}Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing needs your approval, or switch on automatic installation.{% endif %}</p></div>
     <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] or update_auto_requested else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{% if update_auto_requested and update_status.state in ['unknown', 'current', 'error'] %}Checking…{% elif update_status.state == "unknown" %}Not checked{% elif update_status.state == "current" %}Up to date{% else %}{{ update_status.state|replace('_', ' ')|capitalize }}{% endif %}</span>
@@ -507,7 +511,7 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
 </section>
 
 {# ---------- Hosted site updates ---------- #}
-<section class="card">
+<section class="card" id="site-updates">
   <div class="card-header">
     <div><h2>Hosted site updates</h2><p>Every Git source is checked for new commits automatically{% if source_updates.last_checked %} · last check {{ ui.when(source_updates.last_checked) }}{% endif %}.</p></div>
     <span class="badge {{ 'badge-warning' if source_updates.pending else 'badge-danger' if source_updates.failed else 'badge-success' }}">{% if source_updates.pending %}{{ source_updates.pending|length }} waiting{% elif source_updates.failed %}{{ source_updates.failed|length }} failed{% else %}All current{% endif %}</span>
