@@ -113,6 +113,21 @@ class RestoreSitesTests(unittest.TestCase):
         self.assertEqual(sum(" -t" in call for call in calls), 1, calls)
         self.assertEqual(len(calls), 2, calls)  # one syntax test, one start/reload
 
+    def test_a_replica_stops_serving_the_last_site_once_the_primary_stopped_it(self):
+        self.make_sites(1)
+        runtime = self.app.extensions["runtime_manager"]
+        runtime.restore_sites(include_apps=False)
+        config_dir = Path(self.app.config["NGINX_ROOT"]) / "conf.d"
+        self.assertEqual([path.name for path in config_dir.glob("*.conf")], ["1-site0.conf"])
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET status = 'stopped'")  # arrives with a sync
+            database.commit()
+
+        runtime.restore_sites(include_apps=False)
+
+        self.assertEqual([path.name for path in config_dir.glob("*.conf")], ["1-site0.paused.conf"])
+
     def test_a_site_with_an_unsafe_config_is_marked_failed_without_stopping_the_rest(self):
         ids = self.make_sites(3)
         with self.app.app_context():

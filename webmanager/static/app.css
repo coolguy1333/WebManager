@@ -998,3 +998,4 @@ fieldset.field legend { margin-bottom: 6px; }
 @media (max-width: 720px) { .activity-list .list-row { grid-template-columns: 1fr; } .activity-list .list-head { display: none; } }
 .backup-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; }
 @media (max-width: 720px) { .backup-list .list-row { grid-template-columns: 1fr; } }
+.btn-block { display: flex; width: 100%; justify-content: center; }

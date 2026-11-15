@@ -37,6 +37,7 @@ from .domains import (
 import secrets
 
 from . import activity, app_limits, backups, health, mesh, notifications, quotas, system_metrics
+from .replication import promoted_marker
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -1098,6 +1099,13 @@ def promote_replica():
         flash("This server is already a primary.", "error")
         return redirect(url_for("admin.dashboard", section="updates"))
 
+    try:
+        marker = promoted_marker(current_app)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"Promoted from replica of {manager.primary_url}\n", encoding="utf-8")
+        permanent = True
+    except OSError:
+        permanent = False
     manager.promote()
     data_manager.promote()
     current_app.config["REPLICA_OF"] = ""
@@ -1106,13 +1114,15 @@ def promote_replica():
         current_app.extensions["repository_refresh_manager"].start()
 
     flash(
-        "This server is now the primary and is serving its sites and apps. "
-        "To make this permanent, remove WEBMANAGER_REPLICA_OF from "
-        "/etc/webmanager/webmanager.env and restart WebManager - otherwise "
-        "it reverts to being a replica on the next restart. If the old "
-        "primary comes back online, point it at this server (set its own "
-        "WEBMANAGER_REPLICA_OF) or take it offline, so only one server "
-        "accepts writes.",
+        "This server is now the primary and is serving its sites and apps"
+        + (
+            ", and stays the primary after restarts. "
+            if permanent
+            else ". To keep it that way after a restart, remove WEBMANAGER_REPLICA_OF from "
+            "/etc/webmanager/webmanager.env. "
+        )
+        + "If the old primary comes back, take it offline or join it to this server as a "
+        "replica (System → Servers → Add a server), so only one server accepts changes.",
         "warning",
     )
     return redirect(url_for("admin.dashboard", section="updates"))

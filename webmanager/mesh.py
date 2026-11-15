@@ -390,6 +390,30 @@ def mesh_register():
     return jsonify({"ok": True, "url": url})
 
 
+@bp.get("/mesh/join-info")
+def mesh_join_info():
+    """What a server joining this one as a replica needs to match it: where
+    sites live and whether their public addresses are https. Token only."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None:
+        return jsonify({"error": "Mesh federation is not available."}), 404
+    if not hub.authorize_sensitive(request.headers.get("Authorization", ""), request.remote_addr or ""):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+    base_domain = current_app.config.get("SITE_BASE_DOMAIN") or ""
+    if not base_domain:
+        row = get_db().execute("SELECT name FROM domains WHERE is_default = 1").fetchone()
+        base_domain = row["name"] if row else ""
+    response = jsonify(
+        {
+            "site_base_domain": base_domain,
+            "site_public_scheme": current_app.config.get("SITE_PUBLIC_SCHEME") or "http",
+            "apps_enabled": bool(current_app.config.get("APPS_ENABLED")),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @bp.get("/mesh/secret-key")
 def mesh_secret_key():
     """Lets a replica fetch this server's session-signing key so cookies

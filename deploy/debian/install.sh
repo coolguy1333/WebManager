@@ -16,6 +16,7 @@ UPDATER_PATH=/etc/systemd/system/webmanager-update.path
 UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
 DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
 RESTORE_COMMAND=/usr/local/sbin/webmanager-restore
+PROMOTE_COMMAND=/usr/local/sbin/webmanager-promote
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
@@ -127,6 +128,7 @@ for required in \
     deploy/debian/uninstall.sh \
     deploy/debian/doctor.sh \
     deploy/debian/restore.sh \
+    deploy/debian/promote.sh \
     deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
@@ -156,8 +158,11 @@ note() {
 # A new replica cannot start unless its primary answers with the shared
 # secret key, so find out now - before anything on this server is changed -
 # and say exactly what is wrong instead of leaving a service that crash-loops.
+PRIMARY_BASE_DOMAIN=
+PRIMARY_SCHEME=
+PRIMARY_INFO_FILE=$(mktemp)
 check_primary() {
-    python3 - "$REPLICA_OF" "$PEER_TOKEN" <<'PY'
+    python3 - "$REPLICA_OF" "$PEER_TOKEN" "$PRIMARY_INFO_FILE" <<'PY'
 import sys
 import urllib.error
 import urllib.request
@@ -170,6 +175,31 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def remember_primary_settings():
+    """Note the primary's site domain and scheme so this server matches it
+    without being asked. Older primaries don't offer this; that is fine."""
+    import json
+    import re
+
+    try:
+        info_request = urllib.request.Request(
+            url + "/mesh/join-info", headers={"Authorization": "Bearer " + token}
+        )
+        with urllib.request.build_opener(NoRedirect).open(info_request, timeout=10) as answer:
+            info = json.loads(answer.read(65536).decode("utf-8"))
+    except Exception:
+        return
+    domain = str(info.get("site_base_domain") or "").lower()
+    scheme = str(info.get("site_public_scheme") or "")
+    lines = []
+    if re.fullmatch(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", domain):
+        lines.append(f"PRIMARY_BASE_DOMAIN={domain}")
+    if scheme in {"http", "https"}:
+        lines.append(f"PRIMARY_SCHEME={scheme}")
+    with open(sys.argv[3], "w", encoding="ascii") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
 request = urllib.request.Request(
     url + "/mesh/secret-key", headers={"Authorization": "Bearer " + token}
 )
@@ -177,6 +207,7 @@ try:
     with urllib.request.build_opener(NoRedirect).open(request, timeout=10) as response:
         if response.status == 200 and response.read(4096).strip():
             print(f"The primary at {url} answered and accepted the token.")
+            remember_primary_settings()
             raise SystemExit(0)
     problem = "it answered, but not with a secret key"
 except urllib.error.HTTPError as exc:
@@ -209,10 +240,14 @@ if [[ $SELF_UPDATE -eq 0 && -n $REPLICA_OF && $SKIP_PRIMARY_CHECK -eq 0 ]]; then
     if command -v python3 >/dev/null 2>&1; then
         echo "[0/8] Checking that the primary is reachable"
         check_primary
+        PRIMARY_BASE_DOMAIN=$(sed -n 's/^PRIMARY_BASE_DOMAIN=//p' "$PRIMARY_INFO_FILE" | tail -n 1)
+        PRIMARY_SCHEME=$(sed -n 's/^PRIMARY_SCHEME=//p' "$PRIMARY_INFO_FILE" | tail -n 1)
     else
         echo "python3 is not installed yet; skipping the primary reachability check."
     fi
 fi
+
+rm -f "$PRIMARY_INFO_FILE"
 
 NEW_VENV=
 OLD_VENV=
@@ -433,6 +468,16 @@ if [[ -n $REPLICA_OF ]]; then
         exit 1
     fi
     set_env WEBMANAGER_REPLICA_OF "$REPLICA_OF"
+    # Joining (again) undoes an earlier "promote to primary" on this server.
+    rm -f "$DATA_DIR/promoted"
+    # A replica serves the primary's sites, so it uses the primary's site
+    # domain and http/https choice instead of asking for them.
+    if [[ -n $PRIMARY_BASE_DOMAIN ]]; then
+        set_env WEBMANAGER_SITE_BASE_DOMAIN "$PRIMARY_BASE_DOMAIN"
+    fi
+    if [[ -n $PRIMARY_SCHEME ]]; then
+        set_env WEBMANAGER_SITE_PUBLIC_SCHEME "$PRIMARY_SCHEME"
+    fi
 fi
 if [[ -n $PEERS ]]; then
     if [[ ! $PEERS =~ ^https?://[][A-Za-z0-9.:_/,-]+$ ]]; then
@@ -550,6 +595,13 @@ install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-update.path" "$UPDATER_P
 if ! install -o root -g root -m 0755 "$SCRIPT_DIR/uninstall.sh" "$UNINSTALL_COMMAND"; then
     if [[ $SELF_UPDATE -eq 1 ]]; then
         echo "The existing updater sandbox deferred $UNINSTALL_COMMAND until the next update."
+    else
+        exit 1
+    fi
+fi
+if ! install -o root -g root -m 0755 "$SCRIPT_DIR/promote.sh" "$PROMOTE_COMMAND"; then
+    if [[ $SELF_UPDATE -eq 1 ]]; then
+        echo "The existing updater sandbox deferred $PROMOTE_COMMAND until the next update."
     else
         exit 1
     fi
@@ -698,7 +750,9 @@ if [[ -n $DASHBOARD_HOST ]]; then
     rm -f "$DASHBOARD_NGINX_TEMP"
 fi
 ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
-if [[ -n $SITE_BASE_DOMAIN || -n $DASHBOARD_HOST ]]; then
+# A replica always gets the site gateway: its sites come from the primary and
+# are reached by hostname whether or not a domain is written in its settings.
+if [[ -n $SITE_BASE_DOMAIN || -n $DASHBOARD_HOST || -n $(env_value WEBMANAGER_REPLICA_OF) ]]; then
     SITE_NGINX_TEMP=$(mktemp)
     sed \
         -e "s|@SITE_GATEWAY_PORT@|$SITE_GATEWAY_PORT|g" \
@@ -922,11 +976,18 @@ echo "============================================================"
 echo
 echo "Open: http://$SERVER_IP:8080"
 echo
-echo "Then:"
-echo "  1. Configure Google sign-in if setup prompts you."
-echo "  2. Sign in with Google."
-echo "  3. Paste a Git repository URL."
-echo "  4. Choose the folder containing index.html and deploy."
+JOINED_PRIMARY=$(env_value WEBMANAGER_REPLICA_OF)
+if [[ -n $JOINED_PRIMARY && ! -e $DATA_DIR/promoted ]]; then
+    echo "This server is a replica of $JOINED_PRIMARY: it copies that server's"
+    echo "sites, people and settings and serves the same sites. Changes made here"
+    echo "are sent to the primary. Sign in with \"Sign in through the primary\"."
+else
+    echo "Then:"
+    echo "  1. Configure Google sign-in if setup prompts you."
+    echo "  2. Sign in with Google."
+    echo "  3. Paste a Git repository URL."
+    echo "  4. Choose the folder containing index.html and deploy."
+fi
 echo
 if [[ -n $SITE_BASE_DOMAIN ]]; then
     echo "Deployed sites: <site-name>.$SITE_BASE_DOMAIN"

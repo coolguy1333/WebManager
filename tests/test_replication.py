@@ -7,8 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from webmanager import create_app, peer_http, replication
+from webmanager.db import get_db
 
 from tests import test_app as base
 
@@ -112,6 +114,36 @@ class ReplicationManagerUnitTests(unittest.TestCase):
 
     def manager(self, primary_url="https://primary.example", token="s3cret-s3cret-s3cret"):
         return replication.ReplicationManager(self.app, primary_url, token)
+
+    def test_a_sync_that_changes_what_is_served_is_applied_straight_away(self):
+        def database_with(status):
+            path = Path(self.temp_directory.name) / f"{status}.sqlite3"
+            path.unlink(missing_ok=True)
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);"
+                "CREATE TABLE domains (id INTEGER PRIMARY KEY);"
+                "CREATE TABLE site_domain_aliases (site_id INTEGER, domain_id INTEGER);"
+                "CREATE TABLE sites (id INTEGER PRIMARY KEY, kind TEXT, status TEXT, slug TEXT, port INTEGER,"
+                " document_root TEXT, index_file TEXT, nginx_config TEXT, domain_id INTEGER);"
+            )
+            connection.execute("INSERT INTO sites (id, kind, status, slug) VALUES (1, 'static', ?, 'demo')", (status,))
+            connection.commit()
+            connection.close()
+            return path.read_bytes()
+
+        manager = self.manager()
+        restore = self.app.extensions["runtime_manager"].restore_sites
+        for status, expected_calls in (("running", 1), ("running", 1), ("stopped", 2)):
+            snapshot = database_with(status)
+
+            def fake_pull(snapshot=snapshot):
+                self.database_path.write_bytes(snapshot)
+
+            with patch.object(manager, "_pull_db_snapshot", side_effect=fake_pull):
+                self.assertTrue(manager.sync_once())
+            self.assertEqual(restore.call_count, expected_calls, status)
+        restore.assert_called_with(include_apps=False)
 
     def test_is_replica_reflects_whether_a_primary_url_is_set(self):
         self.assertTrue(self.manager().is_replica)
@@ -327,7 +359,8 @@ class WriteForwardingTests(unittest.TestCase):
                 status=200,
                 headers=[("Content-Type", "application/json"), ("Set-Cookie", "example=1")],
             )
-            with patch.object(peer_http, "open_peer", return_value=primary_response) as urlopen:
+            snapshot = _FakeHTTPResponse(_valid_sqlite_bytes(), status=200)
+            with patch.object(peer_http, "open_peer", side_effect=[primary_response, snapshot]) as urlopen:
                 response = self.client.post(
                     "/admin/sources/check-all", data={"_csrf_token": self.csrf()}
                 )
@@ -335,12 +368,52 @@ class WriteForwardingTests(unittest.TestCase):
             self.assertEqual(response.data, b'{"ok": true}')
             self.assertEqual(response.headers.get("Set-Cookie"), "example=1")
             self.assertTrue(urlopen.called)
-            forwarded_request = urlopen.call_args[0][0]
+            forwarded_request = urlopen.call_args_list[0][0][0]
             self.assertEqual(forwarded_request.full_url, "https://primary.example/admin/sources/check-all")
             self.assertEqual(forwarded_request.get_method(), "POST")
+            # ...and then fetches the result, so the next page shows the change.
+            self.assertEqual(
+                urlopen.call_args_list[1][0][0].full_url, "https://primary.example/replication/db-snapshot"
+            )
         finally:
             manager.primary_url = ""
             manager.token = ""
+
+    def test_a_signed_in_session_does_not_overwrite_the_primarys_cookie(self):
+        # Signing in makes the session "permanent", which Flask re-sends on
+        # every response. On a forwarded change that second cookie replaced
+        # the primary's, so the "saved"/error message never showed on a replica.
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        try:
+            self.login_user(self.add_user("alice", is_admin=True))
+            with self.client.session_transaction() as session:
+                session.permanent = True
+                session["_csrf_token"] = "test-csrf"
+            primary_response = _FakeHTTPResponse(
+                b"", status=303,
+                headers=[("Location", "/"), ("Set-Cookie", "session=from-the-primary; Secure; HttpOnly; Path=/; Domain=primary.example")],
+            )
+            with patch.object(peer_http, "open_peer", return_value=primary_response):
+                response = self.client.post("/admin/limits", data={"_csrf_token": "test-csrf"})
+            cookies = response.headers.getlist("Set-Cookie")
+            self.assertEqual(len(cookies), 1, cookies)
+            self.assertTrue(cookies[0].startswith("session=from-the-primary"))
+            # ...and it is one a browser on this (plain http) server will keep.
+            self.assertNotIn("Secure", cookies[0])
+            self.assertNotIn("Domain", cookies[0])
+            self.assertIn("HttpOnly", cookies[0])
+        finally:
+            manager.primary_url = ""
+
+    def test_per_machine_actions_stay_on_the_replica(self):
+        from webmanager.replication import _LOCAL_ONLY_ENDPOINTS
+
+        for endpoint in (
+            "admin.set_program_auto_install", "admin.create_backup", "admin.enable_server_sharing",
+            "admin.add_server", "admin.remove_server", "admin.promote_replica",
+        ):
+            self.assertIn(endpoint, _LOCAL_ONLY_ENDPOINTS)
 
     def test_replica_does_not_forward_its_own_program_update_actions(self):
         # WebManager's self-update is a per-machine install; forwarding it
@@ -534,7 +607,8 @@ class PromoteToPrimaryTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"now the primary", response.data)
-        self.assertIn(b"WEBMANAGER_REPLICA_OF", response.data)
+        self.assertIn(b"stays the primary after restarts", response.data)
+        self.assertTrue(replication.promoted_marker(self.app).is_file())
         self.assertFalse(manager.is_replica)
         self.assertFalse(data_manager.is_replica)
         self.assertEqual(self.app.config["REPLICA_OF"], "")
@@ -723,6 +797,185 @@ class ReplicaStartupTests(unittest.TestCase):
             )
             self.assertTrue(app.extensions["replication_manager"].is_replica)
             self.assertEqual(app.extensions["replication_manager"].primary_url, "https://primary.example")
+
+    def test_a_promoted_replica_stays_primary_after_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = {
+                "TESTING": True,
+                "SECRET_KEY": "shared-secret",
+                "INSTANCE_PATH": str(root / "data"),
+                "DATABASE": str(root / "test.sqlite3"),
+                "REPOSITORY_ROOT": str(root / "repositories"),
+                "NGINX_ROOT": str(root / "nginx"),
+                "LOG_ROOT": str(root / "logs"),
+                "REPLICA_OF": "https://primary.example",
+                "MESH_TOKEN": "s3cret-s3cret-s3cret",
+            }
+            app = create_app(dict(settings))
+            self.assertTrue(app.extensions["replication_manager"].is_replica)
+            replication.promoted_marker(app).write_text("promoted\n", encoding="utf-8")
+
+            restarted = create_app(dict(settings))
+
+            self.assertFalse(restarted.extensions["replication_manager"].is_replica)
+            self.assertFalse(restarted.extensions["data_replication_manager"].is_replica)
+            self.assertEqual(restarted.config["REPLICA_OF"], "")
+            self.assertEqual(restarted.config["PROMOTED_FROM"], "https://primary.example")
+
+
+class SignInThroughThePrimaryTests(unittest.TestCase):
+    """A replica needs no Google setup of its own: its sign-in page sends
+    people to the primary, which vouches for them with a short-lived note."""
+
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown = base.WebManagerTestCase.tearDown
+    add_user = base.WebManagerTestCase.add_user
+    login_user = base.WebManagerTestCase.login_user
+
+    REPLICA = "https://replica.example"
+    PRIMARY = "https://primary.example"
+
+    def setUp(self):
+        self.setUp_base()
+        self.manager = self.app.extensions["replication_manager"]
+        self.hub = self.app.extensions["mesh_hub"]
+        self.addCleanup(setattr, self.manager, "primary_url", "")
+
+    def start_on_replica(self, client):
+        """The replica's half: returns (address the browser is sent to, state)."""
+        self.manager.primary_url = self.PRIMARY
+        response = client.get("/auth/via-primary?next=/admin/", base_url=self.REPLICA)
+        self.manager.primary_url = ""
+        self.assertEqual(response.status_code, 302)
+        location = response.headers["Location"]
+        self.assertTrue(location.startswith(f"{self.PRIMARY}/auth/handoff?"), location)
+        query = parse_qs(urlsplit(location).query)
+        self.assertEqual(query["return"], [self.REPLICA])
+        return location, query["state"][0]
+
+    def note_from_primary(self, location, user_id):
+        """The primary's half, in another browser session signed in there."""
+        self.hub.urls.append(self.REPLICA)
+        self.addCleanup(self.hub.urls.remove, self.REPLICA)
+        primary = self.app.test_client()
+        with primary.session_transaction(base_url=self.PRIMARY) as session:
+            session["user_id"] = user_id
+        parts = urlsplit(location)
+        response = primary.get(f"{parts.path}?{parts.query}", base_url=self.PRIMARY)
+        self.assertEqual(response.status_code, 302)
+        back = response.headers["Location"]
+        self.assertTrue(back.startswith(f"{self.REPLICA}/auth/handoff/complete?token="), back)
+        return back
+
+    def finish_on_replica(self, client, back):
+        self.manager.primary_url = self.PRIMARY
+        try:
+            parts = urlsplit(back)
+            return client.get(f"{parts.path}?{parts.query}", base_url=self.REPLICA)
+        finally:
+            self.manager.primary_url = ""
+
+    def test_the_replicas_sign_in_page_offers_the_primary(self):
+        self.manager.primary_url = self.PRIMARY
+        page = self.client.get("/auth/login").get_data(as_text=True)
+        self.assertIn("Sign in through the primary", page)
+        self.manager.primary_url = ""
+        self.assertNotIn("Sign in through the primary", self.client.get("/auth/login").get_data(as_text=True))
+
+    def test_signing_in_through_the_primary_signs_the_person_in_on_the_replica(self):
+        user_id = self.add_user("alice", is_admin=True)
+        location, _state = self.start_on_replica(self.client)
+        back = self.note_from_primary(location, user_id)
+
+        response = self.finish_on_replica(self.client, back)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/admin/"))
+        with self.client.session_transaction(base_url=self.REPLICA) as session:
+            self.assertEqual(session["user_id"], user_id)
+
+    def test_the_primary_asks_for_a_sign_in_first_and_comes_back_to_the_handoff(self):
+        location, _state = self.start_on_replica(self.client)
+        self.hub.urls.append(self.REPLICA)
+        self.addCleanup(self.hub.urls.remove, self.REPLICA)
+        parts = urlsplit(location)
+
+        response = self.app.test_client().get(f"{parts.path}?{parts.query}", base_url=self.PRIMARY)
+
+        self.assertEqual(response.status_code, 302)
+        target = urlsplit(response.headers["Location"])
+        self.assertEqual(target.path, "/auth/login")
+        self.assertTrue(parse_qs(target.query)["next"][0].startswith("/auth/handoff?"))
+
+    def test_the_primary_only_vouches_to_servers_on_its_list(self):
+        user_id = self.add_user("alice")
+        self.login_user(user_id)
+        for target in ("https://attacker.example", "javascript:alert(1)", ""):
+            response = self.client.get(
+                "/auth/handoff", query_string={"return": target, "state": "x" * 32}
+            )
+            self.assertEqual(response.status_code, 400, target)
+            self.assertNotIn("token=", response.headers.get("Location", ""))
+
+    def test_a_note_is_only_good_for_the_browser_that_asked_for_it(self):
+        user_id = self.add_user("alice")
+        location, _state = self.start_on_replica(self.client)
+        back = self.note_from_primary(location, user_id)
+
+        # Someone else's browser (no matching request in its session) can't use it...
+        stranger = self.app.test_client()
+        response = self.finish_on_replica(stranger, back)
+        self.assertTrue(response.headers["Location"].endswith("/auth/login"))
+        with stranger.session_transaction(base_url=self.REPLICA) as session:
+            self.assertNotIn("user_id", session)
+        # ...and neither can a changed one.
+        response = self.finish_on_replica(self.client, back[:-3] + "abc")
+        self.assertTrue(response.headers["Location"].endswith("/auth/login"))
+        with self.client.session_transaction(base_url=self.REPLICA) as session:
+            self.assertNotIn("user_id", session)
+
+    def test_a_suspended_account_is_not_signed_in(self):
+        user_id = self.add_user("alice")
+        location, _state = self.start_on_replica(self.client)
+        back = self.note_from_primary(location, user_id)
+        with self.app.app_context():  # suspended before the note is used
+            database = get_db()
+            database.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
+            database.commit()
+
+        response = self.finish_on_replica(self.client, back)
+
+        self.assertTrue(response.headers["Location"].endswith("/auth/login"))
+        with self.client.session_transaction(base_url=self.REPLICA) as session:
+            self.assertNotIn("user_id", session)
+
+
+class JoinInfoTests(unittest.TestCase):
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown = base.WebManagerTestCase.tearDown
+
+    def setUp(self):
+        self.setUp_base()
+
+    def test_join_info_needs_the_peer_token_and_gives_what_a_new_replica_must_match(self):
+        from webmanager import mesh
+
+        hub = self.app.extensions["mesh_hub"]
+        self.assertEqual(self.client.get("/mesh/join-info").status_code, 401)  # no token set at all
+        hub.token = "s3cret-s3cret-s3cret"
+        hub._token_hash = mesh._hash_token(hub.token)
+        self.assertEqual(self.client.get("/mesh/join-info").status_code, 401)
+        self.assertEqual(
+            self.client.get("/mesh/join-info", headers={"Authorization": "Bearer wrong-wrong-wrong-wrong"}).status_code,
+            401,
+        )
+        response = self.client.get("/mesh/join-info", headers={"Authorization": "Bearer s3cret-s3cret-s3cret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"site_base_domain": "webmanager.example", "site_public_scheme": "https", "apps_enabled": False},
+        )
 
 
 if __name__ == "__main__":

@@ -503,12 +503,32 @@ class RuntimeManager:
                     self.start_app_async(site["id"])
                     continue
                 static_sites.append(site)
+            if not static_sites and not include_apps:
+                # A replica after a sync with nothing left running: if the last
+                # site was just stopped on the primary, stop serving it here
+                # too (its config would otherwise stay in place forever).
+                if self._serves_a_site_that_is_not_running(database):
+                    self.restore_gateway()
+                return
             static_sites = self._restore_static_sites_together(database, static_sites)
             for site in static_sites:
                 try:
                     self.start_site(site["id"])
                 except RuntimeErrorDetail:
                     continue
+
+    def _serves_a_site_that_is_not_running(self, database) -> bool:
+        if not self.nginx_binary:
+            return False
+        running = {
+            str(row["id"])
+            for row in database.execute("SELECT id FROM sites WHERE status = 'running'")
+        }
+        config_dir = Path(self.app.config["NGINX_ROOT"]) / "conf.d"
+        return any(
+            not path.name.endswith(".paused.conf") and path.name.split("-", 1)[0] not in running
+            for path in config_dir.glob("*.conf")
+        )
 
     def _restore_static_sites_together(self, database, sites):
         """With Nginx, bring every running static site back with ONE config

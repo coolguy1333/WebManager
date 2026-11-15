@@ -132,6 +132,12 @@ def create_app(test_config=None):
     if not app.config["MESH_TOKEN"]:
         # Sharing switched on from the System page (no settings file edit).
         app.config["MESH_TOKEN"] = mesh.load_saved_token(app)
+    if app.config["REPLICA_OF"] and replication.promoted_marker(app).exists():
+        # This replica was promoted to primary (System page or
+        # `sudo webmanager-promote`); that outlives restarts without anyone
+        # editing the settings file. Joining a primary again clears it.
+        app.config["PROMOTED_FROM"] = app.config["REPLICA_OF"]
+        app.config["REPLICA_OF"] = ""
 
     site_domain = str(app.config["SITE_BASE_DOMAIN"]).strip().lower().rstrip(".")
     if site_domain and not DOMAIN_RE.fullmatch(site_domain):

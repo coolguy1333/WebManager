@@ -774,6 +774,11 @@ repository details. See the in-app **Docs** page for the full reference.
    address**, and removed again (servers named in `WEBMANAGER_PEERS` are
    changed in that file instead).
 
+The command asks no questions: the new server takes its site domain from the
+primary and needs no Google setup of its own. To use its dashboard, open its
+address and choose **Sign in through the primary** — you sign in on the primary
+as usual and are sent straight back, signed in.
+
 The manual steps below do the same thing without the page.
 
 ### Setting up a new peer server with one command
@@ -810,9 +815,11 @@ https://other.example.com,...` instead, or as well, to only list servers to
 monitor). Before changing anything, setup checks that the primary answers with
 that token and tells you exactly what is wrong if it doesn't (wrong address,
 wrong token, primary not updated, firewall); `--skip-primary-check` installs
-anyway. Add the new server's Google sign-in redirect URI
-(`https://<its dashboard address>/auth/google/callback`) to your Google OAuth
-client.
+anyway. A replica needs no Google setup: its sign-in page has **Sign in
+through the primary**. (Only if you also want Google sign-in directly on it, run
+`bash configure-google.sh` there and add
+`https://<its dashboard address>/auth/google/callback` to your Google OAuth
+client.)
 
 ### Replication: turning peers into real replicas
 
@@ -827,7 +834,9 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
 - It mirrors the primary's **database** (users, teams, permissions, domains,
   site/app definitions) every 15 seconds, and its **site/app data** (Git
   checkouts, each app's own data volume) every 60 seconds — both a full
-  re-sync each round, not incremental.
+  re-sync each round, not incremental. A site started, stopped or changed
+  on the primary is served the same way on the replica within those 15
+  seconds, and a change made *through* the replica shows there at once.
 - It fetches the primary's `SECRET_KEY` once at startup, so a session
   works on every server in the group.
 - It never writes its own database: any write it receives (from someone
@@ -838,13 +847,21 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   (safe — stateless files). **Apps stay stopped** on a replica: running
   the same app against a volume that gets wiped and restored every sync
   round would corrupt it.
-- If the primary goes down, **Promote to primary** on a replica's System
-  page fails it over immediately (serving its own sites and apps from its
-  last-synced data) — but only in memory. Making that permanent still
-  needs `WEBMANAGER_REPLICA_OF` cleared on that server and a restart, and
-  if the old primary comes back on its own it has no way to know it's been
-  superseded, so point it at the new primary (or take it offline) to avoid
-  two servers both accepting writes.
+- If the primary goes down, the replica keeps serving its static sites.
+  Make it the new primary with **Promote to primary** on its System page,
+  or on the server itself (works even when you can't sign in):
+
+  ```bash
+  sudo webmanager-promote
+  ```
+
+  It then serves its sites and apps from its last-synced data, accepts
+  changes itself, and stays the primary after restarts.
+- The old primary can't know it has been replaced. When it comes back, join
+  it to the new primary as a replica (run the join command from the new
+  primary's **System → Servers** on it) or take it offline, so only one
+  server accepts changes. Joining a server again as a replica also undoes
+  an earlier promotion on it.
 
 Every server in the group is fully trusted: a replica holds the primary's
 secret key (so it can sign sessions and decrypt saved app variables) and a

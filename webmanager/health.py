@@ -173,6 +173,11 @@ def check_sign_in(inputs):
     problems, fixes = [], []
     redirect = inputs["google_redirect_uri"]
     if not inputs["google_configured"]:
+        if (inputs.get("replication") or {}).get("is_replica"):
+            return result(
+                "sign_in", title, OK,
+                "People sign in through the primary (the button on this server's sign-in page).",
+            )
         return result(
             "sign_in", title, FAIL, "Google sign-in isn't configured, so nobody new can sign in.",
             "Run bash configure-google.sh on the server.",

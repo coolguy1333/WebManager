@@ -45,6 +45,9 @@ class WebManagerTestCase(unittest.TestCase):
             {
                 "TESTING": True,
                 "SECRET_KEY": "test-secret",
+                # Each test gets its own data folder, so nothing one test
+                # leaves behind (a token, a marker file) reaches another.
+                "INSTANCE_PATH": str(root / "data"),
                 "DATABASE": str(root / "test.sqlite3"),
                 "REPOSITORY_ROOT": str(root / "repositories"),
                 "NGINX_ROOT": str(root / "nginx"),
@@ -3359,8 +3362,14 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("INSERT INTO domains (name, is_default)", setup)
         self.assertLess(
             setup.index("Initial deployment domain:"),
-            setup.index('bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"'),
+            setup.rindex('bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"'),
         )
+        # Joining a primary asks nothing: no domain, no Google setup.
+        self.assertIn("JOINING_AS_REPLICA=1", setup)
+        self.assertLess(setup.index("JOINING_AS_REPLICA -eq 1"), setup.index("Initial deployment domain:"))
+        self.assertIn("deploy/debian/promote.sh", installer)
+        self.assertIn("/mesh/join-info", installer)
+        self.assertIn('rm -f "$DATA_DIR/promoted"', installer)
         self.assertNotIn("Configure Google sign-in now?", setup)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"',
