@@ -113,6 +113,21 @@ class RestoreSitesTests(unittest.TestCase):
         self.assertEqual(sum(" -t" in call for call in calls), 1, calls)
         self.assertEqual(len(calls), 2, calls)  # one syntax test, one start/reload
 
+    def test_a_replica_stops_serving_the_last_site_once_the_primary_stopped_it(self):
+        self.make_sites(1)
+        runtime = self.app.extensions["runtime_manager"]
+        runtime.restore_sites(include_apps=False)
+        config_dir = Path(self.app.config["NGINX_ROOT"]) / "conf.d"
+        self.assertEqual([path.name for path in config_dir.glob("*.conf")], ["1-site0.conf"])
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET status = 'stopped'")  # arrives with a sync
+            database.commit()
+
+        runtime.restore_sites(include_apps=False)
+
+        self.assertEqual([path.name for path in config_dir.glob("*.conf")], ["1-site0.paused.conf"])
+
     def test_a_site_with_an_unsafe_config_is_marked_failed_without_stopping_the_rest(self):
         ids = self.make_sites(3)
         with self.app.app_context():
@@ -156,6 +171,22 @@ class RestoreSitesTests(unittest.TestCase):
         written = self.written_configs()["1-site0.conf"]
         self.assertIn("127.0.0.1:43099", written)  # this server's gateway
         self.assertNotIn("43050", written)
+
+    def test_a_running_site_whose_folder_vanished_gets_the_unavailable_page(self):
+        ids = self.make_sites(2)
+        gone = Path(self.temp_directory.name) / "gone"
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET document_root = ? WHERE id = ?", (str(gone), ids[1]))
+            database.commit()
+
+        self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+
+        configs = self.written_configs()
+        self.assertIn("1-site0.conf", configs)
+        self.assertNotIn("2-site1.conf", configs, "nginx would answer 500 for a missing root")
+        self.assertIn("return 503", configs["2-site1.paused.conf"])
+        self.assertIn("site1.webmanager.example", configs["2-site1.paused.conf"])
 
     def test_stopped_sites_are_left_alone(self):
         self.make_sites(2, status="stopped")

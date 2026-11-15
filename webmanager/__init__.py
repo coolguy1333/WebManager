@@ -7,7 +7,10 @@ from pathlib import Path
 from flask import Flask, render_template, request, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, auth, data_replication, db, deployments, domains, mesh, replication
+from . import (
+    activity, admin, auth, backups, data_replication, db, deployments, domains, hooks, mesh,
+    notifications, replication, watchdog,
+)
 from .data_replication import DataReplicationManager
 from .repository_refresh import RepositoryRefreshManager
 from .replication import ReplicationError, ReplicationManager
@@ -109,6 +112,10 @@ def create_app(test_config=None):
             "WEBMANAGER_PROGRAM_UPDATE_CHECK_REQUEST_FILE",
             "/var/lib/webmanager-updater/requests/check",
         ),
+        BACKUPS_ENABLED=_env_flag("WEBMANAGER_BACKUPS_ENABLED", "1"),
+        BACKUP_KEEP=int(os.environ.get("WEBMANAGER_BACKUP_KEEP", "14")),
+        WATCHDOG_ENABLED=_env_flag("WEBMANAGER_WATCHDOG_ENABLED", "1"),
+        SETTINGS_FILE=os.environ.get("WEBMANAGER_SETTINGS_FILE", "/etc/webmanager/webmanager.env"),
         # Blank: next to the install-request file, where the updater looks.
         PROGRAM_UPDATE_AUTO_FILE=os.environ.get(
             "WEBMANAGER_PROGRAM_UPDATE_AUTO_FILE", ""
@@ -125,6 +132,12 @@ def create_app(test_config=None):
     if not app.config["MESH_TOKEN"]:
         # Sharing switched on from the System page (no settings file edit).
         app.config["MESH_TOKEN"] = mesh.load_saved_token(app)
+    if app.config["REPLICA_OF"] and replication.promoted_marker(app).exists():
+        # This replica was promoted to primary (System page or
+        # `sudo webmanager-promote`); that outlives restarts without anyone
+        # editing the settings file. Joining a primary again clears it.
+        app.config["PROMOTED_FROM"] = app.config["REPLICA_OF"]
+        app.config["REPLICA_OF"] = ""
 
     site_domain = str(app.config["SITE_BASE_DOMAIN"]).strip().lower().rstrip(".")
     if site_domain and not DOMAIN_RE.fullmatch(site_domain):
@@ -192,6 +205,8 @@ def create_app(test_config=None):
     app.register_blueprint(deployments.bp)
     app.register_blueprint(admin.bp)
     app.register_blueprint(mesh.bp)
+    app.register_blueprint(hooks.bp)
+    activity.register(app)
     app.register_blueprint(replication.bp)
     app.register_blueprint(data_replication.bp)
     replication_manager = ReplicationManager(app, app.config["REPLICA_OF"], app.config["MESH_TOKEN"])
@@ -315,6 +330,9 @@ def create_app(test_config=None):
                 url for url in peer_urls
                 if url == replica_of or urlsplit(url).hostname != self_host
             ]
+    app.extensions["notifier"] = notifications.Notifier(app)
+    app.extensions["backup_scheduler"] = backups.BackupScheduler(app)
+    app.extensions["watchdog"] = watchdog.Watchdog(app)
     mesh_hub = mesh.MeshHub(app, peer_urls, app.config["MESH_TOKEN"])
     for saved_url in mesh.load_saved_peers(app):
         # Servers added on the System page or that registered themselves.
@@ -353,6 +371,19 @@ def create_app(test_config=None):
                     "WEBMANAGER_PEER_TOKEN to restrict it to your own servers."
                 )
         mesh_hub.start()  # also lets servers added later be polled straight away
+        if app.config["BACKUPS_ENABLED"]:
+            app.extensions["backup_scheduler"].start()
+        if app.config["WATCHDOG_ENABLED"]:
+            app.extensions["watchdog"].start()
+        if not replication_manager.is_replica:
+            # After a restore on a new machine (or a lost disk) the checkouts
+            # are gone; clone them again without holding startup up.
+            import threading
+
+            threading.Thread(
+                target=backups.reclone_missing_sources, args=(app,),
+                name="webmanager-reclone", daemon=True,
+            ).start()
         from urllib.parse import urlsplit
 
         plain_http = [
@@ -454,6 +485,13 @@ def create_app(test_config=None):
             "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
         )
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        # Everything the pages use is served from here (no inline scripts or
+        # styles, no third-party assets), so nothing else is allowed to run.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'; form-action 'self'",
+        )
         if app.config["SESSION_COOKIE_SECURE"]:
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000"

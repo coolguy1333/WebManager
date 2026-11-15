@@ -52,6 +52,25 @@ if [[ $HAS_UPDATE_REPOSITORY -eq 0 ]] \
         --update-branch "$DEFAULT_UPDATE_BRANCH"
 fi
 
+# Joining another server as its replica: everything this server needs (sites,
+# domains, people) is copied from that primary, so there is nothing to ask.
+JOINING_AS_REPLICA=0
+for argument in "$@"; do
+    if [[ $argument == "--replica-of" ]]; then
+        JOINING_AS_REPLICA=1
+        break
+    fi
+done
+if [[ $JOINING_AS_REPLICA -eq 1 ]]; then
+    bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"
+    echo
+    echo "This server now mirrors its primary. Open its address above and choose"
+    echo "\"Sign in through the primary\": no Google setup is needed here."
+    echo "If the primary is ever lost, make this server the primary with:"
+    echo "  sudo webmanager-promote"
+    exit 0
+fi
+
 ENV_FILE=/etc/webmanager/webmanager.env
 SITE_BASE_DOMAIN=
 if [[ -r $ENV_FILE ]]; then

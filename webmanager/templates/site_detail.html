@@ -83,7 +83,7 @@
   <div class="stat">
     <span>Status</span>
     <strong>{{ site.status|capitalize }}</strong>
-    <small>Changed {{ ui.when(site.updated_at) }}</small>
+    <small>{% if uptime %}{{ "%g"|format(uptime.percent) }}% uptime over {{ uptime.days }} day{{ "" if uptime.days == 1 else "s" }}{% else %}Changed {{ ui.when(site.updated_at) }}{% endif %}</small>
   </div>
   <div class="stat">
     <span>Source updates</span>

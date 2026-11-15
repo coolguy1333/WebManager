@@ -1,13 +1,14 @@
 import re
 import secrets
 import sqlite3
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import click
 from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.flask_client import OAuth
-from flask import Blueprint, current_app, flash, g, redirect, render_template, request, session, url_for
+from flask import Blueprint, abort, current_app, flash, g, redirect, render_template, request, session, url_for
 
+from . import activity
 from .access_control import has_permission
 from .db import get_db
 from .domains import dashboard_hostnames
@@ -197,10 +198,12 @@ def inject_security_helpers():
 def login():
     if g.user is not None:
         return redirect(url_for("deployments.dashboard"))
+    manager = current_app.extensions.get("replication_manager")
     return render_template(
         "auth/login.html",
         title="Sign in",
         next_url=_safe_next(request.args.get("next")),
+        primary_url=manager.primary_url if manager is not None and manager.is_replica else None,
     )
 
 
@@ -285,6 +288,105 @@ def google_callback():
     destination = session.get("post_login_next") or url_for("deployments.dashboard")
     session.clear()
     session["user_id"] = user_id
+    session.permanent = True
+    activity.record_sign_in(current_app, user_id)
+    return redirect(destination)
+
+
+# ---------------------------------------------------------------------------
+# Signing in on a replica through its primary
+#
+# Google only sends people back to addresses registered with it, which is the
+# primary's. So a replica needs no Google setup of its own: it sends the
+# browser to the primary, the primary signs the person in as usual and sends
+# them back with a short-lived note signed with the key both servers share.
+# ---------------------------------------------------------------------------
+HANDOFF_SALT = "webmanager-sign-in-through-primary"
+HANDOFF_SECONDS = 120
+HANDOFF_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{20,100}$")
+
+
+def _handoff_signer():
+    from itsdangerous import URLSafeTimedSerializer
+
+    return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt=HANDOFF_SALT)
+
+
+@bp.get("/via-primary")
+def via_primary():
+    """On a replica: start signing in through the primary."""
+    if g.user is not None:
+        return redirect(url_for("deployments.dashboard"))
+    manager = current_app.extensions["replication_manager"]
+    if not manager.is_replica:
+        return redirect(url_for("auth.login"))
+    state = secrets.token_urlsafe(24)
+    own_address = request.host_url.rstrip("/")
+    session["handoff_state"] = state
+    session["handoff_address"] = own_address
+    session["post_login_next"] = _safe_next(request.args.get("next"))
+    return redirect(
+        f"{manager.primary_url}/auth/handoff?" + urlencode({"return": own_address, "state": state})
+    )
+
+
+@bp.get("/handoff")
+def handoff():
+    """On the primary: sign the person in here, then send them back to the
+    server they came from, which must be one this server already lists."""
+    from .mesh import normalize_peer_url
+
+    target = normalize_peer_url(request.args.get("return", ""))
+    state = request.args.get("state", "")
+    if target is None or not HANDOFF_STATE_RE.fullmatch(state):
+        abort(400, "This sign-in link is not valid. Start again from the other server.")
+    if target not in current_app.extensions["mesh_hub"].urls:
+        abort(
+            400,
+            f"{target} is not in this server's list of servers, so it can't sign people in there. "
+            "Add it under System → Servers (Add by address), then try again.",
+        )
+    if g.user is None:
+        return redirect(url_for("auth.login", next=request.full_path.rstrip("?")))
+    token = _handoff_signer().dumps({"user": g.user["id"], "for": target, "state": state})
+    return redirect(f"{target}/auth/handoff/complete?" + urlencode({"token": token}))
+
+
+@bp.get("/handoff/complete")
+def handoff_complete():
+    """Back on the replica: check the primary's note and sign the person in."""
+    from itsdangerous import BadData
+
+    expected_state = session.pop("handoff_state", None)
+    expected_address = session.pop("handoff_address", None)
+    destination = session.pop("post_login_next", None) or url_for("deployments.dashboard")
+    try:
+        note = _handoff_signer().loads(request.args.get("token", ""), max_age=HANDOFF_SECONDS)
+        valid = (
+            isinstance(note, dict)
+            and expected_state is not None
+            and secrets.compare_digest(str(note.get("state", "")), expected_state)
+            and note.get("for") == expected_address
+        )
+    except BadData:
+        valid = False
+    user = None
+    if valid:
+        user = get_db().execute(
+            "SELECT id, is_active FROM users WHERE id = ?", (note.get("user"),)
+        ).fetchone()
+        if user is None:
+            # Signed in on the primary moments ago for the first time: the
+            # copy of its database here may not have the account yet.
+            current_app.extensions["replication_manager"].sync_once()
+            user = get_db().execute(
+                "SELECT id, is_active FROM users WHERE id = ?", (note.get("user"),)
+            ).fetchone()
+    if user is None or not user["is_active"]:
+        flash("Signing in through the primary didn't work. Please try again.", "error")
+        return redirect(url_for("auth.login"))
+    session.clear()
+    session["user_id"] = user["id"]
     session.permanent = True
     return redirect(destination)
 

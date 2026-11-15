@@ -16,6 +16,7 @@
       {% if apps_enabled %}<li><a href="#app-hosting">App hosting</a></li>
       <li><a href="#manifest">webmanager.json reference</a></li>{% endif %}
       <li><a href="#updates">Git sources &amp; updates</a></li>
+      <li><a href="#production">Backups, alerts &amp; deploy hooks</a></li>
       <li><a href="#mesh">Multi-server mesh</a></li>
       <li><a href="#troubleshooting">Troubleshooting</a></li>
     </ul>
@@ -153,6 +154,19 @@
   </div>
 </section>
 
+<section class="card mb-16" id="production">
+  <div class="card-body prose">
+    <h2>Backups, alerts &amp; deploy hooks</h2>
+    <ul>
+      <li><strong>Deploy on push.</strong> Under <em>Sources</em>, open a source's <em>Deploy hook</em> and create one. Add the address as a webhook on GitHub or GitLab (or <code>curl -X POST</code> it from CI) and WebManager checks that source the moment you push. Whether the update installs by itself or waits for approval still follows the source's own setting.</li>
+      <li><strong>Uptime.</strong> WebManager checks every running site once a minute. Each site's page shows its uptime; an app that stops answering is started again, and so is the web server in front of the sites.</li>
+      <li><strong>Notifications</strong> (administrators, <em>System → Notifications</em>). Paste a Discord, Slack or other webhook address to be told when a site goes down or comes back, an update fails or is waiting, a backup fails, or the disk is nearly full.</li>
+      <li><strong>Backups</strong> (administrators, <em>System → Backups</em>). One is made every day; download one now and then and keep it elsewhere. Restore on the server with <code>sudo webmanager-restore FILE</code>; sites are cloned again from their Git sources by themselves.</li>
+      <li><strong>Activity</strong> (administrators). Every change, who made it and how it went, plus what WebManager did by itself.</li>
+    </ul>
+  </div>
+</section>
+
 <section class="card mb-16" id="mesh">
   <div class="card-body prose">
     <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}{% if replica_configured %} <span class="badge badge-accent">This server is a replica</span>{% endif %}</h2>
@@ -190,7 +204,7 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
     <pre><code>WEBMANAGER_REPLICA_OF=https://primary.example.com</code></pre>
     <p>Leave it blank for a primary (the default — a standalone server is its own primary). On a replica:</p>
     <ul>
-      <li><strong>Config</strong> (users, teams, permissions, domains, site/app definitions) mirrors the primary's database every 15 seconds, in full each time.</li>
+      <li><strong>Config</strong> (users, teams, permissions, domains, site/app definitions) mirrors the primary's database every 15 seconds, in full each time. A site started, stopped or changed on the primary is served the same way here within that time; a change made through the replica shows here at once.</li>
       <li><strong>Site/app data</strong> (Git checkouts, each app's own data volume) mirrors every 60 seconds, also in full each time — there's no incremental sync, so this is heavier the more data there is.</li>
       <li>It fetches the primary's <code>SECRET_KEY</code> once, automatically, at startup (over the same token-authenticated channel) so a session works on every server in the group.</li>
       <li><strong>It never writes its own database.</strong> A write it receives — from someone using its own address — is silently forwarded to the primary and the response relayed back, so every function works the same regardless of which server you're on. Reads are always served locally.</li>
@@ -198,11 +212,15 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
     </ul>
     <p class="hint"><strong>Trust:</strong> every server in the group is fully trusted. A replica holds the primary's secret key (so it can sign sessions and decrypt saved app variables) and a complete copy of its database — only add servers you would give admin access. App data volumes are copied while the app runs, so a database that is mid-write at that instant is captured mid-write (SQLite and Postgres recover on start); a replica is not a point-in-time backup.</p>
     <p>The System page's <strong>Replication</strong> panel shows the role, last sync times for both config and data, and manual <strong>Sync config now</strong> / <strong>Sync data now</strong> buttons.</p>
+    <h4>Signing in on a replica</h4>
+    <p>A replica needs no Google setup of its own. Its sign-in page has <strong>Sign in through the primary</strong>: you sign in on the primary as usual and are sent straight back, signed in. (The primary only does this for servers in its Servers list.)</p>
     <h4>Failing over</h4>
-    <p>If the primary goes down, open a replica's System page and select <strong>Promote to primary</strong>. It immediately starts serving its own sites and apps from whatever it last synced, and starts its own scheduled Git update checks. This only changes the running process, in memory:</p>
+    <p>If the primary goes down, a replica keeps serving its static sites; changes can't be saved until there is a primary again. To make a replica the new primary, open its System page and select <strong>Promote to primary</strong>, or run this on the server itself (it works even when you can't sign in):</p>
+    <pre><code>sudo webmanager-promote</code></pre>
+    <p>It immediately serves its sites and apps from whatever it last synced, accepts changes itself, starts its own scheduled Git update checks, and stays the primary after restarts.</p>
     <ul>
-      <li>To make it permanent, remove <code>WEBMANAGER_REPLICA_OF</code> from that server's <code>webmanager.env</code> and restart WebManager — otherwise a restart reverts it to a replica.</li>
-      <li>WebManager has no way to reach the old primary to tell it it's been superseded. If it comes back online on its own, point it at the new primary (set its own <code>WEBMANAGER_REPLICA_OF</code>) or take it offline — otherwise two servers may both accept writes at once.</li>
+      <li>WebManager has no way to tell the old primary it has been replaced. When it comes back, join it to the new primary as a replica (run the join command from the new primary's <strong>System → Servers</strong> on it) or take it offline — otherwise two servers accept changes at once.</li>
+      <li>Joining a server again as a replica undoes an earlier promotion on it.</li>
     </ul>
   </div>
 </section>
@@ -232,7 +250,7 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
         <tr><td>A replica won't start (fails at boot)</td><td>Its primary must be reachable the <em>first</em> time a replica starts, to fetch the shared secret key. Check <code>WEBMANAGER_REPLICA_OF</code> and <code>WEBMANAGER_PEER_TOKEN</code>, and that the primary's address is reachable from this server.</td></tr>
         <tr><td>Replication panel shows "Config sync failed" / "Data sync failed"</td><td>Read the error shown — usually the primary is unreachable, or its token doesn't match. Use <strong>Sync config/data now</strong> to retry immediately after fixing it.</td></tr>
         <tr><td>A replica's sites aren't updating</td><td>Check "Site/app data last synced" on the Replication panel; a large repository or app dataset can take a while each round. Use <strong>Sync data now</strong> to force an immediate retry.</td></tr>
-        <tr><td>Writes fail on a replica with a 502</td><td>Its primary is unreachable. Either restore the primary, or promote this replica if the primary is actually down for good.</td></tr>
+        <tr><td>Writes fail on a replica with a 502</td><td>Its primary is unreachable. Either restore the primary, or promote this replica (System page, or <code>sudo webmanager-promote</code> on the server) if the primary is actually down for good.</td></tr>
       </tbody>
     </table>
     {% if not can_host_apps and apps_enabled %}

@@ -17,6 +17,7 @@ from .access_control import (
     site_access_levels,
 )
 from . import app_limits
+from .watchdog import uptime_summary
 from .analytics import aggregate_analytics
 from .db import get_db
 from .domains import (
@@ -782,8 +783,12 @@ def inspect_repository():
             code=303,
         )
 
-    if not candidates:
-        flash("Repository cloned, but no index.html or index.htm file was found.", "warning")
+    if not candidates and not app_support.find_app_folders(target):
+        flash(
+            "Repository cloned, but it has no index.html (for a site) and no Dockerfile with "
+            "webmanager.json (for an app), so there is nothing to deploy yet.",
+            "warning",
+        )
     return redirect(url_for("deployments.select_folder", repository_id=repository_id))
 
 
@@ -854,6 +859,31 @@ def refresh_repository(repository_id):
     else:
         flash(f"Update check failed: {result.message}", "error")
     return action_redirect("deployments.dashboard", view="sources")
+
+
+@bp.post("/repositories/<int:repository_id>/hook")
+@login_required
+def repository_hook(repository_id):
+    """Create, replace or remove a source's deploy hook address."""
+    validate_csrf()
+    owned_repository(repository_id, manage=True)
+    database = get_db()
+    if request.form.get("action") == "remove":
+        database.execute("UPDATE repositories SET hook_token = NULL WHERE id = ?", (repository_id,))
+        flash("Deploy hook turned off. The old address no longer works.", "success")
+    else:
+        from .hooks import new_token
+
+        database.execute(
+            "UPDATE repositories SET hook_token = ? WHERE id = ?", (new_token(), repository_id)
+        )
+        flash("Deploy hook ready. Copy its address below and add it as a webhook where you push.", "success")
+    database.commit()
+    # Come back with this source (and its Deploy hook section) open.
+    return redirect(
+        url_for("deployments.dashboard", view="sources", hook=repository_id) + f"#source-{repository_id}",
+        code=303,
+    )
 
 
 @bp.post("/repositories/<int:repository_id>/updates/force")
@@ -1479,6 +1509,7 @@ def site_detail(site_id):
             else None
         ),
         app_manifest=manifest,
+        uptime=uptime_summary(database, site_id),
         app_limits=(
             app_limits.effective(
                 site, current_app.config, (manifest or {}).get("memory_mb")
@@ -1874,13 +1905,13 @@ def start_site(site_id):
 @login_required
 def stop_site(site_id):
     validate_csrf()
-    owned_site(site_id, manage=True)
+    site = owned_site(site_id, manage=True)
     try:
         current_app.extensions["runtime_manager"].stop_site(site_id)
     except RuntimeErrorDetail as exc:
         flash(f"Could not stop site: {exc}", "error")
     else:
-        flash("Site stopped.", "success")
+        flash(f"{'App' if site['kind'] == 'app' else 'Site'} stopped.", "success")
     return action_redirect("deployments.site_detail", site_id=site_id)
 
 

@@ -856,3 +856,26 @@ document.querySelectorAll("[data-health]").forEach((panel) => {
   button.addEventListener("click", run);
   run();
 });
+
+// ---------- Copy buttons ----------
+document.querySelectorAll("[data-copy]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const source = button.closest(".copy-row, [data-copy-scope]")?.querySelector("[data-copy-source]");
+    if (!source) return;
+    const text = source.textContent.trim();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // No clipboard permission (plain http): select the text so Ctrl+C works.
+      const range = document.createRange();
+      range.selectNodeContents(source);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    const label = button.textContent;
+    button.textContent = "Copied";
+    window.setTimeout(() => { button.textContent = label; }, 1500);
+  });
+});

@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
 from . import db as database_module
 from . import peer_http
@@ -68,7 +68,20 @@ _LOCAL_ONLY_ENDPOINTS = {
     # admin it happened here.
     "admin.check_program_update",
     "admin.install_program_update",
+    "admin.set_program_auto_install",
+    # Also about this machine only: its own backups, and its own list of
+    # other servers and sharing token (files in its data folder).
+    "admin.create_backup",
+    "admin.test_notification",
+    "admin.enable_server_sharing",
+    "admin.add_server",
+    "admin.remove_server",
 }
+
+
+def promoted_marker(app) -> Path:
+    """Exists once a replica has been promoted to primary."""
+    return Path(app.config.get("MESH_STATE_DIR") or app.instance_path) / "promoted"
 
 bp = Blueprint("replication", __name__)
 
@@ -179,6 +192,7 @@ class ReplicationManager:
         self._thread = None
         self.last_sync_at = None
         self.last_error = None
+        self._sync_lock = threading.Lock()
 
     @property
     def is_replica(self) -> bool:
@@ -198,10 +212,9 @@ class ReplicationManager:
             thread.join(timeout=5)
 
     def promote(self):
-        """Stop mirroring and become a primary, in memory, right away. The
-        admin must also clear WEBMANAGER_REPLICA_OF and restart WebManager
-        for this to survive a restart - until then, a restart re-reads the
-        old config and this server goes back to being a replica."""
+        """Stop mirroring and become a primary, in memory, right away. What
+        makes that survive a restart is the "promoted" marker file (see
+        promoted_marker), written by the System page and webmanager-promote."""
         self.stop()
         self.primary_url = ""
         self._stop_event = threading.Event()
@@ -214,15 +227,47 @@ class ReplicationManager:
     def sync_once(self):
         """Pull and apply one database snapshot from the primary. Public so
         an admin action ("sync now") can trigger it on demand too."""
-        try:
-            self._pull_db_snapshot()
-        except (ReplicationError, OSError) as exc:
-            self.last_error = str(exc)
-            self.app.logger.warning("Replication: could not sync from primary: %s", exc)
-            return False
-        self.last_error = None
-        self.last_sync_at = time.time()
+        with self._sync_lock:
+            before = self._served_state()
+            try:
+                self._pull_db_snapshot()
+            except (ReplicationError, OSError) as exc:
+                self.last_error = str(exc)
+                self.app.logger.warning("Replication: could not sync from primary: %s", exc)
+                return False
+            self.last_error = None
+            self.last_sync_at = time.time()
+            after = self._served_state()
+        if after is not None and after != before:
+            # A site was started, stopped, renamed or re-addressed on the
+            # primary: serve it the same way here now, not at the next data sync.
+            try:
+                self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+            except Exception:  # noqa: BLE001 - the data sync round applies it again
+                self.app.logger.exception("Replication: could not apply the new site state")
         return True
+
+    def _served_state(self):
+        """Everything in the database that decides which sites this server
+        serves and how, or None if it can't be read (no database yet)."""
+        try:
+            connection = sqlite3.connect(
+                f"file:{self.app.config['DATABASE']}?mode=ro", uri=True, timeout=5
+            )
+            try:
+                return [
+                    connection.execute(query).fetchall()
+                    for query in (
+                        "SELECT id, kind, status, slug, port, document_root, index_file, "
+                        "nginx_config, domain_id FROM sites ORDER BY id",
+                        "SELECT * FROM domains ORDER BY id",
+                        "SELECT * FROM site_domain_aliases ORDER BY site_id, domain_id",
+                    )
+                ]
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return None
 
     def _pull_db_snapshot(self):
         database_path = Path(self.app.config["DATABASE"])
@@ -308,10 +353,26 @@ class ReplicationManager:
             return jsonify({"error": detail}), 502
         relayed = Response(body, status=status)
         for key, value in response_headers:
-            if key.lower() in _DO_NOT_FORWARD_RESPONSE_HEADERS:
+            lowered = key.lower()
+            if lowered in _DO_NOT_FORWARD_RESPONSE_HEADERS:
                 continue
+            if lowered == "set-cookie":
+                value = _cookie_for_this_server(value, self.app.config.get("SESSION_COOKIE_SECURE"))
             relayed.headers.add(key, value)
         return relayed
+
+
+def _cookie_for_this_server(header: str, secure_here) -> str:
+    """A cookie set by the primary, adjusted so a browser talking to *this*
+    server keeps it: no Domain (it was the primary's), and no Secure flag when
+    this server is reached over plain http (a LAN replica of an https primary)."""
+    kept = []
+    for index, part in enumerate(header.split(";")):
+        name = part.strip().split("=", 1)[0].lower()
+        if index and (name == "domain" or (name == "secure" and not secure_here)):
+            continue
+        kept.append(part)
+    return ";".join(kept)
 
 
 def register_write_forwarding(app):
@@ -330,7 +391,21 @@ def register_write_forwarding(app):
             return None
         if request.endpoint == "static" or request.endpoint in _LOCAL_ONLY_ENDPOINTS:
             return None
-        return manager.forward_current_request()
+        response = manager.forward_current_request()
+        if getattr(response, "status_code", 502) < 400:
+            # Show the result straight away: the page this request leads to
+            # is read from this server's copy of the database.
+            try:
+                manager.sync_once()
+            except Exception:  # noqa: BLE001 - the change itself was saved; the next round catches up
+                app.logger.exception("Replication: could not sync right after a forwarded change")
+        # The primary's answer carries the session cookie (with the "saved"
+        # or error message to show next). This server must not write its own
+        # copy of the session on top of it, which a signed-in ("permanent")
+        # session otherwise does on every response.
+        session.permanent = False
+        session.modified = False
+        return response
 
 
 @bp.post("/replication/find-or-create-user")

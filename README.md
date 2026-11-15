@@ -152,6 +152,12 @@ Everything below is optional reference material for custom networking, private r
 - Immediate start, stop, restart, update, and delete controls
 - Validated site updates with owner approval or automatic application
 - GitHub update checks with super-admin-approved installation
+- Automatic daily backups with one-click download and a `webmanager-restore` command
+- Watchdog that restarts a dead site web server, brings back an app that stops answering, and tracks each site's uptime
+- Notifications to a Discord, Slack or any webhook (site down or back, failed or waiting updates, failed backup, full disk)
+- Activity log of every change (who, what, the outcome) and of what WebManager did by itself
+- Deploy hooks: a secret per-source address that deploys the moment you push
+- Health checks on the System page and a `webmanager-doctor` command that say what is wrong and how to fix it
 - Debian systemd service
 - Waitress application server
 - Nginx reverse proxy for the dashboard
@@ -768,6 +774,11 @@ repository details. See the in-app **Docs** page for the full reference.
    address**, and removed again (servers named in `WEBMANAGER_PEERS` are
    changed in that file instead).
 
+The command asks no questions: the new server takes its site domain from the
+primary and needs no Google setup of its own. To use its dashboard, open its
+address and choose **Sign in through the primary** — you sign in on the primary
+as usual and are sent straight back, signed in.
+
 The manual steps below do the same thing without the page.
 
 ### Setting up a new peer server with one command
@@ -804,9 +815,11 @@ https://other.example.com,...` instead, or as well, to only list servers to
 monitor). Before changing anything, setup checks that the primary answers with
 that token and tells you exactly what is wrong if it doesn't (wrong address,
 wrong token, primary not updated, firewall); `--skip-primary-check` installs
-anyway. Add the new server's Google sign-in redirect URI
-(`https://<its dashboard address>/auth/google/callback`) to your Google OAuth
-client.
+anyway. A replica needs no Google setup: its sign-in page has **Sign in
+through the primary**. (Only if you also want Google sign-in directly on it, run
+`bash configure-google.sh` there and add
+`https://<its dashboard address>/auth/google/callback` to your Google OAuth
+client.)
 
 ### Replication: turning peers into real replicas
 
@@ -821,7 +834,9 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
 - It mirrors the primary's **database** (users, teams, permissions, domains,
   site/app definitions) every 15 seconds, and its **site/app data** (Git
   checkouts, each app's own data volume) every 60 seconds — both a full
-  re-sync each round, not incremental.
+  re-sync each round, not incremental. A site started, stopped or changed
+  on the primary is served the same way on the replica within those 15
+  seconds, and a change made *through* the replica shows there at once.
 - It fetches the primary's `SECRET_KEY` once at startup, so a session
   works on every server in the group.
 - It never writes its own database: any write it receives (from someone
@@ -832,13 +847,21 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   (safe — stateless files). **Apps stay stopped** on a replica: running
   the same app against a volume that gets wiped and restored every sync
   round would corrupt it.
-- If the primary goes down, **Promote to primary** on a replica's System
-  page fails it over immediately (serving its own sites and apps from its
-  last-synced data) — but only in memory. Making that permanent still
-  needs `WEBMANAGER_REPLICA_OF` cleared on that server and a restart, and
-  if the old primary comes back on its own it has no way to know it's been
-  superseded, so point it at the new primary (or take it offline) to avoid
-  two servers both accepting writes.
+- If the primary goes down, the replica keeps serving its static sites.
+  Make it the new primary with **Promote to primary** on its System page,
+  or on the server itself (works even when you can't sign in):
+
+  ```bash
+  sudo webmanager-promote
+  ```
+
+  It then serves its sites and apps from its last-synced data, accepts
+  changes itself, and stays the primary after restarts.
+- The old primary can't know it has been replaced. When it comes back, join
+  it to the new primary as a replica (run the join command from the new
+  primary's **System → Servers** on it) or take it offline, so only one
+  server accepts changes. Joining a server again as a replica also undoes
+  an earlier promotion on it.
 
 Every server in the group is fully trusted: a replica holds the primary's
 secret key (so it can sign sessions and decrypt saved app variables) and a
@@ -1204,6 +1227,9 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_APP_MAX_MEMORY_MB` | `4096` | The most memory an app's owner may give one app on its Resources page (super admins can go up to the machine's memory) |
 | `WEBMANAGER_APP_MAX_CPUS` | `2` | The most CPU cores an app's owner may give one app (super admins can go up to the machine's cores) |
 | `WEBMANAGER_APP_START_TIMEOUT` | `60` | Seconds an app has to pass its health check |
+| `WEBMANAGER_BACKUPS_ENABLED` | `1` | Make a backup every day (System → Backups) |
+| `WEBMANAGER_BACKUP_KEEP` | `14` | How many backups to keep |
+| `WEBMANAGER_WATCHDOG_ENABLED` | `1` | Check the hosting every minute, restart what died, track uptime |
 | `WEBMANAGER_DEBUG` | `0` | Flask debugging; keep disabled in production |
 
 The updater's handoff files can be moved with
@@ -1556,78 +1582,87 @@ Fallback static-server logs, if Nginx is unavailable:
 
 ## Backup and restore
 
-The data directory contains:
+### Automatic backups (recommended)
 
-- Google account identifiers and profile details
-- Repository records
-- Cloned repositories
-- Site records and assigned ports
-- Edited Nginx configurations
-- Application secret
-- Runtime logs
+WebManager makes a backup every day and keeps the newest 14
+(`WEBMANAGER_BACKUP_KEEP`), in `/var/lib/webmanager/backups`. **System →
+Backups** lists them, makes one on demand (**Back up now**) and lets a super
+admin **download** one. Each is a small `.tar.gz` holding:
 
-Store backups securely.
+- the database (people, teams, sites, sources, domains, encrypted app variables),
+- the keys that protect it (`secret.key`, the server-sharing token),
+- this server's settings file (`/etc/webmanager/webmanager.env`).
 
-App data (for [app hosting](docs/APP_HOSTING.md)) lives in Docker volumes
-named `webmanager-app-<id>-data`, not in `/var/lib/webmanager`. The backup
-below includes the automatic copies in `app-backups/`; see
-[APP_HOSTING.md § Operations](docs/APP_HOSTING.md#7-operations) for a current
-copy of each volume.
+It contains secrets, so treat a downloaded backup like a password. Backups
+stay on the server unless you download them: copy one somewhere else now and
+then, or the disk that fails takes them with it.
 
-### Create a backup
+Not included, on purpose: Git checkouts (they are cloned again from their
+repositories) and app container data (Docker volumes
+`webmanager-app-<id>-data`; see
+[APP_HOSTING.md § Operations](docs/APP_HOSTING.md#7-operations)).
 
-Stop WebManager for a consistent SQLite and repository snapshot:
+### Restore
+
+On the server (install WebManager first with `bash setup.sh` if it is a new
+machine), copy the backup over and run:
+
+```bash
+sudo webmanager-restore webmanager-20260101-020000-daily.tar.gz
+```
+
+It stops WebManager, checks the backup, puts the database and keys back,
+keeps the database it replaced as `webmanager.sqlite3.before-restore`, and
+starts WebManager again. Sources whose checkouts are missing are cloned again
+automatically and their sites come back by themselves. A backup from another
+machine works: paths are adjusted to this server.
+
+Add `--with-settings` to also replace `/etc/webmanager/webmanager.env` with
+the one in the backup (use it when rebuilding a server from nothing; the old
+file is kept as `webmanager.env.before-restore`).
+
+Turn automatic backups off with `WEBMANAGER_BACKUPS_ENABLED=0`.
+
+### Full copy of the data folder
+
+For a byte-for-byte copy including checkouts and logs, stop WebManager and
+archive the folder:
 
 ```bash
 sudo systemctl stop webmanager
-sudo tar \
-  -C /var/lib \
-  -czf /root/webmanager-backup-$(date +%F).tar.gz \
-  webmanager
+sudo tar -C /var/lib -czf /root/webmanager-full-$(date +%F).tar.gz webmanager
 sudo systemctl start webmanager
 ```
 
-Verify the archive:
+To restore it: stop WebManager, move `/var/lib/webmanager` aside, extract the
+archive into `/var/lib`, run `sudo chown -R webmanager:webmanager
+/var/lib/webmanager`, and start WebManager.
 
-```bash
-sudo tar -tzf /root/webmanager-backup-$(date +%F).tar.gz | head
-```
+## Keeping it running
 
-### Restore a backup
+**Watchdog.** Once a minute WebManager checks that the web server in front of
+your sites is up (and starts it again if it has died), asks every running site
+for its home page, and after two misses in a row marks it down and, for an
+app, starts its container again. Each site's page shows its uptime from those
+checks. Turn it off with `WEBMANAGER_WATCHDOG_ENABLED=0`.
 
-Install WebManager first if it is not installed, then stop it:
+**Notifications.** Under **System → Notifications**, paste a webhook address
+and press **Send a test**. Discord and Slack webhook addresses work as they
+are; any other address receives JSON (`title`, `text`, `level`, `server`). You
+are told when a site goes down or comes back, the site web server had to be
+restarted, a source update failed or is waiting for approval, WebManager was
+updated or an update failed, a backup failed, or the disk is nearly full.
 
-```bash
-sudo systemctl stop webmanager
-```
+**Activity.** **Administration → Activity** lists every change made through
+the dashboard (who, what, and the message they were shown) and what WebManager
+did by itself, newest first, with search. The last 5000 entries are kept.
 
-Move the current data directory out of the way:
-
-```bash
-sudo mv /var/lib/webmanager /var/lib/webmanager.before-restore
-```
-
-Extract the backup:
-
-```bash
-sudo tar -C /var/lib -xzf /root/webmanager-backup-YYYY-MM-DD.tar.gz
-```
-
-Restore ownership:
-
-```bash
-sudo chown -R webmanager:webmanager /var/lib/webmanager
-sudo chmod 0750 /var/lib/webmanager
-```
-
-Start and verify:
-
-```bash
-sudo systemctl start webmanager
-curl http://127.0.0.1:5000/healthz
-```
-
-Keep `/var/lib/webmanager.before-restore` until the restored installation is confirmed.
+**Deploy hooks.** Sources are checked on a schedule. To deploy the moment you
+push, open the source under **Sources → Deploy hook → Create deploy hook** and
+add the address it shows as a webhook on GitHub/GitLab (or `curl -X POST` it
+from CI). The address is a secret; **New address** replaces it. A call only
+means "check now": the source's own setting still decides whether the update
+installs automatically or waits for approval.
 
 ## Upgrade
 

@@ -985,3 +985,17 @@ fieldset.field legend { margin-bottom: 6px; }
 .health-symbol { flex: none; width: 1.25rem; font-weight: 700; text-align: center; }
 .health-fix { margin-top: 4px; }
 .health-fix code { white-space: pre-wrap; word-break: break-word; }
+
+/* A value with a Copy button next to it */
+.copy-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.copy-row code { flex: 1 1 240px; min-width: 0; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
+
+/* Quick links at the top of a long page */
+.jump-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.9rem; }
+.jump-links a { text-decoration: none; }
+.jump-links a:hover { text-decoration: underline; }
+.activity-list .list-row, .activity-list .list-head { grid-template-columns: 140px 180px 1fr; }
+@media (max-width: 720px) { .activity-list .list-row { grid-template-columns: 1fr; } .activity-list .list-head { display: none; } }
+.backup-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; }
+@media (max-width: 720px) { .backup-list .list-row { grid-template-columns: 1fr; } }
+.btn-block { display: flex; width: 100%; justify-content: center; }

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import (
+    send_file,
     Blueprint,
     abort,
     current_app,
@@ -24,7 +25,7 @@ from .access_control import (
     has_permission,
     is_admin,
 )
-from .db import get_db
+from .db import get_db, get_setting, set_setting
 from .domains import (
     blocked_domain_names,
     dashboard_hostname,
@@ -35,7 +36,8 @@ from .domains import (
 )
 import secrets
 
-from . import app_limits, health, mesh, quotas, system_metrics
+from . import activity, app_limits, backups, health, mesh, notifications, quotas, system_metrics
+from .replication import promoted_marker
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -288,6 +290,14 @@ def dashboard():
         mesh_entries=(
             current_app.extensions["mesh_hub"].entries()
             if active_section == "updates"
+            else None
+        ),
+        backup_list=(backups.list_backups(current_app) if active_section == "updates" and super_admin else None),
+        backup_keep=current_app.config.get("BACKUP_KEEP", 14),
+        backups_enabled=bool(current_app.config.get("BACKUPS_ENABLED", True)),
+        notify_url=(
+            get_setting(database, notifications.SETTING, "")
+            if active_section == "updates" and super_admin
             else None
         ),
         mesh_token_configured=bool(current_app.config.get("MESH_TOKEN")),
@@ -1089,6 +1099,13 @@ def promote_replica():
         flash("This server is already a primary.", "error")
         return redirect(url_for("admin.dashboard", section="updates"))
 
+    try:
+        marker = promoted_marker(current_app)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"Promoted from replica of {manager.primary_url}\n", encoding="utf-8")
+        permanent = True
+    except OSError:
+        permanent = False
     manager.promote()
     data_manager.promote()
     current_app.config["REPLICA_OF"] = ""
@@ -1097,13 +1114,15 @@ def promote_replica():
         current_app.extensions["repository_refresh_manager"].start()
 
     flash(
-        "This server is now the primary and is serving its sites and apps. "
-        "To make this permanent, remove WEBMANAGER_REPLICA_OF from "
-        "/etc/webmanager/webmanager.env and restart WebManager - otherwise "
-        "it reverts to being a replica on the next restart. If the old "
-        "primary comes back online, point it at this server (set its own "
-        "WEBMANAGER_REPLICA_OF) or take it offline, so only one server "
-        "accepts writes.",
+        "This server is now the primary and is serving its sites and apps"
+        + (
+            ", and stays the primary after restarts. "
+            if permanent
+            else ". To keep it that way after a restart, remove WEBMANAGER_REPLICA_OF from "
+            "/etc/webmanager/webmanager.env. "
+        )
+        + "If the old primary comes back, take it offline or join it to this server as a "
+        "replica (System → Servers → Add a server), so only one server accepts changes.",
         "warning",
     )
     return redirect(url_for("admin.dashboard", section="updates"))
@@ -1188,6 +1207,96 @@ def system_metrics_json():
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _system_page(anchor=""):
+    return redirect(url_for("admin.dashboard", section="updates") + anchor)
+
+
+@bp.get("/activity")
+@login_required
+def activity_log():
+    """Who did what, newest first."""
+    if not is_admin():
+        abort(403)
+    query = request.args.get("q", "").strip()[:100]
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 100
+    rows, more = activity.recent(get_db(), per_page, (page - 1) * per_page, query)
+    return render_template(
+        "admin/activity.html", title="Activity", entries=rows, more=more, page=page, query=query,
+    )
+
+
+@bp.post("/backups")
+@login_required
+def create_backup():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        path = backups.create_backup(current_app, "manual")
+    except backups.BackupError as exc:
+        flash(str(exc), "error")
+    else:
+        flash(f"Backup {path.name} made. Download a copy and keep it somewhere else.", "success")
+    return _system_page("#backups")
+
+
+@bp.get("/backups/<name>")
+@login_required
+def download_backup(name):
+    if not is_admin():
+        abort(403)
+    path = backups.backup_path(current_app, name)
+    if path is None:
+        abort(404)
+    activity.record(get_db(), "Downloaded a backup", name, user=g.user, path=request.path)
+    response = send_file(path, as_attachment=True, download_name=name, mimetype="application/gzip")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.post("/notifications")
+@login_required
+def save_notifications():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        url = notifications.validate_url(request.form.get("webhook_url", ""))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _system_page("#notifications")
+    database = get_db()
+    set_setting(database, notifications.SETTING, url or None)
+    database.commit()
+    flash(
+        "Notifications are on. Press Send a test to check the address." if url
+        else "Notifications are off.",
+        "success",
+    )
+    return _system_page("#notifications")
+
+
+@bp.post("/notifications/test")
+@login_required
+def test_notification():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    url = get_setting(get_db(), notifications.SETTING, "")
+    if not url:
+        flash("Save a webhook address first.", "error")
+        return _system_page("#notifications")
+    delivered, outcome = notifications.deliver(
+        url, "Test from WebManager", "If you can read this, notifications work.", "ok"
+    )
+    flash(f"Test sent. {outcome}" if delivered else outcome, "success" if delivered else "error")
+    return _system_page("#notifications")
 
 
 @bp.get("/health.json")

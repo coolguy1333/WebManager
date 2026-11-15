@@ -45,6 +45,9 @@ class WebManagerTestCase(unittest.TestCase):
             {
                 "TESTING": True,
                 "SECRET_KEY": "test-secret",
+                # Each test gets its own data folder, so nothing one test
+                # leaves behind (a token, a marker file) reaches another.
+                "INSTANCE_PATH": str(root / "data"),
                 "DATABASE": str(root / "test.sqlite3"),
                 "REPOSITORY_ROOT": str(root / "repositories"),
                 "NGINX_ROOT": str(root / "nginx"),
@@ -3265,7 +3268,7 @@ class ServiceUnitTests(unittest.TestCase):
         # Big rebuildable data is not backed up, so a rollback must never wipe
         # it: it only puts back what the backup holds.
         self.assertIn(
-            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups"', updater
+            'DATA_BACKUP_EXCLUDES="repositories logs app-work app-backups backups"', updater
         )
         self.assertNotIn('restore_directory_contents "$DATA_BACKUP_DIR"', updater)
         self.assertIn("Not enough free disk space", updater)
@@ -3314,6 +3317,11 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("awk '{print $1}' || true)", installer)
         self.assertIn("--auto-update)", installer)
         self.assertIn("deploy/debian/doctor.sh", installer)
+        self.assertIn("deploy/debian/restore.sh", installer)
+        restore = (root / "deploy" / "debian" / "restore.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl stop webmanager", restore)
+        self.assertIn("run.py restore", restore)
+        self.assertIn("--with-settings", restore)
         self.assertIn("sudo webmanager-doctor", installer)
         self.assertIn("ensure_replication_location", installer)
         self.assertIn('set_env WEBMANAGER_UPDATE_REPOSITORY "$UPDATE_REPOSITORY"', installer)
@@ -3332,7 +3340,10 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("server_name $DASHBOARD_HOST", installer)
         self.assertIn("listen 8080 default_server;", sites_template)
         self.assertIn("listen [::]:8080 default_server;", sites_template)
-        self.assertIn("proxy_set_header Host $host;", sites_template)
+        # Opened by IP address, WebManager must still see the port (it builds
+        # the join command and hook addresses from the address it was opened at).
+        self.assertIn("proxy_set_header Host $webmanager_upstream_host;", sites_template)
+        self.assertIn("$http_host;", sites_template)
         # Other servers reach the peer endpoints by IP address, and a
         # visitor-supplied client-IP header is only believed from a trusted edge.
         self.assertIn("$webmanager_upstream_port", sites_template)
@@ -3351,8 +3362,14 @@ class ServiceUnitTests(unittest.TestCase):
         self.assertIn("INSERT INTO domains (name, is_default)", setup)
         self.assertLess(
             setup.index("Initial deployment domain:"),
-            setup.index('bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"'),
+            setup.rindex('bash "$SCRIPT_DIR/deploy/debian/install.sh" "$@"'),
         )
+        # Joining a primary asks nothing: no domain, no Google setup.
+        self.assertIn("JOINING_AS_REPLICA=1", setup)
+        self.assertLess(setup.index("JOINING_AS_REPLICA -eq 1"), setup.index("Initial deployment domain:"))
+        self.assertIn("deploy/debian/promote.sh", installer)
+        self.assertIn("/mesh/join-info", installer)
+        self.assertIn('rm -f "$DATA_DIR/promoted"', installer)
         self.assertNotIn("Configure Google sign-in now?", setup)
         self.assertNotIn(
             'set_env_value WEBMANAGER_SITE_BASE_DOMAIN "$SITE_BASE_DOMAIN"',

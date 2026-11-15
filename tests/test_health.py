@@ -121,6 +121,11 @@ class CheckTests(unittest.TestCase):
         self.assertIn("wm.example", wrong["detail"])
 
         self.assertEqual(health.check_sign_in(self.inputs(google_configured=False))["status"], "fail")
+        on_replica = health.check_sign_in(self.inputs(
+            google_configured=False,
+            replication={"is_replica": True, "last_error": None, "data_last_error": None},
+        ))
+        self.assertEqual(on_replica["status"], "ok", "a replica signs people in through the primary")
         self.assertEqual(health.check_sign_in(self.inputs(unrestricted=True))["status"], "warn")
 
     # -- dns -----------------------------------------------------------------------------------

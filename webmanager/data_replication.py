@@ -106,7 +106,7 @@ class DataReplicationManager:
 
     def promote(self):
         """Stop mirroring data, in memory, right away. See
-        ReplicationManager.promote() for the config-persistence caveat."""
+        ReplicationManager.promote() for what makes it survive a restart."""
         self.stop()
         self.primary_url = ""
         self._stop_event = threading.Event()

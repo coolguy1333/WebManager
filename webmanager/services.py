@@ -503,12 +503,32 @@ class RuntimeManager:
                     self.start_app_async(site["id"])
                     continue
                 static_sites.append(site)
+            if not static_sites and not include_apps:
+                # A replica after a sync with nothing left running: if the last
+                # site was just stopped on the primary, stop serving it here
+                # too (its config would otherwise stay in place forever).
+                if self._serves_a_site_that_is_not_running(database):
+                    self.restore_gateway()
+                return
             static_sites = self._restore_static_sites_together(database, static_sites)
             for site in static_sites:
                 try:
                     self.start_site(site["id"])
                 except RuntimeErrorDetail:
                     continue
+
+    def _serves_a_site_that_is_not_running(self, database) -> bool:
+        if not self.nginx_binary:
+            return False
+        running = {
+            str(row["id"])
+            for row in database.execute("SELECT id FROM sites WHERE status = 'running'")
+        }
+        config_dir = Path(self.app.config["NGINX_ROOT"]) / "conf.d"
+        return any(
+            not path.name.endswith(".paused.conf") and path.name.split("-", 1)[0] not in running
+            for path in config_dir.glob("*.conf")
+        )
 
     def _restore_static_sites_together(self, database, sites):
         """With Nginx, bring every running static site back with ONE config
@@ -830,6 +850,13 @@ class RuntimeManager:
             return False
         return port is None or f"--port {port}" in command
 
+    @staticmethod
+    def _has_content(site) -> bool:
+        if site["kind"] == "app":
+            return True
+        root = Path(site["document_root"])
+        return root.is_dir() and (root / site["index_file"]).is_file()
+
     def _write_all_nginx_configs(self, database, activating_site_id=None):
         # A host without IPv6 can't open [::1]; Nginx would refuse to start.
         if ipv6_loopback_available():
@@ -849,6 +876,14 @@ class RuntimeManager:
                 "SELECT * FROM sites WHERE status = 'running' OR id = ?",
                 (activating_site_id or -1,),
             ).fetchall()
+            # A site whose folder or index page has gone (a forced update
+            # removed it, a checkout was deleted) would answer every request
+            # with a bare 500. It gets the "temporarily unavailable" page
+            # instead; its own page says what is missing.
+            active = [
+                site for site in active
+                if site["id"] == activating_site_id or self._has_content(site)
+            ]
             expected_configs = {
                 f"{site['id']}-{site['slug']}.conf"
                 for site in active
