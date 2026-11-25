@@ -149,8 +149,13 @@ class MeshEndpointTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(
             set(data.keys()),
-            {"hostname", "version", "sites", "apps_enabled", "apps", "cpu_percent", "memory_percent", "disk_percent"},
+            {
+                "role", "promoted_at", "hostname", "version", "sites", "apps_enabled", "apps",
+                "cpu_percent", "memory_percent", "disk_percent",
+            },
         )
+        self.assertEqual(data["role"], "primary")
+        self.assertIsNone(data["promoted_at"])
         self.assertEqual(data["sites"], {"total": 0, "running": 0})
         self.assertFalse(data["apps_enabled"])
         self.assertIsNone(data["apps"])

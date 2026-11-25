@@ -83,6 +83,23 @@ def promoted_marker(app) -> Path:
     """Exists once a replica has been promoted to primary."""
     return Path(app.config.get("MESH_STATE_DIR") or app.instance_path) / "promoted"
 
+
+def server_role(app) -> dict:
+    """This server's place in a replica group, for load balancers and
+    failover scripts: {"role": "primary" | "replica", "promoted_at": unix
+    time this server was promoted, or None if it never was}. A load balancer
+    can send traffic to whichever server says "primary"; when two do (an old
+    primary came back after its replica was promoted), the later
+    promoted_at is the current one."""
+    manager = app.extensions.get("replication_manager")
+    role = "replica" if manager is not None and manager.is_replica else "primary"
+    marker = promoted_marker(app)
+    try:
+        promoted_at = int(marker.stat().st_mtime) if role == "primary" else None
+    except OSError:
+        promoted_at = None
+    return {"role": role, "promoted_at": promoted_at}
+
 bp = Blueprint("replication", __name__)
 
 

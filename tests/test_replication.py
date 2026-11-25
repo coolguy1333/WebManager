@@ -590,6 +590,26 @@ class PromoteToPrimaryTests(unittest.TestCase):
     def setUp(self):
         self.setUp_base()
 
+    def test_healthz_reports_the_role_so_a_load_balancer_can_find_the_primary(self):
+        primary = self.client.get("/healthz?role=primary")
+        self.assertEqual(primary.status_code, 200)
+        self.assertEqual(primary.get_json(), {"status": "ok", "role": "primary", "promoted_at": None})
+
+        manager = self.app.extensions["replication_manager"]
+        manager.primary_url = "https://primary.example"
+        manager.token = "s3cret-s3cret-s3cret"
+        self.assertEqual(self.client.get("/healthz").status_code, 200)
+        replica = self.client.get("/healthz?role=primary")
+        self.assertEqual(replica.status_code, 503)
+        self.assertEqual(replica.get_json()["role"], "replica")
+        self.assertEqual(self.client.get("/healthz?role=replica").status_code, 200)
+
+        manager.promote()
+        replication.promoted_marker(self.app).write_text("promoted\n", encoding="utf-8")
+        promoted = self.client.get("/healthz?role=primary").get_json()
+        self.assertEqual(promoted["role"], "primary")
+        self.assertIsInstance(promoted["promoted_at"], int)
+
     def test_promote_stops_mirroring_and_reports_not_yet_durable(self):
         admin_id = self.add_user("root", is_admin=True)
         self.login_user(admin_id)

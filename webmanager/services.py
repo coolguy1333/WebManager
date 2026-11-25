@@ -108,6 +108,19 @@ class RuntimeManager:
             self.app.logger,
         )
 
+    def stop_running_apps(self) -> list[str]:
+        """Stop every running app container on this server and return their
+        names. Used when this server starts as a replica: a former primary
+        that rejoins as a replica would otherwise keep its apps running
+        against data that each sync round overwrites."""
+        runtime = self.container_runtime
+        if runtime is None:
+            return []
+        names = runtime.running_app_names()
+        for name in names:
+            runtime.stop(name)
+        return names
+
     def apps_status(self):
         """(enabled, message) describing whether apps can run here."""
         if not self.app.config.get("APPS_ENABLED"):
