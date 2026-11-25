@@ -869,6 +869,13 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   server accepts changes. Joining a server again as a replica also undoes
   an earlier promotion on it.
 
+- Each server installs WebManager updates itself. Update the primary
+  first (System → **Approve and install**), then press **Update** next to
+  each replica in its **System → Servers** list: that replica tests, backs
+  up and installs the version the primary now runs, and the list shows
+  **Updating…** until it is done. All servers must follow the same update
+  branch; if a replica's branch is at another version it says so instead.
+
 Every server in the group is fully trusted: a replica holds the primary's
 secret key (so it can sign sessions and decrypt saved app variables) and a
 complete copy of its database. Only add servers you would give admin access.
@@ -1719,6 +1726,12 @@ and select **Approve and install**.
 Setup runs the first check immediately. A super administrator can also select
 **Check now** on the System page; this asks the hardened systemd updater service
 to run without granting the web process root access.
+
+With several servers, update one (normally the primary) and then press
+**Update** next to each of the others in its **System → Servers** list. The
+other server goes through exactly the same steps (tests, backup, rollback on
+failure); it only installs the newest version of its own update branch, so
+the button can't install arbitrary code there.
 
 When application requirements are unchanged, update validation reuses the
 installed virtual environment first. If that test run fails, the updater

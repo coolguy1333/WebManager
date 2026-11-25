@@ -416,7 +416,7 @@
       <div role="cell" class="mesh-version" data-label="Version">
         <span data-mesh-stat="version">{{ peer.version or "—" }}</span>
         {% if own_version %}
-        {% set peer_updating = peer.update_state in ("testing", "backing_up", "installing") %}
+        {% set peer_updating = peer.update_state in ("requested", "testing", "backing_up", "installing") %}
         <span class="badge badge-info" data-mesh-updating{% if not peer_updating %} hidden{% endif %}>Updating…</span>
         <form method="post" action="{{ url_for('admin.update_server') }}" data-loading data-mesh-update{% if not peer.reachable or not peer.version or peer.version == own_version or peer_updating %} hidden{% endif %} data-confirm="Update WebManager on {{ peer.hostname }} to {{ own_version }}, the version this server runs? It tests the update, backs up its data and restarts WebManager there (a minute or two); its sites keep running. A failed update is rolled back.">
           {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}">

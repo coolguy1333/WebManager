@@ -656,7 +656,7 @@ if (metricsPanel) {
       row.toggleAttribute("data-mesh-empty", !peer.version && !peer.sites && (peer.cpu_percent === null || peer.cpu_percent === undefined));
       setMesh(row, "version", peer.version || "—");
       const ownVersion = row.closest("[data-own-version]")?.dataset.ownVersion || "";
-      const updating = ["testing", "backing_up", "installing"].includes(peer.update_state);
+      const updating = ["requested", "testing", "backing_up", "installing"].includes(peer.update_state);
       const updateForm = row.querySelector("[data-mesh-update]");
       const updatingBadge = row.querySelector("[data-mesh-updating]");
       const updateFailed = row.querySelector("[data-mesh-update-failed]");

@@ -152,6 +152,25 @@ class AskingAnotherServerTests(unittest.TestCase):
         self.assertEqual(sent.get_header("Authorization"), f"Bearer {TOKEN}")
         self.assertEqual(json.loads(sent.data), {"commit": OURS})
 
+    def test_it_shows_as_updating_from_the_moment_it_is_asked(self):
+        with self.hub._lock:
+            self.hub._remote[PEER] = {"reachable": True, "data": {"version": THEIRS[:12], "update_state": "available"}}
+        answer = _Answer({"ok": True, "state": "requested", "message": "It is installing."}, 202)
+        with patch.object(peer_http, "open_peer", return_value=answer), patch.object(self.hub, "_poll"):
+            self.hub.request_update(PEER, OURS)
+        self.assertEqual(self.hub.entries()[0]["update_state"], "requested", "before its updater starts")
+
+        for data, expected in (
+            ({"version": THEIRS[:12], "update_state": "testing"}, "testing"),
+            ({"version": OURS[:12], "update_state": "current"}, "current"),
+        ):
+            with self.hub._lock:
+                self.hub._remote[PEER]["data"] = data
+            self.assertEqual(self.hub.entries()[0]["update_state"], expected)
+        with self.hub._lock:
+            self.hub._remote[PEER]["data"] = {"version": THEIRS[:12], "update_state": "available"}
+        self.assertEqual(self.hub.entries()[0]["update_state"], "available", "no longer pending once it reported")
+
     def test_its_refusal_is_passed_on(self):
         error = urllib.error.HTTPError(
             f"{PEER}/mesh/update", 409, "Conflict", {}, _Answer({"error": "Its updater service is switched off."})

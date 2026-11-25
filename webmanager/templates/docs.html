@@ -222,6 +222,8 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
       <li>WebManager has no way to tell the old primary it has been replaced. When it comes back, join it to the new primary as a replica (run the join command from the new primary's <strong>System → Servers</strong> on it) or take it offline — otherwise two servers accept changes at once.</li>
       <li>Joining a server again as a replica undoes an earlier promotion on it.</li>
     </ul>
+    <h4>Updating every server</h4>
+    <p>Each server installs WebManager updates itself. Update the primary first (System → <strong>Approve and install</strong>), then press <strong>Update</strong> next to each replica in the primary's <strong>System → Servers</strong> list. The replica tests, backs up and installs the version the primary now runs (a failed update is rolled back), and the list shows <strong>Updating…</strong> until it is done. All servers must follow the same update branch.</p>
   </div>
 </section>
 

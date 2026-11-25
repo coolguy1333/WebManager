@@ -43,6 +43,8 @@ POLL_SECONDS = 20
 TIMEOUT_SECONDS = 10
 # Asking a server to update waits for its quick check of GitHub (up to 15s).
 UPDATE_REQUEST_TIMEOUT_SECONDS = 25
+# Its updater starts within seconds of being asked; past this, trust its own state.
+UPDATE_PENDING_SECONDS = 90
 # The token guards the session-signing key and full database/data snapshots,
 # so a short, guessable one is refused rather than trusted.
 MIN_TOKEN_LENGTH = 16
@@ -186,6 +188,8 @@ class MeshHub:
         self._stop_event = threading.Event()
         self._thread = None
         self._fails: dict[str, dict] = {}
+        # url -> (when an update was asked for, the version it ran then)
+        self._update_requested: dict[str, tuple[float, str | None]] = {}
         self._fails_lock = threading.Lock()
         self.running = False  # set by start(): False in tests, so nothing polls
 
@@ -272,9 +276,33 @@ class MeshHub:
             return False, f"It could not be reached: {hint or message}"
         if not isinstance(body, dict):
             return False, "It answered, but not like a WebManager server."
+        accepted = bool(body.get("ok"))
+        if accepted and body.get("state") == "requested":
+            with self._lock:
+                version = ((self._remote.get(url) or {}).get("data") or {}).get("version")
+                self._update_requested[url] = (time.time(), version)
         # Show the new state straight away rather than after the next poll.
         threading.Thread(target=self._poll, args=(url,), daemon=True).start()
-        return bool(body.get("ok")), str(body.get("message") or body.get("error") or "")
+        return accepted, str(body.get("message") or body.get("error") or "")
+
+    def _update_state(self, url: str, data: dict):
+        """What the other server says about its update, or "requested" from
+        the moment it was asked until its updater starts (a few seconds) and
+        the version or state shows the outcome."""
+        state = data.get("update_state")
+        requested = self._update_requested.get(url)
+        if requested is None:
+            return state
+        asked_at, version_then = requested
+        if (
+            time.time() - asked_at > UPDATE_PENDING_SECONDS
+            or data.get("version") != version_then
+            or state in IN_PROGRESS_STATES
+            or state == "error"
+        ):
+            self._update_requested.pop(url, None)
+            return state
+        return "requested"
 
     def stop(self):
         self._stop_event.set()
@@ -350,6 +378,9 @@ class MeshHub:
             snapshot = {url: dict(value) for url, value in self._remote.items()}
             urls = list(self.urls)
             saved = set(self.saved_urls)
+            update_states = {
+                url: self._update_state(url, (snapshot.get(url) or {}).get("data") or {}) for url in urls
+            }
         results = []
         for url in urls:
             remote = snapshot.get(url, {})
@@ -365,7 +396,7 @@ class MeshHub:
                     "checked_at": remote.get("checked_at"),
                     "last_seen": self._last_seen(remote.get("last_ok_at")),
                     "version": data.get("version"),
-                    "update_state": data.get("update_state"),
+                    "update_state": update_states.get(url),
                     "sites": data.get("sites"),
                     "apps_enabled": data.get("apps_enabled"),
                     "apps": data.get("apps"),
