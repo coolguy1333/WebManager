@@ -641,7 +641,8 @@ app = create_app(
 with app.app_context():
     app.extensions["runtime_manager"].sync_nginx_configs()
 response = app.test_client().get("/healthz")
-if response.status_code != 200 or response.get_json() != {"status": "ok"}:
+# Only "status" matters: newer versions may report more (their role, say).
+if response.status_code != 200 or (response.get_json(silent=True) or {}).get("status") != "ok":
     raise SystemExit(
         f"Candidate health check returned {response.status_code}: "
         f"{response.get_data(as_text=True)[:500]}"

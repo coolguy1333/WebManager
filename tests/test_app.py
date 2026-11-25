@@ -307,7 +307,9 @@ class WebManagerTestCase(unittest.TestCase):
     def test_health_endpoint_checks_database(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"status": "ok", "role": "primary", "promoted_at": None})
+        # Exactly this: the updater installed on servers today compares the
+        # whole answer before installing, so more fields break every update.
+        self.assertEqual(response.get_json(), {"status": "ok"})
 
     def test_security_headers_are_set(self):
         response = self.client.get("/auth/login")

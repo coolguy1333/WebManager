@@ -465,13 +465,20 @@ def create_app(test_config=None):
 
     @app.get("/healthz")
     def health():
-        """Liveness for monitors. With ?role=primary it answers 503 unless
-        this server is the primary, so a load balancer in front of a
-        primary and its replicas can send traffic to the primary only."""
+        """Liveness for monitors.
+
+        Plain /healthz answers exactly {"status": "ok"}: the updater already
+        installed on every server compares the whole answer before it
+        installs a new version, so anything more here makes every update
+        fail. Asking with ?role= adds this server's role: ?role=primary
+        answers 503 unless this server is the primary (for a load balancer
+        in front of a primary and its replicas), ?role=any never filters."""
         db.get_db().execute("SELECT 1").fetchone()
+        if "role" not in request.args:
+            return {"status": "ok"}
         role = replication.server_role(app)
         wanted = request.args.get("role", "").strip().lower()
-        if wanted and wanted != role["role"]:
+        if wanted not in ("", "any") and wanted != role["role"]:
             return {"status": "wrong-role", **role}, 503
         return {"status": "ok", **role}
 

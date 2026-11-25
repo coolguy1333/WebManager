@@ -603,6 +603,8 @@ class PromoteToPrimaryTests(unittest.TestCase):
         self.assertEqual(replica.status_code, 503)
         self.assertEqual(replica.get_json()["role"], "replica")
         self.assertEqual(self.client.get("/healthz?role=replica").status_code, 200)
+        self.assertEqual(self.client.get("/healthz?role=any").get_json()["role"], "replica")
+        self.assertEqual(self.client.get("/healthz").get_json(), {"status": "ok"})
 
         manager.promote()
         replication.promoted_marker(self.app).write_text("promoted\n", encoding="utf-8")

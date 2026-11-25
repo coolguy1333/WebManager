@@ -878,7 +878,8 @@ start, but a replica is not a point-in-time backup.
 
 ### Load balancers and automatic failover
 
-`/healthz` reports which role a server has:
+`/healthz?role=any` reports which role a server has (plain `/healthz` stays
+`{"status": "ok"}`, which the built-in updater relies on):
 
 ```json
 {"status": "ok", "role": "primary", "promoted_at": null}
