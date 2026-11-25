@@ -112,9 +112,25 @@ class DataReplicationManager:
         self._stop_event = threading.Event()
 
     def _run(self):
+        self.stop_leftover_apps()
         self.sync_once()
         while not self._stop_event.wait(DATA_POLL_SECONDS):
             self.sync_once()
+
+    def stop_leftover_apps(self):
+        """A replica never runs apps. If this server was a primary before
+        (it rejoined another server as a replica), its app containers may
+        still be running; stop them before the first sync overwrites their
+        data."""
+        try:
+            stopped = self.app.extensions["runtime_manager"].stop_running_apps()
+        except (AppError, OSError) as exc:
+            self.app.logger.warning("Data replication: could not stop this server's apps: %s", exc)
+            return
+        if stopped:
+            self.app.logger.warning(
+                "This server is a replica, so its running apps were stopped: %s", ", ".join(stopped)
+            )
 
     def sync_once(self) -> bool:
         """Pull and apply one data snapshot from the primary. Public so an
@@ -193,7 +209,15 @@ class DataReplicationManager:
             shutil.rmtree(previous, ignore_errors=True)
 
             if app_members and runtime is not None:
-                with tempfile.TemporaryDirectory(prefix="wm-app-restore-") as scratch:
+                # Docker bind-mounts this folder into a throwaway container,
+                # so it must be somewhere the Docker daemon can see. The
+                # system /tmp is not: webmanager.service runs with
+                # PrivateTmp=true, so a /tmp folder exists only inside this
+                # service and the mount comes up empty ("tar: can't open
+                # '/backup/N.tar'"). The data folder is a real path.
+                with tempfile.TemporaryDirectory(
+                    prefix=".app-restore-", dir=self.app.instance_path
+                ) as scratch:
                     scratch_path = Path(scratch)
                     for member in app_members:
                         site_id = member.name[len(APP_DATA_PREFIX) + 1 : -len(".tar")]

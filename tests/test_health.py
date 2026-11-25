@@ -22,7 +22,7 @@ def make_inputs(directory, **overrides):
         "google_redirect_uri": "https://wm.example/auth/google/callback", "cookie_secure": True,
         "unrestricted": False, "request_host": "wm.example", "base_domain": "wm.example",
         "update_status": {"state": "current", "message": ""}, "updater_active": True,
-        "auto_install": False, "apps_enabled": False, "apps_status": (False, ""),
+        "auto_install": False, "apps_enabled": False, "apps_status": (False, ""), "app_count": 0,
         "peers": [], "replication": {"is_replica": False, "last_error": None, "data_last_error": None},
     }
     inputs.update(overrides)
@@ -155,6 +155,21 @@ class CheckTests(unittest.TestCase):
         down = health.check_apps(self.inputs(apps_enabled=True, apps_status=(False, "The container runtime isn't reachable")))
         self.assertEqual(down["status"], "fail")
         self.assertIn("enable-apps.sh", down["fix"])
+
+    def test_a_replica_without_app_hosting_warns_that_app_data_is_not_copied(self):
+        replica = {"is_replica": True, "last_error": None, "data_last_error": None}
+        warn = health.check_apps(self.inputs(replication=replica, app_count=3))
+        self.assertEqual(warn["status"], "warn")
+        self.assertIn("enable-apps.sh", warn["fix"])
+        self.assertEqual(health.check_apps(self.inputs(replication=replica))["status"], "info")
+        self.assertEqual(health.check_apps(self.inputs(app_count=3))["status"], "info")
+
+    def test_a_replica_does_not_report_its_stopped_apps_as_broken(self):
+        replica = {"is_replica": True, "last_error": None, "data_last_error": None}
+        app = {"id": 9, "name": "Bot", "kind": "app", "hostnames": ["bot.example"]}
+        result = health.check_sites(self.inputs(replication=replica, running_sites=[app]))
+        self.assertEqual(result["status"], "info")
+        self.assertIn("1 app(s) were not checked", result["detail"])
 
     def test_data_folder(self):
         self.assertEqual(health.check_data_dir(self.inputs())["status"], "ok")

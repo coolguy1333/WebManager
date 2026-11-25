@@ -83,14 +83,16 @@ class ApplySnapshotTests(unittest.TestCase):
         class _App:
             logger = __import__("logging").getLogger("test")
 
-            def __init__(self, config, extensions):
+            def __init__(self, config, extensions, instance_path):
                 self.config = config
                 self.extensions = extensions
+                self.instance_path = instance_path
 
         self.runtime_manager = RuntimeManager(app=None)
         self.app = _App(
             {"REPOSITORY_ROOT": str(self.repository_root)},
             {"runtime_manager": self.runtime_manager},
+            self.temp_directory.name,
         )
         self.runtime_manager.app = self.app
         self.manager = data_replication.DataReplicationManager(self.app, "https://primary.example", "s3cret-s3cret-s3cret")
@@ -129,6 +131,24 @@ class ApplySnapshotTests(unittest.TestCase):
         self.assertEqual(volume_name, self.fake.volume_name(5))
         with tarfile.open(fileobj=io.BytesIO(content)) as inner:
             self.assertEqual(inner.extractfile("data/app.db").read(), b"sqlite-bytes")
+
+    def test_a_replica_stops_app_containers_left_running_from_when_it_was_primary(self):
+        self.fake.containers["webmanager-app-5"] = {"status": "running"}
+        self.fake.containers["webmanager-app-6"] = {"status": "exited"}
+        self.manager.stop_leftover_apps()
+        self.assertEqual(self.fake.containers["webmanager-app-5"]["status"], "exited")
+        self.assertIn(("stop", "webmanager-app-5"), self.fake.calls)
+        self.assertNotIn(("stop", "webmanager-app-6"), self.fake.calls)
+
+    def test_app_data_is_restored_from_the_data_folder_not_tmp(self):
+        # Docker bind-mounts the restore folder; webmanager.service has
+        # PrivateTmp=true, so a folder in /tmp would be invisible to dockerd.
+        self.manager._apply_snapshot(self._build_archive())
+        self.assertEqual(len(self.fake.restore_dirs), 1)
+        self.assertEqual(
+            self.fake.restore_dirs[0].parent.resolve(), Path(self.temp_directory.name).resolve()
+        )
+        self.assertFalse(self.fake.restore_dirs[0].exists(), "the scratch folder is cleaned up")
 
     def test_sync_once_survives_a_truncated_archive_and_keeps_the_files(self):
         self.repository_root.mkdir(parents=True)

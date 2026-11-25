@@ -465,8 +465,15 @@ def create_app(test_config=None):
 
     @app.get("/healthz")
     def health():
+        """Liveness for monitors. With ?role=primary it answers 503 unless
+        this server is the primary, so a load balancer in front of a
+        primary and its replicas can send traffic to the primary only."""
         db.get_db().execute("SELECT 1").fetchone()
-        return {"status": "ok"}
+        role = replication.server_role(app)
+        wanted = request.args.get("role", "").strip().lower()
+        if wanted and wanted != role["role"]:
+            return {"status": "wrong-role", **role}, 503
+        return {"status": "ok", **role}
 
     @app.after_request
     def security_headers(response):

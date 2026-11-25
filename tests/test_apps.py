@@ -38,6 +38,7 @@ class FakeRuntime:
         self.images = set()
         self.volumes_removed = []
         self.calls = []
+        self.restore_dirs = []
 
     container_name = staticmethod(apps.ContainerRuntime.container_name)
     volume_name = staticmethod(apps.ContainerRuntime.volume_name)
@@ -143,6 +144,7 @@ class FakeRuntime:
         # consumes the file synchronously before returning, since the
         # caller's scratch directory may be gone right after.
         content = Path(tar_path).read_bytes()
+        self.restore_dirs.append(Path(tar_path).parent)
         self.calls.append(("restore_data", volume_name, content))
 
 

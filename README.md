@@ -847,6 +847,12 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   (safe — stateless files). **Apps stay stopped** on a replica: running
   the same app against a volume that gets wiped and restored every sync
   round would corrupt it.
+- App data (each app's `/data` volume) is only copied when **app hosting
+  is on** on the replica too (`sudo bash deploy/debian/enable-apps.sh`);
+  without it the replica has the apps' definitions but not their data, and
+  `webmanager-doctor` says so. A server that starts as a replica (for
+  example an old primary joined to a new one) stops any app containers it
+  still has running.
 - If the primary goes down, the replica keeps serving its static sites.
   Make it the new primary with **Promote to primary** on its System page,
   or on the server itself (works even when you can't sign in):
@@ -869,6 +875,42 @@ complete copy of its database. Only add servers you would give admin access.
 App data volumes are copied while the app runs, so a database that is mid-write
 at that instant is captured mid-write; SQLite and Postgres recover from that on
 start, but a replica is not a point-in-time backup.
+
+### Load balancers and automatic failover
+
+`/healthz` reports which role a server has:
+
+```json
+{"status": "ok", "role": "primary", "promoted_at": null}
+```
+
+`promoted_at` is when a replica was promoted (Unix time), or `null` for a
+server that was never promoted. With `?role=primary` the endpoint answers
+**503** unless this server is the primary, so a load balancer (HAProxy,
+Nginx, a Cloudflare Tunnel origin behind a local proxy) can health-check
+every server with `/healthz?role=primary` and send traffic only to the
+primary. If two servers both say primary (an old primary came back after
+its replica was promoted), the one with the later `promoted_at` is the
+current one; join the other to it as a replica. `/mesh/status` reports
+the same `role` and `promoted_at`.
+
+Health checks must send a **Host header with an IP address** (for example
+`Host: 127.0.0.1`): a request without one, or with a hostname, is routed to
+the hosted-site gateway instead of WebManager and gets its 404 page.
+
+```text
+# HAProxy
+option httpchk
+http-check send meth GET uri /healthz?role=primary ver HTTP/1.1 hdr Host 127.0.0.1
+http-check expect status 200
+```
+
+WebManager does not promote a replica by itself. To fail over without
+anyone acting, run a small check on the replica that calls
+`sudo webmanager-promote --yes` once the primary's `/healthz` has failed
+for a few minutes, and only while the replica can still reach the rest of
+the network (otherwise a replica that is the one cut off would promote
+itself while the primary is fine).
 
 See the in-app **Docs** page for the full setup, security model, and
 troubleshooting.

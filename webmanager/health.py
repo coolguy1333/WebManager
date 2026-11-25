@@ -82,8 +82,18 @@ def check_web_server(inputs):
 def check_sites(inputs):
     title = "Hosted sites answer"
     sites = inputs["running_sites"]
+    skipped_apps = 0
+    if inputs["replication"]["is_replica"]:
+        # A replica keeps apps stopped until it's promoted (their data is
+        # overwritten every sync round), so a 503 from one is expected.
+        skipped_apps = sum(site.get("kind") == "app" for site in sites)
+        sites = [site for site in sites if site.get("kind") != "app"]
+    skipped = (
+        f" {skipped_apps} app(s) were not checked: a replica starts apps only once it's promoted."
+        if skipped_apps else ""
+    )
     if not sites:
-        return result("sites", title, INFO, "No sites are running yet.")
+        return result("sites", title, INFO, ("No sites are running yet." + skipped).strip())
     if not inputs["nginx_binary"] or not _port_open("127.0.0.1", inputs["gateway_port"]):
         return result("sites", title, INFO, "Skipped: the web server above isn't up.")
     broken = []
@@ -102,7 +112,7 @@ def check_sites(inputs):
             broken.append(f"{site['name']} ({'no answer' if code is None else f'error {code}'})")
     if not broken:
         more = f" (the first {checked} of {len(sites)} were checked)" if checked < len(sites) else ""
-        return result("sites", title, OK, f"All {checked} running site(s) answer{more}.")
+        return result("sites", title, OK, f"All {checked} running site(s) answer{more}.{skipped}")
     return result(
         "sites", title, FAIL, "These running sites don't answer: " + ", ".join(broken) + ".",
         "Open the site's page and press Restart; the site's log on that page says why it failed.",
@@ -262,6 +272,15 @@ def check_updates(inputs):
 def check_apps(inputs):
     title = "App hosting"
     if not inputs["apps_enabled"]:
+        app_count = inputs.get("app_count", 0)
+        if inputs["replication"]["is_replica"] and app_count:
+            return result(
+                "apps", title, WARN,
+                f"Off, but the primary hosts {app_count} app(s). A replica copies app data only when "
+                "app hosting is on here, so their data is not being copied and promoting this "
+                "server would start them empty.",
+                "sudo bash deploy/debian/enable-apps.sh",
+            )
         return result("apps", title, INFO, "Off (static sites only). Turn it on with sudo bash deploy/debian/enable-apps.sh.")
     ready, message = inputs["apps_status"]
     if ready:
@@ -355,9 +374,15 @@ def gather_inputs(request_host=""):
         "SELECT * FROM sites WHERE status = 'running' ORDER BY name COLLATE NOCASE"
     ).fetchall()
     running = [
-        {"id": site["id"], "name": site["name"], "hostnames": site_hostnames(database, site)}
+        {
+            "id": site["id"],
+            "name": site["name"],
+            "kind": site["kind"],
+            "hostnames": site_hostnames(database, site),
+        }
         for site in sites
     ]
+    app_count = database.execute("SELECT COUNT(*) FROM sites WHERE kind = 'app'").fetchone()[0]
     base = app.config.get("SITE_BASE_DOMAIN") or ""
     if not base:
         try:
@@ -383,6 +408,7 @@ def gather_inputs(request_host=""):
         "updater_active": update_status.updater_active(),
         "auto_install": update_status.auto_install_enabled(),
         "apps_enabled": bool(app.config.get("APPS_ENABLED")),
+        "app_count": app_count,
         "apps_status": runtime.apps_status() if app.config.get("APPS_ENABLED") else (False, ""),
         "peers": app.extensions["mesh_hub"].entries(),
         "replication": {

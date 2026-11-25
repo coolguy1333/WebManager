@@ -138,7 +138,10 @@ def local_status(app) -> dict:
         apps = {"total": row["total"], "running": row["running"] or 0}
     metrics = system_metrics.collect_basic(app)
     installed_commit = read_update_status().get("installed_commit")
+    from .replication import server_role  # replication imports this module's helpers
+
     return {
+        **server_role(app),
         "hostname": metrics.get("hostname"),
         "version": installed_commit[:12] if installed_commit else None,
         "sites": {"total": sites["total"], "running": sites["running"] or 0},
