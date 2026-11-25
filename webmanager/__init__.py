@@ -328,6 +328,11 @@ def create_app(test_config=None):
     if replica_of and replica_of not in peer_urls:
         # A replica always keeps an eye on its primary.
         peer_urls.append(replica_of)
+    promoted_from = app.config.get("PROMOTED_FROM")
+    if promoted_from and promoted_from not in peer_urls:
+        # A replica that took over keeps watching the server it replaced, so
+        # it notices (and warns) if that one comes back as a second primary.
+        peer_urls.append(promoted_from)
     if peer_urls:
         from urllib.parse import urlsplit
 

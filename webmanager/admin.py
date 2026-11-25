@@ -1249,6 +1249,7 @@ def promote_replica():
     data_manager.promote()
     current_app.config["REPLICA_OF"] = ""
     current_app.config["PROMOTED_FROM"] = previous_primary
+    current_app.extensions["watchdog"].check_failover_now()
     current_app.extensions["runtime_manager"].restore_sites(include_apps=True)
     if current_app.config["AUTO_REFRESH_ENABLED"]:
         current_app.extensions["repository_refresh_manager"].start()

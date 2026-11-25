@@ -844,6 +844,8 @@ class ReplicaStartupTests(unittest.TestCase):
             self.assertFalse(restarted.extensions["data_replication_manager"].is_replica)
             self.assertEqual(restarted.config["REPLICA_OF"], "")
             self.assertEqual(restarted.config["PROMOTED_FROM"], "https://primary.example")
+            self.assertIn("https://primary.example", restarted.extensions["mesh_hub"].urls,
+                          "it keeps watching the server it replaced")
 
 
 class SignInThroughThePrimaryTests(unittest.TestCase):

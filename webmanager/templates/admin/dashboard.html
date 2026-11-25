@@ -285,7 +285,7 @@
     {% elif change and change.state == "error" %}
     <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The last change didn't work</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
     {% endif %}
-    {% if app_hosting %}<p class="hint">{{ app_hosting[1] }}</p>{% endif %}
+    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %}</p>{% endif %}
     {% if not apps_configured %}
     <p class="hint">Turning it on installs Docker if needed and restarts WebManager. Containers get the internet but not your network. Docker access is equivalent to root on this machine, so only give <strong>Host apps</strong> to people you trust.{% if is_replica %} On a replica, apps stay stopped until it is promoted, but their data is copied here so it can take over.{% endif %}</p>
     {% endif %}

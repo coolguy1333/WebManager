@@ -159,6 +159,24 @@ class FailoverNotificationTests(unittest.TestCase):
             self.assertEqual(notify.call_count, 1)
             self.assertIn("Failed over", notify.call_args[0][0])
 
+    def test_promoting_from_the_system_page_notifies_at_once(self):
+        manager = self.app.extensions["replication_manager"]
+        data_manager = self.app.extensions["data_replication_manager"]
+        for each in (manager, data_manager):
+            each.primary_url, each.token = PRIMARY, "s3cret-s3cret-s3cret"
+        client = self.app.test_client()
+        with client.session_transaction() as session:
+            session["user_id"] = base.WebManagerTestCase.add_user(self, "root", is_admin=True)
+        with client.session_transaction() as session:
+            token = session.get("_csrf_token")
+        if token is None:
+            client.get("/")
+            with client.session_transaction() as session:
+                token = session["_csrf_token"]
+        with patch.object(self.app.extensions["watchdog"], "_notify") as notify:
+            client.post("/admin/replication/promote", data={"_csrf_token": token})
+        self.assertIn("Failed over", notify.call_args[0][0])
+
     def test_the_primary_coming_back_is_announced(self):
         manager = self.app.extensions["replication_manager"]
         manager.primary_url = PRIMARY

@@ -30,7 +30,7 @@
 <section class="stats">
   <div class="stat"><span>Requests</span><strong>{{ "{:,}".format(data.requests) }}</strong><small>last {{ days }} days</small></div>
   <div class="stat"><span>Unique visitors</span><strong>{{ "{:,}".format(data.visitors) }}</strong><small>by client IP</small></div>
-  <div class="stat"><span>Data served</span><strong>{{ "%.1f"|format(data.bytes / 1048576) }} MB</strong><small>response bodies</small></div>
+  <div class="stat"><span>Data served</span><strong>{{ data.bytes|filesizeformat }}</strong><small>response bodies</small></div>
   <div class="stat {% if data.requests and data.errors / data.requests > 0.05 %}danger{% endif %}"><span>Error responses</span><strong>{{ "{:,}".format(data.errors) }}</strong><small>{% if data.requests %}{{ "%.1f"|format(100 * data.errors / data.requests) }}% of requests (4xx/5xx){% else %}4xx and 5xx{% endif %}</small></div>
 </section>
 
@@ -80,7 +80,7 @@
     <div class="spark">{{ ui.sparkline(data.daily_by_site[site.id]) }}</div>
     <div class="num">{{ "{:,}".format(stats.requests) }}</div>
     <div class="num hide-sm">{{ "{:,}".format(stats.visitors) }}</div>
-    <div class="num hide-sm">{{ "%.1f"|format(stats.bytes / 1048576) }} MB</div>
+    <div class="num hide-sm">{{ stats.bytes|filesizeformat }}</div>
     <div class="num hide-sm">{{ "{:,}".format(stats.errors) }}</div>
   </div>
   {% endfor %}

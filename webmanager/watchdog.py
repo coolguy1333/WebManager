@@ -49,6 +49,7 @@ class Watchdog:
         self._state = self._load_state()
         self._primed = False
         self.last_run = None
+        self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self):
@@ -60,7 +61,19 @@ class Watchdog:
     def stop(self):
         self._stop.set()
 
+    def check_failover_now(self):
+        """Announce a failover at once (just promoted, or just started after
+        webmanager-promote) instead of at the next round, which a quick
+        follow-up event could otherwise overtake."""
+        with self._lock:
+            try:
+                self._watch_failover()
+                self._save_state()
+            except Exception:  # noqa: BLE001
+                self.app.logger.exception("Failover check failed")
+
     def _run(self):
+        self.check_failover_now()
         if self._stop.wait(45):  # let the sites finish starting first
             return
         while True:
@@ -99,6 +112,10 @@ class Watchdog:
 
     # -- one round -------------------------------------------------------------
     def run_once(self):
+        with self._lock:
+            self._run_once()
+
+    def _run_once(self):
         with self.app.app_context():
             database = get_db()
             runtime = self.app.extensions["runtime_manager"]

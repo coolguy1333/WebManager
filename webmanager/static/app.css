@@ -909,6 +909,15 @@ fieldset.field legend { margin-bottom: 6px; }
 .chart-point circle { fill: var(--surface); stroke: var(--accent-strong); stroke-width: 2; opacity: 0; transition: opacity 0.1s; }
 .chart-point:hover circle { opacity: 1; }
 .chart-hit { fill: transparent; }
+/* The chart is drawn 760 units wide; a phone shrinks it to less than half,
+   so its labels and lines are drawn bigger there to stay readable. */
+@media (max-width: 640px) {
+  .chart-axis { font-size: 22px; }
+  .chart-axis-x { transform: translateY(14px); }
+  .chart-axis-minor { display: none; }
+  .chart-line { stroke-width: 4; }
+  .chart-grid { stroke-width: 2; }
+}
 .chart-point:hover .chart-hit { fill: var(--accent-soft); }
 .sparkline { width: 120px; height: 28px; }
 .sparkline polyline { fill: none; stroke: var(--accent-strong); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
