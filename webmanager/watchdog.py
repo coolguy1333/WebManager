@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import activity, health, update_status
+from . import activity, failover, health, update_status
 from .db import get_db
 from .domains import site_hostnames
 
@@ -108,6 +108,7 @@ class Watchdog:
                 self._watch_sources(database)
             self._watch_program_update()
             self._watch_disk()
+            self._watch_failover()
         self._primed = True
         self._save_state()
         self.last_run = time.time()
@@ -221,6 +222,41 @@ class Watchdog:
             self._notify("WebManager was updated", f"Now running {installed[:12]}.", "ok")
         if installed:
             self._state["installed"] = installed
+
+    def _watch_failover(self):
+        """Tell people when the group fails over (same as the page warning)."""
+        situation = failover.state(self.app)
+        current = f"{situation['kind']}:{situation['key']}" if situation else ""
+        previous = self._state.get("failover", "")
+        self._state["failover"] = current
+        if current == previous or not current and not previous:
+            return
+        host = socket.gethostname()
+        if not situation:
+            if previous.startswith("primary_down:"):
+                self._notify("The primary is answering again", f"{host} is syncing from it again.", "ok")
+            return
+        if situation["kind"] == "promoted":
+            self._notify(
+                f"Failed over: {host} is now the primary",
+                f"It took over from {situation['from'] or 'the previous primary'}. Open WebManager on {host}: "
+                "the warning there lists what to check (keep the old primary off, DNS, apps, recent changes).",
+                "error",
+            )
+        elif situation["kind"] == "primary_down":
+            self._notify(
+                "The primary server isn't answering",
+                f"{host} can't reach {situation['primary']}: {situation['error']} It keeps serving sites, "
+                "but changes can't be saved. If the primary is gone for good, promote this server.",
+                "error",
+            )
+        else:
+            self._notify(
+                "Two servers are acting as the primary",
+                f"{host} and {situation['other_name']} ({situation['other']}) both accept changes. "
+                "Join one to the other as a replica.",
+                "error",
+            )
 
     def _watch_disk(self):
         try:

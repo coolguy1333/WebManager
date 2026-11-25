@@ -87,6 +87,9 @@ def create_app(test_config=None):
         GOOGLE_ALLOWED_EMAILS=os.environ.get("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", "").strip(),
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         APPS_ENABLED=_env_flag("WEBMANAGER_APPS_ENABLED"),
+        # Lets a super admin turn app hosting on/off from the System page
+        # (a root helper does it). 0 keeps it a shell-only decision.
+        DASHBOARD_APP_CONTROL=_env_flag("WEBMANAGER_DASHBOARD_APP_CONTROL", "1"),
         CONTAINER_RUNTIME=os.environ.get("WEBMANAGER_CONTAINER_RUNTIME", "").strip(),
         APP_DEFAULT_MEMORY_MB=int(os.environ.get("WEBMANAGER_APP_DEFAULT_MEMORY_MB", "256")),
         APP_CPUS=float(os.environ.get("WEBMANAGER_APP_CPUS", "0.5")),
@@ -288,6 +291,20 @@ def create_app(test_config=None):
     def replication_role():
         manager = app.extensions.get("replication_manager")
         return {"is_replica": bool(manager and manager.is_replica)}
+
+    @app.context_processor
+    def failover_warning():
+        from flask import g
+
+        from . import failover
+
+        if getattr(g, "user", None) is None:
+            return {"failover": None}
+        try:
+            return {"failover": failover.state(app)}
+        except Exception:  # never break a page over the warning
+            app.logger.exception("Could not work out the failover state")
+            return {"failover": None}
 
     with app.app_context():
         db.init_db()

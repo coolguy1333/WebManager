@@ -185,7 +185,7 @@ class AskingAnotherServerTests(unittest.TestCase):
         with patch.object(peer_http, "open_peer", side_effect=error):
             ok, message = self.hub.request_update(PEER, OURS)
         self.assertFalse(ok)
-        self.assertIn("too old to be updated from here", message)
+        self.assertIn("too old to be managed from here", message)
 
     def test_a_server_that_does_not_answer(self):
         with patch.object(peer_http, "open_peer", side_effect=urllib.error.URLError(ConnectionRefusedError())):

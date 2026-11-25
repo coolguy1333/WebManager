@@ -76,6 +76,10 @@ _LOCAL_ONLY_ENDPOINTS = {
     "admin.enable_server_sharing",
     "admin.add_server",
     "admin.update_server",
+    "admin.control_server",
+    "admin.acknowledge_failover",
+    # Root-level change to this machine (Docker), never the primary's.
+    "admin.set_app_hosting",
     "admin.remove_server",
 }
 
@@ -211,6 +215,7 @@ class ReplicationManager:
         self.last_sync_at = None
         self.last_error = None
         self._sync_lock = threading.Lock()
+        self.started_at = time.time()
 
     @property
     def is_replica(self) -> bool:

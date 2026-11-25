@@ -1,0 +1,52 @@
+{# Large warning on every page while the group is in a failover situation (see failover.py). #}
+{% if failover %}
+{% set super_admin = g.user and g.user["is_admin"] %}
+<section class="failover-banner {{ 'warning' if failover.kind == 'primary_down' else 'danger' }}" role="alert" aria-labelledby="failover-title">
+  <div class="failover-head">
+    {{ ui.icon('alert', 28) }}
+    <div>
+      {% if failover.kind == "promoted" %}
+      <h2 id="failover-title">Failed over: this server is now the primary</h2>
+      <p>It took over from <code>{{ failover["from"] or "the previous primary" }}</code>{% if failover.at %} on {{ failover.at }} UTC{% endif %}{% if failover.by == "webmanager-promote" %} (with <code>webmanager-promote</code> on the server){% elif failover.by == "system page" %} (from the System page){% endif %}.
+        {% if failover.config_synced_at or failover.data_synced_at %}Its copy of the settings is from {{ failover.config_synced_at or "an unknown time" }} UTC and of site and app data from {{ failover.data_synced_at or "an unknown time" }} UTC: anything changed on the old primary after that is not here.{% else %}Anything changed on the old primary after this server last copied it is not here.{% endif %}</p>
+      {% elif failover.kind == "primary_down" %}
+      <h2 id="failover-title">The primary server isn't answering</h2>
+      <p><code>{{ failover.primary }}</code> hasn't answered {% if failover.since %}since {{ failover.since }} UTC{% else %}since this server started{% endif %}. This server keeps serving its sites, but changes can't be saved until the primary is back.</p>
+      <p class="failover-detail">{{ failover.error }}</p>
+      {% else %}
+      <h2 id="failover-title">Two servers are acting as the primary</h2>
+      <p>This server and <strong>{{ failover.other_name }}</strong> (<code>{{ failover.other }}</code>) both accept changes, and neither sees the other's. {% if failover.this_is_newer %}This server took over more recently, so it is most likely the one to keep.{% else %}{{ failover.other_name }} took over more recently, so it is most likely the one to keep.{% endif %}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% if super_admin %}
+  <div class="failover-body">
+    <h3>Check now</h3>
+    <ol class="failover-checklist">
+      {% if failover.kind == "promoted" %}
+      <li>Make sure <code>{{ failover["from"] or "the old primary" }}</code> stays off, or join it to this server as a replica (run the command from <a href="{{ url_for('admin.dashboard', section='updates') }}#servers">System → Servers</a> on it). Otherwise both accept changes.</li>
+      <li>Point your domain's DNS, router or load balancer at this server, if it isn't already.</li>
+      <li>Check that your sites and apps are up, and the <a href="{{ url_for('admin.dashboard', section='updates') }}#health">health checks</a>.</li>
+      <li>Look at <a href="{{ url_for('admin.activity_log') }}">Activity</a> and redo anything that was changed on the old primary after the last copy.</li>
+      <li>Make a <a href="{{ url_for('admin.dashboard', section='updates') }}#backups">backup</a> of this server.</li>
+      {% elif failover.kind == "primary_down" %}
+      <li>Check the primary: is the machine on, is WebManager running (<code>sudo webmanager-doctor</code> there), can this server reach it?</li>
+      <li>If it is gone for good, make this server the primary: <a href="{{ url_for('admin.dashboard', section='updates') }}#replication">Promote to primary</a> on the System page, or <code>sudo webmanager-promote</code> on this server.</li>
+      {% else %}
+      <li>Decide which server to keep (normally the one that took over most recently).</li>
+      <li>On the other one, run the join command from the kept server's <a href="{{ url_for('admin.dashboard', section='updates') }}#servers">System → Servers</a>, so it becomes a replica again, or take it offline.</li>
+      <li>Redo any change that was made on the server you didn't keep.</li>
+      {% endif %}
+    </ol>
+    {% if failover.kind == "promoted" %}
+    <form method="post" action="{{ url_for('admin.acknowledge_failover') }}" data-confirm="Hide this warning on every page? Only do this once you've checked the list above.">
+      {{ ui.csrf() }}
+      <button class="btn" type="submit">{{ ui.icon('check', 14) }}I've checked everything, hide this</button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="failover-detail">An administrator has been notified and is checking things.</p>
+  {% endif %}
+</section>
+{% endif %}

@@ -29,13 +29,17 @@ from flask import Blueprint, current_app, jsonify, request
 
 from . import peer_http, system_metrics
 from .db import get_db
+from . import server_control
 from .update_status import (
     COMMIT_RE,
     IN_PROGRESS_STATES,
+    auto_install_enabled,
     live_checks_enabled,
     read_update_status,
     request_program_update,
+    request_program_update_check,
     run_live_check,
+    set_auto_install,
     updater_active,
 )
 
@@ -160,12 +164,26 @@ def local_status(app) -> dict:
         # "current", "available", "testing", "backing_up", "installing",
         # "error"...: lets another server show "Updating…" or "failed".
         "update_state": update.get("state"),
+        "auto_install": auto_install_enabled(),
+        **_apps_change(),
         "sites": {"total": sites["total"], "running": sites["running"] or 0},
         "apps_enabled": apps_enabled,
         "apps": apps,
         "cpu_percent": metrics.get("cpu_percent"),
         "memory_percent": (metrics.get("memory") or {}).get("percent"),
         "disk_percent": (metrics.get("disk") or {}).get("percent"),
+    }
+
+
+def _apps_change() -> dict:
+    """A change to app hosting under way here, or one that failed: lets the
+    server that asked for it show "Turning on…" or why it didn't work."""
+    status = server_control.read_status()
+    if not status or status["state"] == "done":
+        return {"apps_change": None, "apps_change_message": None}
+    return {
+        "apps_change": status["state"],
+        "apps_change_message": status["message"] if status["state"] == "error" else None,
     }
 
 
@@ -243,12 +261,12 @@ class MeshHub:
             message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             return False, message, hint
 
-    def request_update(self, url: str, commit: str) -> tuple[bool, str]:
-        """Ask another server to install WebManager version ``commit`` (the
-        one this server runs). (accepted, message for the admin)."""
+    def _post(self, url: str, path: str, payload: dict) -> tuple[bool, str, dict]:
+        """POST JSON to another server's token-only endpoint:
+        (accepted, message for the admin, its answer)."""
         req = urllib.request.Request(
-            f"{url}/mesh/update",
-            data=json.dumps({"commit": commit}).encode(),
+            f"{url}{path}",
+            data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",
@@ -264,26 +282,39 @@ class MeshHub:
                 body = json.loads(exc.read(65536).decode("utf-8"))
             except (ValueError, OSError):
                 body = {}
+            if not isinstance(body, dict):
+                body = {}
             if exc.code == 404 and not body.get("error"):
                 return False, (
-                    "It runs a WebManager too old to be updated from here. "
+                    "It runs a WebManager too old to be managed from here. "
                     "Update it once on that server (its System page, or git pull && sudo bash setup.sh)."
-                )
+                ), body
             message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
-            return False, body.get("error") or hint or message
+            return False, body.get("error") or hint or message, body
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
             message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
-            return False, f"It could not be reached: {hint or message}"
+            return False, f"It could not be reached: {hint or message}", {}
         if not isinstance(body, dict):
-            return False, "It answered, but not like a WebManager server."
-        accepted = bool(body.get("ok"))
-        if accepted and body.get("state") == "requested":
-            with self._lock:
-                version = ((self._remote.get(url) or {}).get("data") or {}).get("version")
-                self._update_requested[url] = (time.time(), version)
+            return False, "It answered, but not like a WebManager server.", {}
         # Show the new state straight away rather than after the next poll.
         threading.Thread(target=self._poll, args=(url,), daemon=True).start()
-        return accepted, str(body.get("message") or body.get("error") or "")
+        return bool(body.get("ok")), str(body.get("message") or body.get("error") or ""), body
+
+    def request_update(self, url: str, commit: str) -> tuple[bool, str]:
+        """Ask another server to install WebManager version ``commit`` (the
+        one this server runs). (accepted, message for the admin)."""
+        with self._lock:
+            version = ((self._remote.get(url) or {}).get("data") or {}).get("version")
+        accepted, message, body = self._post(url, "/mesh/update", {"commit": commit})
+        if accepted and body.get("state") == "requested":
+            with self._lock:
+                self._update_requested[url] = (time.time(), version)
+        return accepted, message
+
+    def control(self, url: str, action: str) -> tuple[bool, str]:
+        """Ask another server to make one of CONTROL_ACTIONS changes."""
+        accepted, message, _body = self._post(url, "/mesh/control", {"action": action})
+        return accepted, message
 
     def _update_state(self, url: str, data: dict):
         """What the other server says about its update, or "requested" from
@@ -397,6 +428,11 @@ class MeshHub:
                     "last_seen": self._last_seen(remote.get("last_ok_at")),
                     "version": data.get("version"),
                     "update_state": update_states.get(url),
+                    "role": data.get("role"),
+                    "promoted_at": data.get("promoted_at"),
+                    "auto_install": data.get("auto_install"),
+                    "apps_change": data.get("apps_change"),
+                    "apps_change_message": data.get("apps_change_message"),
                     "sites": data.get("sites"),
                     "apps_enabled": data.get("apps_enabled"),
                     "apps": data.get("apps"),
@@ -547,6 +583,73 @@ def mesh_update():
             "message": "It is testing, backing up and installing the update now (a minute or two).",
         }
     ), 202
+
+
+CONTROL_ACTIONS = ("apps_on", "apps_off", "auto_updates_on", "auto_updates_off", "sync_now")
+
+
+@bp.post("/mesh/control")
+def mesh_control():
+    """Another server in the group (its super admin, on its Servers list)
+    changes a setting of this one, so a replica never needs its own sign-in or
+    a shell for these. Token only, and only the CONTROL_ACTIONS below; app
+    hosting goes through the same root helper as this server's System page."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None:
+        return jsonify({"error": "Mesh federation is not available."}), 404
+    if not hub.authorize_sensitive(request.headers.get("Authorization", ""), request.remote_addr or ""):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+    payload = request.get_json(silent=True)
+    action = payload.get("action") if isinstance(payload, dict) else None
+    if action not in CONTROL_ACTIONS:
+        return jsonify({"error": f"Unknown action. Use one of: {', '.join(CONTROL_ACTIONS)}."}), 400
+    current_app.logger.info("Change '%s' requested by another server (%s).", action, request.remote_addr)
+
+    if action in ("apps_on", "apps_off"):
+        enable = action == "apps_on"
+        if bool(current_app.config.get("APPS_ENABLED")) == enable:
+            return jsonify({"ok": True, "message": f"App hosting is already {'on' if enable else 'off'} there."})
+        reason = server_control.blocked_reason()
+        if reason:
+            return jsonify({"error": reason}), 409
+        try:
+            server_control.request_app_hosting(enable)
+        except OSError as exc:
+            return jsonify({"error": f"It could not file the request: {exc}"}), 500
+        return jsonify({
+            "ok": True,
+            "message": (
+                "It is turning app hosting on: installing Docker if needed, then restarting "
+                "WebManager (a minute or two)." if enable
+                else "It is turning app hosting off and restarting WebManager."
+            ),
+        }), 202
+
+    if action in ("auto_updates_on", "auto_updates_off"):
+        enable = action == "auto_updates_on"
+        if enable and updater_active() is False:
+            return jsonify({"error": "Its updater service is switched off. Re-run setup.sh on that server."}), 409
+        try:
+            set_auto_install(enable)
+            if enable:
+                request_program_update_check()
+        except OSError as exc:
+            return jsonify({"error": f"It could not change the setting: {exc}"}), 500
+        return jsonify({
+            "ok": True,
+            "message": "It now installs new WebManager versions by itself." if enable
+            else "It now waits for approval before installing a WebManager version.",
+        })
+
+    # sync_now
+    manager = current_app.extensions["replication_manager"]
+    if not manager.is_replica:
+        return jsonify({"error": "It isn't a replica, so it has nothing to sync."}), 409
+    if not manager.sync_once():
+        return jsonify({"error": f"It could not sync: {manager.last_error}"}), 502
+    data_manager = current_app.extensions["data_replication_manager"]
+    threading.Thread(target=data_manager.sync_once, name="webmanager-data-sync-now", daemon=True).start()
+    return jsonify({"ok": True, "message": "Its settings are synced; its site and app data is syncing now."})
 
 
 @bp.get("/mesh/join-info")

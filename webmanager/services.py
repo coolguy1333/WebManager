@@ -124,7 +124,7 @@ class RuntimeManager:
     def apps_status(self):
         """(enabled, message) describing whether apps can run here."""
         if not self.app.config.get("APPS_ENABLED"):
-            return False, "App hosting is turned off (set WEBMANAGER_APPS_ENABLED=1)."
+            return False, "App hosting is turned off. A super admin can turn it on under System → App hosting."
         runtime = self.container_runtime
         if runtime is None:
             return False, "No container runtime found. Install Docker or Podman."

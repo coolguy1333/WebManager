@@ -1,0 +1,9 @@
+[Unit]
+Description=Apply a root-only change requested on the WebManager System page
+
+[Path]
+PathChanged=/var/lib/webmanager-updater/requests/apps
+Unit=webmanager-control.service
+
+[Install]
+WantedBy=multi-user.target

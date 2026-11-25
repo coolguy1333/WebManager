@@ -17,6 +17,10 @@ UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
 DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
 RESTORE_COMMAND=/usr/local/sbin/webmanager-restore
 PROMOTE_COMMAND=/usr/local/sbin/webmanager-promote
+ENABLE_APPS_COMMAND=/usr/local/sbin/webmanager-enable-apps
+CONTROL_COMMAND=/usr/local/sbin/webmanager-control
+CONTROL_SERVICE=/etc/systemd/system/webmanager-control.service
+CONTROL_PATH=/etc/systemd/system/webmanager-control.path
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_ENV=/etc/webmanager/updater.env
 UPDATER_STATE=/var/lib/webmanager-updater
@@ -129,6 +133,10 @@ for required in \
     deploy/debian/doctor.sh \
     deploy/debian/restore.sh \
     deploy/debian/promote.sh \
+    deploy/debian/enable-apps.sh \
+    deploy/debian/control.sh \
+    deploy/debian/webmanager-control.service \
+    deploy/debian/webmanager-control.path \
     deploy/debian/webmanager-logrotate \
     deploy/debian/update.sh \
     deploy/debian/webmanager-update.service \
@@ -469,7 +477,7 @@ if [[ -n $REPLICA_OF ]]; then
     fi
     set_env WEBMANAGER_REPLICA_OF "$REPLICA_OF"
     # Joining (again) undoes an earlier "promote to primary" on this server.
-    rm -f "$DATA_DIR/promoted"
+    rm -f "$DATA_DIR/promoted" "$DATA_DIR/promoted-acknowledged"
     # A replica serves the primary's sites, so it uses the primary's site
     # domain and http/https choice instead of asking for them.
     if [[ -n $PRIMARY_BASE_DOMAIN ]]; then
@@ -605,6 +613,19 @@ if ! install -o root -g root -m 0755 "$SCRIPT_DIR/promote.sh" "$PROMOTE_COMMAND"
     else
         exit 1
     fi
+fi
+# Root-only changes the System page can ask for (today: app hosting on/off).
+# Older updaters' sandboxes may refuse new files here; the next update adds them.
+if install -o root -g root -m 0755 "$SCRIPT_DIR/enable-apps.sh" "$ENABLE_APPS_COMMAND" \
+    && install -o root -g root -m 0755 "$SCRIPT_DIR/control.sh" "$CONTROL_COMMAND" \
+    && install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-control.service" "$CONTROL_SERVICE" \
+    && install -o root -g root -m 0644 "$SCRIPT_DIR/webmanager-control.path" "$CONTROL_PATH"; then
+    CONTROL_INSTALLED=1
+elif [[ $SELF_UPDATE -eq 1 ]]; then
+    CONTROL_INSTALLED=0
+    echo "The existing updater sandbox deferred the dashboard's app-hosting switch until the next update."
+else
+    exit 1
 fi
 if ! install -o root -g root -m 0755 "$SCRIPT_DIR/restore.sh" "$RESTORE_COMMAND"; then
     if [[ $SELF_UPDATE -eq 1 ]]; then
@@ -829,6 +850,12 @@ if grep -q '^WEBMANAGER_UPDATE_ENABLED=1$' "$UPDATER_ENV"; then
 elif [[ $SELF_UPDATE -eq 0 ]]; then
     systemctl disable --now webmanager-update.timer 2>/dev/null || true
     systemctl disable --now webmanager-update.path 2>/dev/null || true
+fi
+
+if [[ ${CONTROL_INSTALLED:-0} -eq 1 ]]; then
+    systemctl daemon-reload
+    systemctl enable --now webmanager-control.path 2>/dev/null \
+        || echo "Could not start webmanager-control.path; the System page can't switch app hosting until it runs."
 fi
 
 echo "[8/8] Configuring UFW when it is already active"
