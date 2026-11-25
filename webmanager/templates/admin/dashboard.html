@@ -382,7 +382,10 @@
   {% if not mesh_token_configured %}
   <div class="alert warning mb-16">{{ ui.icon('alert') }}<div class="alert-body"><strong><code>WEBMANAGER_PEER_TOKEN</code> is not set.</strong> <code>/mesh/status</code> is public and unauthenticated. Set the same token on every server in the group.</div></div>
   {% endif %}
-  <div class="list mesh-list" role="table" aria-label="Servers">
+  {% if own_version and mesh_entries | selectattr("version") | rejectattr("version", "equalto", own_version) | list %}
+  <p class="hint mb-16">This server runs WebManager <code>{{ own_version }}</code>. Servers on another version show an <strong>Update</strong> button that installs this version there.</p>
+  {% endif %}
+  <div class="list mesh-list" role="table" aria-label="Servers" data-own-version="{{ own_version or '' }}">
     <div class="list-head" role="row">
       <span role="columnheader">Server</span>
       <span role="columnheader">Status</span>
@@ -410,7 +413,18 @@
         {% elif peer.checked_at %}<span class="badge badge-danger" title="{{ peer.error }}"><span class="dot"></span>Unreachable</span>
         {% else %}<span class="badge">Checking…</span>{% endif %}
       </div>
-      <div role="cell" data-mesh-stat="version" data-label="Version">{{ peer.version or "—" }}</div>
+      <div role="cell" class="mesh-version" data-label="Version">
+        <span data-mesh-stat="version">{{ peer.version or "—" }}</span>
+        {% if own_version %}
+        {% set peer_updating = peer.update_state in ("testing", "backing_up", "installing") %}
+        <span class="badge badge-info" data-mesh-updating{% if not peer_updating %} hidden{% endif %}>Updating…</span>
+        <form method="post" action="{{ url_for('admin.update_server') }}" data-loading data-mesh-update{% if not peer.reachable or not peer.version or peer.version == own_version or peer_updating %} hidden{% endif %} data-confirm="Update WebManager on {{ peer.hostname }} to {{ own_version }}, the version this server runs? It tests the update, backs up its data and restarts WebManager there (a minute or two); its sites keep running. A failed update is rolled back.">
+          {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}">
+          <button class="btn btn-sm" type="submit" data-loading-text="Asking…" title="Install {{ own_version }} (this server's version) there">{{ ui.icon('download', 12) }}Update</button>
+        </form>
+        <small class="hint" data-mesh-update-failed{% if peer.update_state != "error" or peer.version == own_version %} hidden{% endif %}>Its last update failed; see its System page.</small>
+        {% endif %}
+      </div>
       <div role="cell" data-mesh-stat="sites" data-label="Sites">{% if peer.sites %}{{ peer.sites.running }}/{{ peer.sites.total }} running{% else %}—{% endif %}</div>
       <div role="cell" data-mesh-stat="apps" data-label="Apps">{% if peer.apps %}{{ peer.apps.running }}/{{ peer.apps.total }} running{% elif peer.apps_enabled == false %}Off{% else %}—{% endif %}</div>
       <div role="cell" data-mesh-stat="cpu" data-label="CPU">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>

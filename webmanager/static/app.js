@@ -655,6 +655,16 @@ if (metricsPanel) {
       }
       row.toggleAttribute("data-mesh-empty", !peer.version && !peer.sites && (peer.cpu_percent === null || peer.cpu_percent === undefined));
       setMesh(row, "version", peer.version || "—");
+      const ownVersion = row.closest("[data-own-version]")?.dataset.ownVersion || "";
+      const updating = ["testing", "backing_up", "installing"].includes(peer.update_state);
+      const updateForm = row.querySelector("[data-mesh-update]");
+      const updatingBadge = row.querySelector("[data-mesh-updating]");
+      const updateFailed = row.querySelector("[data-mesh-update-failed]");
+      if (updatingBadge) updatingBadge.hidden = !updating;
+      if (updateForm && !updateForm.querySelector('[aria-busy="true"]')) {
+        updateForm.hidden = !ownVersion || !peer.reachable || !peer.version || peer.version === ownVersion || updating;
+      }
+      if (updateFailed) updateFailed.hidden = peer.update_state !== "error" || peer.version === ownVersion;
       setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
       setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
       setMesh(row, "cpu", peer.cpu_percent !== null && peer.cpu_percent !== undefined ? `${peer.cpu_percent}%` : "—");

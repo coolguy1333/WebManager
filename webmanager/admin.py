@@ -276,6 +276,8 @@ def dashboard():
         can_manage_access=can_manage_access,
         super_admin=super_admin,
         update_status=update_status,
+        # Super admins only: the version another server can be updated to.
+        own_version=((update_status or {}).get("installed_commit") or "")[:12] or None,
         update_auto_requested=update_auto_requested,
         update_auto_install=(auto_install_enabled() if active_section == "updates" and super_admin else None),
         quota_defaults=quota_defaults,
@@ -945,6 +947,39 @@ def add_server():
             f"{url} was added, but it isn't answering yet: {error} {hint or ''}".strip(),
             "error",
         )
+    return redirect(back)
+
+
+@bp.post("/servers/update")
+@login_required
+def update_server():
+    """Bring another server in the group to the WebManager version this one
+    runs (typically: update the primary, then press Update on each replica)."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = url_for("admin.dashboard", section="updates") + "#servers"
+    hub = current_app.extensions["mesh_hub"]
+    url = mesh.normalize_peer_url(request.form.get("url", ""))
+    if url is None or url not in hub.urls:
+        flash("That server is not in this server's list.", "error")
+        return redirect(back)
+    if not hub.token:
+        flash("Turn on server sharing first, so the servers can talk to each other.", "error")
+        return redirect(back)
+    commit = read_update_status().get("installed_commit")
+    if not commit:
+        flash(
+            "This server doesn't know which WebManager version it runs, so there is nothing to "
+            "match. Install an update here first, then try again.",
+            "error",
+        )
+        return redirect(back)
+    ok, message = hub.request_update(url, commit)
+    if ok:
+        flash(f"Updating {url} to {commit[:12]}. {message}".strip(), "success")
+    else:
+        flash(f"Could not update {url}: {message}", "error")
     return redirect(back)
 
 

@@ -75,6 +75,7 @@ _LOCAL_ONLY_ENDPOINTS = {
     "admin.test_notification",
     "admin.enable_server_sharing",
     "admin.add_server",
+    "admin.update_server",
     "admin.remove_server",
 }
 

@@ -43,6 +43,7 @@ LABELS = {
     "admin.enable_server_sharing": "Turned on server sharing",
     "admin.add_server": "Added a server",
     "admin.remove_server": "Removed a server",
+    "admin.update_server": "Updated another server",
     "admin.promote_replica": "Promoted this server to primary",
     "admin.create_backup": "Made a backup",
     "admin.save_notifications": "Changed notification settings",

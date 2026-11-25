@@ -411,7 +411,7 @@ class WriteForwardingTests(unittest.TestCase):
 
         for endpoint in (
             "admin.set_program_auto_install", "admin.create_backup", "admin.enable_server_sharing",
-            "admin.add_server", "admin.remove_server", "admin.promote_replica",
+            "admin.add_server", "admin.remove_server", "admin.promote_replica", "admin.update_server",
         ):
             self.assertIn(endpoint, _LOCAL_ONLY_ENDPOINTS)
 

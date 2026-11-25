@@ -465,7 +465,9 @@ details > summary::-webkit-details-marker { display: none; }
 .sites-list .list-head, .sites-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) 140px minmax(0, 1fr) 170px; }
 .apps-list .list-head, .apps-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 130px 80px minmax(0, 1fr) 170px; }
 .admin-apps-list .list-head, .admin-apps-list .list-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 130px 70px minmax(0, 1fr) minmax(0, 1.3fr) 110px; }
-.mesh-list .list-head, .mesh-list .list-row { grid-template-columns: minmax(0, 1.8fr) 130px 90px minmax(0, 1fr) minmax(0, 1fr) 70px 80px 70px; }
+.mesh-list .list-head, .mesh-list .list-row { grid-template-columns: minmax(0, 1.8fr) 130px 130px minmax(0, 1fr) minmax(0, 1fr) 70px 80px 70px; }
+.mesh-version { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.mesh-version form { margin: 0; }
 .site-name { display: flex; flex-direction: column; min-width: 0; }
 .site-name a { color: var(--text); font-weight: 620; font-size: 0.95rem; }
 .site-name small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -802,9 +804,10 @@ fieldset.field legend { margin-bottom: 6px; }
   /* Server rows: name and problem on their own lines, the figures wrap side by side with their labels. */
   .mesh-list .list-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
   .mesh-list .list-row > .site-name, .mesh-list .list-row > .site-error { flex: 1 0 100%; margin-top: 0; }
-  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"]) { font-size: 0.85rem; }
-  .mesh-list .list-row[data-mesh-empty] > [data-mesh-stat]:not([data-mesh-stat="status"]) { display: none; }
-  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"])::before { content: attr(data-label) " "; color: var(--text-faint); font-size: 0.75rem; }
+  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"]), .mesh-list .list-row > .mesh-version { font-size: 0.85rem; }
+  .mesh-list .list-row[data-mesh-empty] > [data-mesh-stat]:not([data-mesh-stat="status"]), .mesh-list .list-row[data-mesh-empty] > .mesh-version { display: none; }
+  .mesh-list .list-row > [data-mesh-stat]:not([data-mesh-stat="status"])::before, .mesh-list .list-row > .mesh-version::before { content: attr(data-label) " "; color: var(--text-faint); font-size: 0.75rem; }
+  .mesh-version { flex-direction: row; align-items: center; gap: 8px; }
 }
 
 @media (max-width: 860px) {

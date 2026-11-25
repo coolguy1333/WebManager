@@ -472,9 +472,18 @@ else
         exit 1
     fi
     if [[ $APPROVED_COMMIT != "$NEW_COMMIT" ]]; then
+        # Only the newest version of the update branch is ever installed. The
+        # approval named another one: a newer commit appeared since, or (asked
+        # by another server) a version this branch isn't at.
         rm -f "$REQUEST_FILE"
-        write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "A newer commit appeared after approval. Review and approve the new commit."
+        if [[ -n $INSTALLED_COMMIT && $NEW_COMMIT == "$INSTALLED_COMMIT" ]]; then
+            forget_failure
+            write_status "current" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+                "WebManager is current. The requested version (${APPROVED_COMMIT:0:12}) is not the newest on $BRANCH, so nothing was installed."
+        else
+            write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+                "The approved version (${APPROVED_COMMIT:0:12}) is not the newest on $BRANCH. Review and approve the newest one."
+        fi
         exit 0
     fi
 fi

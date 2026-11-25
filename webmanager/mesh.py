@@ -29,10 +29,20 @@ from flask import Blueprint, current_app, jsonify, request
 
 from . import peer_http, system_metrics
 from .db import get_db
-from .update_status import read_update_status
+from .update_status import (
+    COMMIT_RE,
+    IN_PROGRESS_STATES,
+    live_checks_enabled,
+    read_update_status,
+    request_program_update,
+    run_live_check,
+    updater_active,
+)
 
 POLL_SECONDS = 20
 TIMEOUT_SECONDS = 10
+# Asking a server to update waits for its quick check of GitHub (up to 15s).
+UPDATE_REQUEST_TIMEOUT_SECONDS = 25
 # The token guards the session-signing key and full database/data snapshots,
 # so a short, guessable one is refused rather than trusted.
 MIN_TOKEN_LENGTH = 16
@@ -137,13 +147,17 @@ def local_status(app) -> dict:
         ).fetchone()
         apps = {"total": row["total"], "running": row["running"] or 0}
     metrics = system_metrics.collect_basic(app)
-    installed_commit = read_update_status().get("installed_commit")
+    update = read_update_status()
+    installed_commit = update.get("installed_commit")
     from .replication import server_role  # replication imports this module's helpers
 
     return {
         **server_role(app),
         "hostname": metrics.get("hostname"),
         "version": installed_commit[:12] if installed_commit else None,
+        # "current", "available", "testing", "backing_up", "installing",
+        # "error"...: lets another server show "Updating…" or "failed".
+        "update_state": update.get("state"),
         "sites": {"total": sites["total"], "running": sites["running"] or 0},
         "apps_enabled": apps_enabled,
         "apps": apps,
@@ -224,6 +238,43 @@ class MeshHub:
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
             message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             return False, message, hint
+
+    def request_update(self, url: str, commit: str) -> tuple[bool, str]:
+        """Ask another server to install WebManager version ``commit`` (the
+        one this server runs). (accepted, message for the admin)."""
+        req = urllib.request.Request(
+            f"{url}/mesh/update",
+            data=json.dumps({"commit": commit}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.token}",
+            },
+            method="POST",
+        )
+        try:
+            with peer_http.open_peer(req, timeout=UPDATE_REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310 - listed peer URL
+                body = json.loads(response.read(65536).decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read(65536).decode("utf-8"))
+            except (ValueError, OSError):
+                body = {}
+            if exc.code == 404 and not body.get("error"):
+                return False, (
+                    "It runs a WebManager too old to be updated from here. "
+                    "Update it once on that server (its System page, or git pull && sudo bash setup.sh)."
+                )
+            message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
+            return False, body.get("error") or hint or message
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
+            return False, f"It could not be reached: {hint or message}"
+        if not isinstance(body, dict):
+            return False, "It answered, but not like a WebManager server."
+        # Show the new state straight away rather than after the next poll.
+        threading.Thread(target=self._poll, args=(url,), daemon=True).start()
+        return bool(body.get("ok")), str(body.get("message") or body.get("error") or "")
 
     def stop(self):
         self._stop_event.set()
@@ -314,6 +365,7 @@ class MeshHub:
                     "checked_at": remote.get("checked_at"),
                     "last_seen": self._last_seen(remote.get("last_ok_at")),
                     "version": data.get("version"),
+                    "update_state": data.get("update_state"),
                     "sites": data.get("sites"),
                     "apps_enabled": data.get("apps_enabled"),
                     "apps": data.get("apps"),
@@ -391,6 +443,79 @@ def mesh_register():
         return jsonify({"error": f"{url} did not answer: {error}", "hint": hint}), 400
     hub.add_saved_url(url)
     return jsonify({"ok": True, "url": url})
+
+
+@bp.post("/mesh/update")
+def mesh_update():
+    """Another server in the group asks this one to install a WebManager
+    version: the one it runs itself, so the two match. Token only.
+
+    This only files the same approval the System page's "Install" button
+    does. The root updater still installs nothing but the newest version of
+    this server's own update branch, after testing it and backing up, and
+    rolls back if it fails, so a caller can't pick arbitrary code."""
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None:
+        return jsonify({"error": "Mesh federation is not available."}), 404
+    if not hub.authorize_sensitive(request.headers.get("Authorization", ""), request.remote_addr or ""):
+        return jsonify({"error": "Invalid or missing peer token"}), 401
+    payload = request.get_json(silent=True)
+    commit = payload.get("commit") if isinstance(payload, dict) else None
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        return jsonify({"error": "Send {\"commit\": \"<40-character commit>\"}."}), 400
+    status = read_update_status()
+    if status.get("installed_commit") == commit:
+        return jsonify({"ok": True, "state": "current", "message": "It already runs that version."})
+    if status.get("state") in IN_PROGRESS_STATES:
+        return jsonify({"ok": True, "state": status["state"], "message": "It is already installing an update."})
+    if live_checks_enabled():
+        # The updater only installs the newest version of this server's update
+        # branch; say now (not a minute later on its System page) if that isn't it.
+        latest = run_live_check(current_app._get_current_object(), wait=True, timeout=15)
+        newest = latest.get("available_commit")
+        if newest and newest != commit:
+            if not latest.get("update_available"):
+                return jsonify(
+                    {
+                        "error": (
+                            f"It already runs the newest version of its update branch ({newest[:12]}), "
+                            f"not {commit[:12]}. Update this server instead, or make both follow the same "
+                            "update branch (WEBMANAGER_UPDATE_BRANCH)."
+                        )
+                    }
+                ), 409
+            return jsonify(
+                {
+                    "error": (
+                        f"The newest version on its update branch is {newest[:12]}, not {commit[:12]}. "
+                        "Update this server first, or make both follow the same update branch "
+                        "(WEBMANAGER_UPDATE_BRANCH)."
+                    )
+                }
+            ), 409
+    if updater_active() is False:
+        return jsonify(
+            {
+                "error": (
+                    "Its updater service is switched off. On that server run: sudo systemctl enable "
+                    "--now webmanager-update.path webmanager-update.timer (or re-run setup.sh)."
+                )
+            }
+        ), 409
+    try:
+        request_program_update(commit)
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": f"It could not file the update request: {exc}"}), 500
+    current_app.logger.info(
+        "WebManager update to %s requested by another server (%s).", commit[:12], request.remote_addr
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "state": "requested",
+            "message": "It is testing, backing up and installing the update now (a minute or two).",
+        }
+    ), 202
 
 
 @bp.get("/mesh/join-info")
