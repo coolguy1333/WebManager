@@ -82,6 +82,30 @@ def summarize_build_failure(output: str, limit: int = 1500) -> tuple[str, str]:
     return reason, tidy
 
 
+def readable_build_context(context: Path):
+    """Give the files an image is built from the permissions a normal
+    checkout has (644, and 755 for folders and executables).
+
+    WebManager checks repositories out with a private umask (640/750), and
+    Docker copies files into the image with those modes, owned by root: an
+    app that runs as a non-root user (as it should) then can't read its own
+    code. The checkout stays private on the server: the folders above it
+    are closed to other users. Git ignores these bits, so nothing shows as
+    a local change."""
+    for root, directories, files in os.walk(context):
+        for name in directories:
+            path = os.path.join(root, name)
+            if not os.path.islink(path):
+                os.chmod(path, os.stat(path).st_mode | 0o055)
+        for name in files:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                continue
+            mode = os.stat(path).st_mode
+            os.chmod(path, mode | 0o044 | (0o011 if mode & 0o100 else 0))
+    os.chmod(context, os.stat(context).st_mode | 0o055)
+
+
 _NETWORK_FAILURE_RE = re.compile(
     r"temporary error|temporary failure|could not resolve|EAI_AGAIN|ENOTFOUND|getaddrinfo"
     r"|name or service not known|network is unreachable|i/o timeout|failed to fetch",
@@ -363,6 +387,7 @@ class ContainerRuntime:
 
     def build(self, site_id: int, context: Path, tag: str, log_path: Path | None = None) -> str:
         image = self.image_name(site_id, tag)
+        readable_build_context(context)
         result = self._run(
             ["build", "--label", f"webmanager.app={site_id}", "-t", image, str(context)],
             timeout=900,

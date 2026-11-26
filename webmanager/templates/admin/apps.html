@@ -36,8 +36,8 @@
     </div>
     <div class="row-meta" role="cell">{{ site.owner_name or site.owner_email }}</div>
     <div role="cell">{{ ui.status_badge(site.status) }}</div>
-    <div role="cell" data-stat="cpu">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
-    <div role="cell" data-stat="memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
+    <div role="cell" data-stat="cpu" data-label="CPU">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
+    <div role="cell" data-stat="memory" data-label="Memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
     <div role="cell" data-stat="net">{% if app_stats %}↓ {{ app_stats.net_rx }} ↑ {{ app_stats.net_tx }}{% else %}—{% endif %}</div>
     <div class="row-actions col-actions" role="cell">
       <a class="btn btn-sm" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">Manage</a>

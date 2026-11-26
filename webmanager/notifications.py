@@ -7,6 +7,7 @@ small JSON document (``title``, ``text``, ``level``, ``server``), which ntfy,
 Mattermost, Teams workflows and home-grown receivers can all read.
 """
 
+import http.client
 import json
 import socket
 import threading
@@ -60,8 +61,15 @@ def deliver(url: str, title: str, text: str, level: str = "info") -> tuple[bool,
             return True, f"Delivered (HTTP {response.status})."
     except urllib.error.HTTPError as exc:
         return False, f"The webhook answered HTTP {exc.code}. Check that the address is complete and still valid."
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        return False, f"Could not reach the webhook: {getattr(exc, 'reason', exc)}."
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        message, _hint = peer_http.explain_failure(exc, TIMEOUT_SECONDS)
+        reasons = {
+            "Connection refused": "nothing is listening at that address and port",
+            "Timed out": f"it didn't answer within {TIMEOUT_SECONDS} seconds",
+            "Name not found": "that hostname could not be found",
+        }
+        reason = reasons.get(message, message)
+        return False, f"Could not reach the webhook: {reason}. Check the address, and that this server can reach it."
 
 
 class Notifier:

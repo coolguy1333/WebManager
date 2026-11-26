@@ -194,6 +194,11 @@ class RuntimeManager:
             return False
         with self.app.app_context():
             database = get_db()
+            row = database.execute("SELECT status FROM sites WHERE id = ?", (site_id,)).fetchone()
+            # Its last start failed: build the image again instead of reusing
+            # it, so a fix (in WebManager or the base image) takes effect
+            # without waiting for a new commit. Docker's cache keeps it quick.
+            rebuild = bool(row and row["status"] == "error")
             database.execute(
                 "UPDATE sites SET status = 'starting', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (site_id,),
@@ -204,7 +209,7 @@ class RuntimeManager:
             try:
                 with self.app.app_context():
                     try:
-                        self._start_app(site_id, force=force)
+                        self._start_app(site_id, force=force, rebuild=rebuild)
                     except RuntimeErrorDetail as exc:
                         self.app.logger.warning("App %s failed to start: %s", site_id, exc)
                     except Exception as exc:  # noqa: BLE001 - never leave the app stuck on "starting"
@@ -228,7 +233,7 @@ class RuntimeManager:
             manifest, stored, app_id=site["id"], public_url=public_url
         )
 
-    def _start_app(self, site_id: int, force: bool = False):
+    def _start_app(self, site_id: int, force: bool = False, rebuild: bool = False):
         database = get_db()
         site = database.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
         if site is None:
@@ -271,7 +276,7 @@ class RuntimeManager:
         rolled_back = False
         restore_error = None
         try:
-            if not runtime.image_exists(image):
+            if rebuild or not runtime.image_exists(image):
                 runtime.build(site_id, Path(site["document_root"]), (commit or "manual")[:12], log_path)
             digest = app_support.config_hash(image, env, site["port"])
             current = runtime.inspect(name)
@@ -331,7 +336,8 @@ class RuntimeManager:
                 if not healthy:
                     logs = runtime.logs(name, 30)
                     runtime.remove(name)
-                    detail = f"The new version didn't pass its health check: {message}.\n{logs[-1500:]}"
+                    which = "The new version" if previous else "The app"
+                    detail = f"{which} didn't pass its health check: {message}.\n{logs[-1500:]}"
                     if not previous:
                         raise app_support.AppError(detail)
                     runtime.rename(previous, name)

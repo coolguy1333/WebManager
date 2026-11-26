@@ -831,6 +831,8 @@ fieldset.field legend { margin-bottom: 6px; }
     grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 14px 16px;
   }
   .apps-list .row-actions, .admin-apps-list .row-actions { justify-content: flex-start; margin-top: 4px; }
+  /* Column headers are hidden here, so CPU and memory say what they are. */
+  .apps-list [data-stat][data-label]::before, .admin-apps-list [data-stat][data-label]::before { content: attr(data-label) " "; color: var(--text-faint); font-size: 0.75rem; }
   /* Server rows: name and problem on their own lines, the figures wrap side by side with their labels. */
   .mesh-list .list-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
   .mesh-list .list-row > .site-name, .mesh-list .list-row > .site-error, .mesh-list .list-row > .mesh-manage { flex: 1 0 100%; margin-top: 0; }

@@ -23,6 +23,7 @@ separately - see webmanager/data_replication.py.
 """
 
 import atexit
+import http.client
 import json
 import os
 import shutil
@@ -122,7 +123,7 @@ def fetch_secret_key(primary_url: str, token: str, timeout: float = 10) -> str:
     try:
         with peer_http.open_peer(req, timeout=timeout) as response:  # noqa: S310 - configured primary URL
             key = response.read().decode("utf-8").strip()
-    except (urllib.error.URLError, OSError) as exc:  # HTTPError is a URLError
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:  # HTTPError is a URLError
         raise ReplicationError(
             f"Could not fetch the secret key from {primary_url}: {peer_http.describe_failure(exc, timeout)}"
         ) from exc
@@ -153,7 +154,7 @@ def find_or_create_user_via_primary(manager, claims: dict) -> int:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ReplicationError(f"The primary rejected the sign-in: {detail}") from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise ReplicationError(
             f"Could not reach primary {manager.primary_url}: {peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
         ) from exc
@@ -336,7 +337,7 @@ class ReplicationManager:
                     primary_data_dir = response.headers.get(DATA_DIR_HEADER, "") or ""
                     with os.fdopen(descriptor, "wb") as handle:
                         shutil.copyfileobj(response, handle)
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, http.client.HTTPException) as exc:
                 raise ReplicationError(
                     f"Could not reach primary {self.primary_url}: "
                     f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
@@ -382,7 +383,7 @@ class ReplicationManager:
             body = exc.read()
             status = exc.code
             response_headers = list(exc.headers.items())
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
             detail = (
                 f"The primary server ({self.primary_url}) could not be reached: "
                 f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"
