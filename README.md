@@ -871,6 +871,14 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   server accepts changes. Joining a server again as a replica also undoes
   an earlier promotion on it.
 
+- **Replica addresses.** Each replica gets a name under the dashboard
+  domain, `replica1.<dashboard domain>`, `replica2…` (in the order the primary
+  first sees them), and the Servers list opens it there. The primary passes
+  that name through to the replica over the local network, so it works from
+  anywhere the dashboard does, with no DNS or tunnel changes as long as names
+  under the dashboard domain reach the primary (as `*.<domain>` site
+  addresses do). **Sign in through the primary** then goes via the primary's
+  public address. A site already named `replica1` keeps that name.
 - **Managing another server.** Each row in **System → Servers** has a
   **Manage** panel: turn app hosting on or off there (it installs Docker if
   needed and restarts WebManager on that server), switch its automatic

@@ -320,13 +320,23 @@ def via_primary():
     manager = current_app.extensions["replication_manager"]
     if not manager.is_replica:
         return redirect(url_for("auth.login"))
+    from . import server_aliases
+    from .domains import dashboard_hostname
+
     state = secrets.token_urlsafe(24)
-    own_address = request.host_url.rstrip("/")
+    scheme = server_aliases.request_scheme()
+    own_address = f"{scheme}://{request.host}"
+    primary_address = manager.primary_url
+    if server_aliases.is_alias_host(get_db(), request.host) and dashboard_hostname():
+        # Opened as replicaN.<dashboard domain>, perhaps from outside the
+        # local network: go through the primary's public address, not the
+        # local one this server syncs from.
+        primary_address = f"{scheme}://{dashboard_hostname()}"
     session["handoff_state"] = state
     session["handoff_address"] = own_address
     session["post_login_next"] = _safe_next(request.args.get("next"))
     return redirect(
-        f"{manager.primary_url}/auth/handoff?" + urlencode({"return": own_address, "state": state})
+        f"{primary_address}/auth/handoff?" + urlencode({"return": own_address, "state": state})
     )
 
 
@@ -340,7 +350,12 @@ def handoff():
     state = request.args.get("state", "")
     if target is None or not HANDOFF_STATE_RE.fullmatch(state):
         abort(400, "This sign-in link is not valid. Start again from the other server.")
-    if target not in current_app.extensions["mesh_hub"].urls:
+    from . import server_aliases
+
+    replica_addresses = {
+        f"{scheme}://{hostname}" for hostname in server_aliases.hostnames(get_db()) for scheme in ("http", "https")
+    }
+    if target not in current_app.extensions["mesh_hub"].urls and target not in replica_addresses:
         abort(
             400,
             f"{target} is not in this server's list of servers, so it can't sign people in there. "

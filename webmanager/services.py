@@ -1039,6 +1039,12 @@ class RuntimeManager:
             for filename, placeholder in paused_configs.items():
                 emit(config_dir / filename, placeholder)
 
+            from . import server_aliases
+
+            manager = self.app.extensions.get("replication_manager")
+            own_names, replica_routes = server_aliases.nginx_plan(
+                database, bool(manager is not None and manager.is_replica)
+            )
             emit(
                 root / "nginx.conf",
                 build_main_config(
@@ -1060,8 +1066,9 @@ class RuntimeManager:
                             ORDER BY is_primary DESC, name COLLATE NOCASE
                             """
                         ).fetchall()
-                    ),
+                    ) + tuple(own_names),
                     self.app.config["PORT"],
+                    tuple(replica_routes),
                 ),
             )
         except OSError as exc:

@@ -36,7 +36,7 @@ from .domains import (
 )
 import secrets
 
-from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_control, system_metrics
+from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -301,6 +301,12 @@ def dashboard():
             current_app.extensions["mesh_hub"].entries()
             if active_section == "updates"
             else None
+        ),
+        # Where to open each server: its replicaN.<dashboard domain> name when it has one.
+        peer_links=(
+            server_aliases.public_urls(database, server_aliases.request_scheme())
+            if active_section == "updates"
+            else {}
         ),
         backup_list=(backups.list_backups(current_app) if active_section == "updates" and super_admin else None),
         backup_keep=current_app.config.get("BACKUP_KEEP", 14),
@@ -1093,6 +1099,14 @@ def remove_server():
         abort(403)
     url = mesh.normalize_peer_url(request.form.get("url", ""))
     if url and current_app.extensions["mesh_hub"].remove_saved_url(url):
+        current_app.extensions["mesh_hub"]._named.discard(url)
+        if server_aliases.remove(get_db(), url):
+            runtime = current_app.extensions["runtime_manager"]
+            if runtime.nginx_binary:
+                try:
+                    runtime.apply_nginx_configs()
+                except RuntimeErrorDetail:
+                    pass
         flash(f"{url} removed from this list.", "success")
     else:
         flash("That server is listed in the settings file, so remove it there.", "error")

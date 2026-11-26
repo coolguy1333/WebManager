@@ -330,21 +330,65 @@ def upgrade_legacy_site_config(config: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", upgraded)
 
 
+_REPLICA_HOST_RE = re.compile(r"^replica\d{1,4}(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+_REPLICA_UPSTREAM_RE = re.compile(r"^https?://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
+REPLICA_DOWN_PAGE = (
+    "<!doctype html><meta charset=utf-8><title>Replica not answering</title>"
+    "<body style=\"font-family:system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1rem\">"
+    "<h1>This replica isn\\'t answering</h1><p>The primary passed the request on, but the replica "
+    "didn\\'t answer. Check that it is on and WebManager is running there (sudo webmanager-doctor), "
+    "or open it from the Servers list on the primary\\'s System page.</p></body>"
+)
+
+
 def build_main_config(
     prefix: Path,
     config_directory: Path,
     gateway_port: int | None = None,
     dashboard_hostnames: tuple[str, ...] = (),
     app_port: int | None = None,
+    replica_routes: tuple[tuple[str, str], ...] = (),
 ) -> str:
     prefix_path = nginx_path(prefix)
     config_path = nginx_path(config_directory / "*.conf")
     gateway_default = ""
     if gateway_port:
         dashboard_proxy = ""
+        for hostname, upstream in replica_routes:
+            # replicaN.<dashboard domain> on the primary: passed through to
+            # that replica's dashboard over the local network.
+            if not _REPLICA_HOST_RE.fullmatch(hostname) or not _REPLICA_UPSTREAM_RE.fullmatch(upstream):
+                continue
+            dashboard_proxy += f"""
+    server {{
+        listen 127.0.0.1:{gateway_port};
+        listen [::1]:{gateway_port};
+        server_name {hostname};
+        client_max_body_size 2m;
+
+        location / {{
+            proxy_pass {upstream};
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_ssl_server_name on;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 60s;
+            proxy_intercept_errors off;
+            error_page 502 504 = @webmanager_replica_down;
+        }}
+
+        location @webmanager_replica_down {{
+            default_type text/html;
+            return 502 '{REPLICA_DOWN_PAGE}';
+        }}
+    }}
+"""
         if dashboard_hostnames and app_port:
             server_names = " ".join(dashboard_hostnames)
-            dashboard_proxy = f"""
+            dashboard_proxy += f"""
     server {{
         listen 127.0.0.1:{gateway_port};
         listen [::1]:{gateway_port};

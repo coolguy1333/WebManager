@@ -209,6 +209,7 @@ class MeshHub:
         # url -> (when an update was asked for, the version it ran then)
         self._update_requested: dict[str, tuple[float, str | None]] = {}
         self._fails_lock = threading.Lock()
+        self._named: set[str] = set()  # replicas whose name is already recorded
         self.running = False  # set by start(): False in tests, so nothing polls
 
     def start(self):
@@ -374,6 +375,8 @@ class MeshHub:
                     "reachable": True, "error": None, "hint": None,
                     "checked_at": now, "last_ok_at": now, "data": body,
                 }
+            if body.get("role") == "replica":
+                self._name_replica(url)
             if was_reachable is False:
                 self.app.logger.info("Mesh peer %s is reachable again.", url)
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
@@ -392,6 +395,29 @@ class MeshHub:
                 }
             if was_reachable is not False:
                 self.app.logger.warning("Mesh peer %s is unreachable: %s (%s)", url, message, hint)
+
+    def _name_replica(self, url):
+        """Give a replica its public name (replicaN.<dashboard domain>) the
+        first time this primary sees it, and start passing that name to it."""
+        if self.app is None or url in self._named:
+            return
+        manager = self.app.extensions.get("replication_manager")
+        if manager is not None and manager.is_replica:
+            return  # names are handed out by the primary; this copy is mirrored
+        from . import server_aliases
+
+        try:
+            with self.app.app_context():
+                database = get_db()
+                number, new = server_aliases.assign(database, url)
+                self._named.add(url)
+                if new and server_aliases.base_domain(database):
+                    self.app.logger.info("%s is now replica%s.", url, number)
+                    runtime = self.app.extensions.get("runtime_manager")
+                    if runtime is not None and runtime.nginx_binary:
+                        runtime.apply_nginx_configs()
+        except Exception:  # noqa: BLE001 - naming must never break polling
+            self.app.logger.exception("Could not give %s its replica name", url)
 
     def _last_seen(self, epoch):
         """"3 minutes ago" for the last successful poll, or None if never."""

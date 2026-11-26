@@ -222,6 +222,8 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
       <li>WebManager has no way to tell the old primary it has been replaced. When it comes back, join it to the new primary as a replica (run the join command from the new primary's <strong>System → Servers</strong> on it) or take it offline — otherwise two servers accept changes at once.</li>
       <li>Joining a server again as a replica undoes an earlier promotion on it.</li>
     </ul>
+    <h4>Replica addresses</h4>
+    <p>Each replica gets a name under the dashboard domain: <code>replica1.&lt;dashboard domain&gt;</code>, <code>replica2…</code>, in the order the primary first sees them. The Servers list opens it there. The primary passes that name through to the replica over the local network, so it works from anywhere the dashboard does, with no DNS or tunnel changes as long as names under the dashboard domain reach the primary (as site addresses do). <strong>Sign in through the primary</strong> then goes through the primary's public address.</p>
     <h4>Managing another server</h4>
     <p>Each row in <strong>System → Servers</strong> has a <strong>Manage</strong> panel: turn app hosting on or off there (it installs Docker if needed and restarts WebManager on that server; a replica needs it to copy app data), switch its automatic WebManager updates, make a replica sync now, or open its own System page.</p>
     <h4>The failover warning</h4>

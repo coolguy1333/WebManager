@@ -277,14 +277,25 @@ class ReplicationManager:
             connection = sqlite3.connect(
                 f"file:{self.app.config['DATABASE']}?mode=ro", uri=True, timeout=5
             )
+            def rows(query):
+                try:
+                    return connection.execute(query).fetchall()
+                except sqlite3.OperationalError:  # a table this copy doesn't have
+                    return None
+
             try:
+                if connection.execute("SELECT name FROM sqlite_master WHERE name = 'sites'").fetchone() is None:
+                    return None
                 return [
-                    connection.execute(query).fetchall()
+                    rows(query)
                     for query in (
                         "SELECT id, kind, status, slug, port, document_root, index_file, "
                         "nginx_config, domain_id FROM sites ORDER BY id",
                         "SELECT * FROM domains ORDER BY id",
                         "SELECT * FROM site_domain_aliases ORDER BY site_id, domain_id",
+                        # Replica names (replica1.<dashboard domain>) it answers.
+                        "SELECT * FROM dashboard_domains ORDER BY name",
+                        "SELECT value FROM app_settings WHERE key = 'server_aliases'",
                     )
                 ]
             finally:
