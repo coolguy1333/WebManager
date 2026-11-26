@@ -87,6 +87,9 @@ def create_app(test_config=None):
         GOOGLE_ALLOWED_EMAILS=os.environ.get("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", "").strip(),
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         APPS_ENABLED=_env_flag("WEBMANAGER_APPS_ENABLED"),
+        # Lets a super admin turn app hosting on/off from the System page
+        # (a root helper does it). 0 keeps it a shell-only decision.
+        DASHBOARD_APP_CONTROL=_env_flag("WEBMANAGER_DASHBOARD_APP_CONTROL", "1"),
         CONTAINER_RUNTIME=os.environ.get("WEBMANAGER_CONTAINER_RUNTIME", "").strip(),
         APP_DEFAULT_MEMORY_MB=int(os.environ.get("WEBMANAGER_APP_DEFAULT_MEMORY_MB", "256")),
         APP_CPUS=float(os.environ.get("WEBMANAGER_APP_CPUS", "0.5")),
@@ -289,6 +292,20 @@ def create_app(test_config=None):
         manager = app.extensions.get("replication_manager")
         return {"is_replica": bool(manager and manager.is_replica)}
 
+    @app.context_processor
+    def failover_warning():
+        from flask import g
+
+        from . import failover
+
+        if getattr(g, "user", None) is None:
+            return {"failover": None}
+        try:
+            return {"failover": failover.state(app)}
+        except Exception:  # never break a page over the warning
+            app.logger.exception("Could not work out the failover state")
+            return {"failover": None}
+
     with app.app_context():
         db.init_db()
 
@@ -311,6 +328,11 @@ def create_app(test_config=None):
     if replica_of and replica_of not in peer_urls:
         # A replica always keeps an eye on its primary.
         peer_urls.append(replica_of)
+    promoted_from = app.config.get("PROMOTED_FROM")
+    if promoted_from and promoted_from not in peer_urls:
+        # A replica that took over keeps watching the server it replaced, so
+        # it notices (and warns) if that one comes back as a second primary.
+        peer_urls.append(promoted_from)
     if peer_urls:
         from urllib.parse import urlsplit
 
@@ -465,13 +487,20 @@ def create_app(test_config=None):
 
     @app.get("/healthz")
     def health():
-        """Liveness for monitors. With ?role=primary it answers 503 unless
-        this server is the primary, so a load balancer in front of a
-        primary and its replicas can send traffic to the primary only."""
+        """Liveness for monitors.
+
+        Plain /healthz answers exactly {"status": "ok"}: the updater already
+        installed on every server compares the whole answer before it
+        installs a new version, so anything more here makes every update
+        fail. Asking with ?role= adds this server's role: ?role=primary
+        answers 503 unless this server is the primary (for a load balancer
+        in front of a primary and its replicas), ?role=any never filters."""
         db.get_db().execute("SELECT 1").fetchone()
+        if "role" not in request.args:
+            return {"status": "ok"}
         role = replication.server_role(app)
         wanted = request.args.get("role", "").strip().lower()
-        if wanted and wanted != role["role"]:
+        if wanted not in ("", "any") and wanted != role["role"]:
             return {"status": "wrong-role", **role}, 503
         return {"status": "ok", **role}
 

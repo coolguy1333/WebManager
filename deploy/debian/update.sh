@@ -472,9 +472,18 @@ else
         exit 1
     fi
     if [[ $APPROVED_COMMIT != "$NEW_COMMIT" ]]; then
+        # Only the newest version of the update branch is ever installed. The
+        # approval named another one: a newer commit appeared since, or (asked
+        # by another server) a version this branch isn't at.
         rm -f "$REQUEST_FILE"
-        write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
-            "A newer commit appeared after approval. Review and approve the new commit."
+        if [[ -n $INSTALLED_COMMIT && $NEW_COMMIT == "$INSTALLED_COMMIT" ]]; then
+            forget_failure
+            write_status "current" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+                "WebManager is current. The requested version (${APPROVED_COMMIT:0:12}) is not the newest on $BRANCH, so nothing was installed."
+        else
+            write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+                "The approved version (${APPROVED_COMMIT:0:12}) is not the newest on $BRANCH. Review and approve the newest one."
+        fi
         exit 0
     fi
 fi
@@ -632,7 +641,8 @@ app = create_app(
 with app.app_context():
     app.extensions["runtime_manager"].sync_nginx_configs()
 response = app.test_client().get("/healthz")
-if response.status_code != 200 or response.get_json() != {"status": "ok"}:
+# Only "status" matters: newer versions may report more (their role, say).
+if response.status_code != 200 or (response.get_json(silent=True) or {}).get("status") != "ok":
     raise SystemExit(
         f"Candidate health check returned {response.status_code}: "
         f"{response.get_data(as_text=True)[:500]}"

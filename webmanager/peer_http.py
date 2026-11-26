@@ -43,8 +43,13 @@ def explain_failure(exc, timeout=None) -> tuple[str, str]:
             )
         elif 300 <= code < 400:
             hint = f"It redirected to {exc.headers.get('Location') or 'another address'}; use that final address instead."
+        elif code in (502, 503, 504):
+            hint = (
+                "The address answers, but WebManager behind it doesn't: it is stopped, "
+                "restarting or failing there (sudo webmanager-doctor on that server says why)."
+            )
         else:
-            hint = f"It answered HTTP {code}."
+            hint = f"It answered with an error (HTTP {code})."
         return message, hint
     if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in str(exc).lower():
         waited = f" within {timeout} seconds" if timeout else ""

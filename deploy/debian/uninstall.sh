@@ -17,6 +17,10 @@ UNINSTALL_COMMAND=/usr/local/sbin/webmanager-uninstall
 DOCTOR_COMMAND=/usr/local/sbin/webmanager-doctor
 RESTORE_COMMAND=/usr/local/sbin/webmanager-restore
 PROMOTE_COMMAND=/usr/local/sbin/webmanager-promote
+ENABLE_APPS_COMMAND=/usr/local/sbin/webmanager-enable-apps
+CONTROL_COMMAND=/usr/local/sbin/webmanager-control
+CONTROL_SERVICE=/etc/systemd/system/webmanager-control.service
+CONTROL_PATH=/etc/systemd/system/webmanager-control.path
 LOGROTATE_FILE=/etc/logrotate.d/webmanager
 UPDATER_STATE=/var/lib/webmanager-updater
 PURGE_DATA=0
@@ -37,6 +41,7 @@ systemctl disable --now webmanager 2>/dev/null || true
 systemctl stop webmanager-update.service 2>/dev/null || true
 systemctl disable --now webmanager-update.timer 2>/dev/null || true
 systemctl disable --now webmanager-update.path 2>/dev/null || true
+systemctl disable --now webmanager-control.path 2>/dev/null || true
 
 if [[ -r "$DATA_DIR/nginx/nginx.pid" ]]; then
     MANAGED_NGINX_PID=$(tr -d '[:space:]' <"$DATA_DIR/nginx/nginx.pid")
@@ -55,7 +60,8 @@ if [[ $PURGE_DATA -eq 1 ]] && command -v docker >/dev/null 2>&1; then
     docker volume ls -q --filter name=webmanager-app- | xargs -r docker volume rm >/dev/null 2>&1 || true
 fi
 
-rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT" "$UNINSTALL_COMMAND" "$DOCTOR_COMMAND" "$RESTORE_COMMAND" "$PROMOTE_COMMAND" "$LOGROTATE_FILE"
+rm -f "$SERVICE_FILE" "$UPDATER_SERVICE" "$UPDATER_TIMER" "$UPDATER_PATH" "$UPDATER_SCRIPT" "$UNINSTALL_COMMAND" "$DOCTOR_COMMAND" "$RESTORE_COMMAND" "$PROMOTE_COMMAND" "$LOGROTATE_FILE" \
+    "$ENABLE_APPS_COMMAND" "$CONTROL_COMMAND" "$CONTROL_SERVICE" "$CONTROL_PATH"
 systemctl daemon-reload
 systemctl reset-failed webmanager webmanager-update.service 2>/dev/null || true
 

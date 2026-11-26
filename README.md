@@ -721,7 +721,8 @@ SQLite) in their `/data` volume.
 ## App hosting (optional)
 
 App hosting is off by default. When a super admin turns it on
-(`sudo bash deploy/debian/enable-apps.sh`), people with the **Host apps**
+(**System → App hosting → Turn app hosting on**, or
+`sudo webmanager-enable-apps` on the server), people with the **Host apps**
 permission can deploy a folder that contains a `Dockerfile` and a
 `webmanager.json`. Each app runs in its own hardened Docker container behind
 WebManager's Nginx, keeps data in a `/data` volume that is backed up before
@@ -848,7 +849,8 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   the same app against a volume that gets wiped and restored every sync
   round would corrupt it.
 - App data (each app's `/data` volume) is only copied when **app hosting
-  is on** on the replica too (`sudo bash deploy/debian/enable-apps.sh`);
+  is on** on the replica too (press **Turn on** for it under the primary's
+  **System → Servers → Manage**);
   without it the replica has the apps' definitions but not their data, and
   `webmanager-doctor` says so. A server that starts as a replica (for
   example an old primary joined to a new one) stops any app containers it
@@ -869,6 +871,23 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   server accepts changes. Joining a server again as a replica also undoes
   an earlier promotion on it.
 
+- **Managing another server.** Each row in **System → Servers** has a
+  **Manage** panel: turn app hosting on or off there (it installs Docker if
+  needed and restarts WebManager on that server), switch its automatic
+  WebManager updates, make a replica sync now, or open its own System page.
+- **Failover warning.** While a server has taken over as the primary, every
+  page on it shows a large warning with what to check (keep the old primary
+  off, DNS, apps, changes made after the last copy, a backup) until a super
+  admin confirms they have checked. A replica whose primary stops answering,
+  and two servers that both act as the primary, get the same kind of
+  warning. With notifications set up, each of these also sends a message.
+- Each server installs WebManager updates itself. Update the primary
+  first (System → **Approve and install**), then press **Update** next to
+  each replica in its **System → Servers** list: that replica tests, backs
+  up and installs the version the primary now runs, and the list shows
+  **Updating…** until it is done. All servers must follow the same update
+  branch; if a replica's branch is at another version it says so instead.
+
 Every server in the group is fully trusted: a replica holds the primary's
 secret key (so it can sign sessions and decrypt saved app variables) and a
 complete copy of its database. Only add servers you would give admin access.
@@ -878,7 +897,8 @@ start, but a replica is not a point-in-time backup.
 
 ### Load balancers and automatic failover
 
-`/healthz` reports which role a server has:
+`/healthz?role=any` reports which role a server has (plain `/healthz` stays
+`{"status": "ok"}`, which the built-in updater relies on):
 
 ```json
 {"status": "ok", "role": "primary", "promoted_at": null}
@@ -1262,7 +1282,8 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_AUTO_REFRESH_ENABLED` | `1` | Enables the background repository scheduler |
 | `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
 | `WEBMANAGER_MAX_REPOSITORY_MB` | `1024` | Largest repository checkout accepted; bigger clones are rejected |
-| `WEBMANAGER_APPS_ENABLED` | `0` | Turns on [app hosting](docs/APP_HOSTING.md); use `deploy/debian/enable-apps.sh` rather than editing by hand |
+| `WEBMANAGER_APPS_ENABLED` | `0` | Turns on [app hosting](docs/APP_HOSTING.md); use **System → App hosting** or `sudo webmanager-enable-apps` rather than editing by hand |
+| `WEBMANAGER_DASHBOARD_APP_CONTROL` | `1` | `0` removes the dashboard's app-hosting switch (on this server and from other servers), keeping it a shell-only decision |
 | `WEBMANAGER_CONTAINER_RUNTIME` | empty | Container CLI for apps; empty auto-detects `docker`, then `podman` |
 | `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | `256` | Memory limit for apps that don't set `memory_mb` |
 | `WEBMANAGER_APP_CPUS` | `0.5` | Default CPU limit per app (each app can be changed on its **Resources** page) |
@@ -1407,12 +1428,19 @@ sudo systemctl reload nginx
   webmanager-update.service
   webmanager-update.timer
   webmanager-update.path
+  webmanager-control.service            (app hosting switch on the System page)
+  webmanager-control.path
   webmanager.service.d/apps.conf        (app hosting only)
   webmanager-app-firewall.service       (app hosting only)
 
 /usr/local/sbin/
   webmanager-update
   webmanager-uninstall
+  webmanager-doctor
+  webmanager-restore
+  webmanager-promote
+  webmanager-enable-apps
+  webmanager-control
 
 /etc/logrotate.d/
   webmanager
@@ -1718,6 +1746,12 @@ and select **Approve and install**.
 Setup runs the first check immediately. A super administrator can also select
 **Check now** on the System page; this asks the hardened systemd updater service
 to run without granting the web process root access.
+
+With several servers, update one (normally the primary) and then press
+**Update** next to each of the others in its **System → Servers** list. The
+other server goes through exactly the same steps (tests, backup, rollback on
+failure); it only installs the newest version of its own update branch, so
+the button can't install arbitrary code there.
 
 When application requirements are unchanged, update validation reuses the
 installed virtual environment first. If that test run fails, the updater

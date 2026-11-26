@@ -222,6 +222,12 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
       <li>WebManager has no way to tell the old primary it has been replaced. When it comes back, join it to the new primary as a replica (run the join command from the new primary's <strong>System → Servers</strong> on it) or take it offline — otherwise two servers accept changes at once.</li>
       <li>Joining a server again as a replica undoes an earlier promotion on it.</li>
     </ul>
+    <h4>Managing another server</h4>
+    <p>Each row in <strong>System → Servers</strong> has a <strong>Manage</strong> panel: turn app hosting on or off there (it installs Docker if needed and restarts WebManager on that server; a replica needs it to copy app data), switch its automatic WebManager updates, make a replica sync now, or open its own System page.</p>
+    <h4>The failover warning</h4>
+    <p>While a server has taken over as the primary, every page on it shows a large warning with what to check, until a super admin confirms they have checked. A replica whose primary stops answering, and two servers that both act as the primary, get the same kind of warning, and with notifications set up each also sends a message.</p>
+    <h4>Updating every server</h4>
+    <p>Each server installs WebManager updates itself. Update the primary first (System → <strong>Approve and install</strong>), then press <strong>Update</strong> next to each replica in the primary's <strong>System → Servers</strong> list. The replica tests, backs up and installs the version the primary now runs (a failed update is rolled back), and the list shows <strong>Updating…</strong> until it is done. All servers must follow the same update branch.</p>
   </div>
 </section>
 
@@ -236,8 +242,8 @@ WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
         <tr><td>Visitors see "Site temporarily unavailable"</td><td>The site/app is stopped, or (for apps) mid-restart. It clears itself once the new container passes its health check.</td></tr>
         <tr><td>A source update won't apply</td><td>Check <strong>Update check failed</strong> on the source for the error; "Check now" retries immediately. If the new commit is intentionally missing something WebManager checks for, use <strong>Force update anyway</strong> to install it regardless.</td></tr>
         {% if apps_enabled %}
-        <tr><td>System says <strong>App hosting: Off</strong></td><td><code>WEBMANAGER_APPS_ENABLED=1</code> must be set and WebManager restarted; Docker must be running and reachable. See <code>docs/APP_HOSTING.md</code> in the repository, or ask an administrator to re-run <code>enable-apps.sh</code>.</td></tr>
-        <tr><td>"The container runtime isn't reachable"</td><td>The WebManager service account can't talk to Docker yet — an administrator needs to re-run <code>enable-apps.sh</code> on the server.</td></tr>
+        <tr><td>System says <strong>App hosting: Off</strong></td><td>A super admin turns it on under <strong>System → App hosting</strong> (or, for another server, <strong>System → Servers → Manage</strong>), or runs <code>sudo webmanager-enable-apps</code> on the server.</td></tr>
+        <tr><td>"The container runtime isn't reachable"</td><td>The WebManager service account can't talk to Docker yet: turn app hosting off and on again on the System page, or run <code>sudo webmanager-enable-apps</code> on the server.</td></tr>
         <tr><td>App build fails</td><td>Read <strong>Build log</strong> on the app's page. The base image must be downloadable from the server.</td></tr>
         <tr><td>"…didn't pass its health check"</td><td>Check the app logs on its page. Common causes: listening on the wrong host/port, <code>/data</code> not writable, or a required variable still unset.</td></tr>
         <tr><td>"Saved app settings could not be decrypted"</td><td>The server's secret key changed since the values were saved. Re-enter them under Variables.</td></tr>

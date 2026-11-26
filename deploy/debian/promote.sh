@@ -33,7 +33,11 @@ if [[ ${1:-} != "--yes" ]]; then
     [[ $answer == [yY]* ]] || { echo "Nothing was changed."; exit 1; }
 fi
 
-printf 'Promoted from replica of %s\n' "$PRIMARY" >"$DATA_DIR/promoted"
+# What it took over from, and when: the dashboard shows a "failed over"
+# warning with this until someone confirms they have checked things.
+python3 -c 'import json, sys, time; print(json.dumps({"from": sys.argv[1], "by": "webmanager-promote", "at": int(time.time())}))' \
+    "$PRIMARY" >"$DATA_DIR/promoted"
+rm -f "$DATA_DIR/promoted-acknowledged"
 chown webmanager:webmanager "$DATA_DIR/promoted"
 chmod 0640 "$DATA_DIR/promoted"
 systemctl restart webmanager

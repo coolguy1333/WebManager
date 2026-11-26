@@ -28,14 +28,15 @@ App hosting is **off by default**. Requirements:
 - Internet access from the server while building (to pull base images and
   packages).
 
-On the server, from your WebManager checkout:
+Easiest: on the **System** page, **App hosting → Turn app hosting on**. For
+another server in the group, use **System → Servers → Manage → App hosting**
+on any server. Or, on the server itself:
 
 ```bash
-cd ~/webmanager
-sudo bash deploy/debian/enable-apps.sh
+sudo webmanager-enable-apps
 ```
 
-The script explains the risk and asks first. Then it:
+The command explains the risk and asks first. Either way, it:
 
 1. installs Docker (`docker.io`) if it isn't installed,
 2. lets the `webmanager` service use Docker (systemd drop-in
@@ -62,7 +63,11 @@ people to deploy apps:
   (default **1**; 0 = unlimited). An app also counts toward the person's site
   limit. Per-person overrides are on each person's row.
 
-To turn it off again: `sudo bash deploy/debian/enable-apps.sh --disable`.
+To turn it off again: **Turn app hosting off** on the System page, or `sudo webmanager-enable-apps --disable`.
+
+To keep this a shell-only decision, set `WEBMANAGER_DASHBOARD_APP_CONTROL=0` in
+`/etc/webmanager/webmanager.env` and restart WebManager: the dashboard switch then
+only explains how to do it on the server.
 Stop or delete apps first; disabling doesn't remove containers or Docker.
 
 ### Settings
@@ -325,7 +330,7 @@ restores into `/data`.)
 | Symptom | Check |
 |---|---|
 | System says *App hosting: Off* | `WEBMANAGER_APPS_ENABLED=1` in the env file, WebManager restarted, `systemctl status docker`, drop-in present. |
-| *The container runtime isn't reachable* | `systemctl show webmanager -p SupplementaryGroups` should list `docker`, and `sudo runuser -u webmanager -g webmanager -G docker -- docker version` should work. If not, re-run `enable-apps.sh`. |
+| *The container runtime isn't reachable* | `systemctl show webmanager -p SupplementaryGroups` should list `docker`, and `sudo runuser -u webmanager -g webmanager -G docker -- docker version` should work. If not, run `sudo webmanager-enable-apps` again. |
 | Build fails | **Build log** on the app page. Base images must be downloadable from the server. |
 | *didn't pass its health check* | App logs on the app page. Usually: listening on the wrong port/host, `/data` not writable, or a required variable missing. |
 | *Saved app settings could not be decrypted* | WebManager's `secret.key` changed. Re-enter the variables. |

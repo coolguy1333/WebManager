@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply a root-only change requested on the WebManager System page
+Documentation=file:/opt/webmanager/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Turning app hosting on installs Docker and changes systemd units, firewall
+# rules and WebManager's settings: the same as sudo webmanager-enable-apps.
+ExecStart=/usr/local/sbin/webmanager-control
+TimeoutStartSec=15min

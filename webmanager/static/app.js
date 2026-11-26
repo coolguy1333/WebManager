@@ -655,6 +655,22 @@ if (metricsPanel) {
       }
       row.toggleAttribute("data-mesh-empty", !peer.version && !peer.sites && (peer.cpu_percent === null || peer.cpu_percent === undefined));
       setMesh(row, "version", peer.version || "—");
+      const ownVersion = row.closest("[data-own-version]")?.dataset.ownVersion || "";
+      const updating = ["requested", "testing", "backing_up", "installing"].includes(peer.update_state);
+      const updateForm = row.querySelector("[data-mesh-update]");
+      const updatingBadge = row.querySelector("[data-mesh-updating]");
+      const updateFailed = row.querySelector("[data-mesh-update-failed]");
+      if (updatingBadge) updatingBadge.hidden = !updating;
+      if (updateForm && !updateForm.querySelector('[aria-busy="true"]')) {
+        updateForm.hidden = !ownVersion || !peer.reachable || !peer.version || peer.version === ownVersion || updating;
+      }
+      if (updateFailed) updateFailed.hidden = peer.update_state !== "error" || peer.version === ownVersion;
+      // A change to its app hosting finished: show the result (and the right button).
+      const manage = row.querySelector("[data-mesh-manage]");
+      if (manage && manage.hasAttribute("data-apps-busy") && !["requested", "running"].includes(peer.apps_change)
+          && peer.reachable && !document.querySelector('[aria-busy="true"]')) {
+        window.location.reload();
+      }
       setMesh(row, "sites", peer.sites ? `${peer.sites.running}/${peer.sites.total} running` : "—");
       setMesh(row, "apps", peer.apps ? `${peer.apps.running}/${peer.apps.total} running` : (peer.apps_enabled === false ? "Off" : "—"));
       setMesh(row, "cpu", peer.cpu_percent !== null && peer.cpu_percent !== undefined ? `${peer.cpu_percent}%` : "—");
@@ -764,11 +780,22 @@ if (autoRefresh) {
   const limit = Number(autoRefresh.dataset.autoRefreshMax || 0);
   let attempts = 0;
   try { attempts = Number(window.sessionStorage.getItem(autoRefreshKey) || 0); } catch { /* storage unavailable */ }
+  const delay = Number(autoRefresh.dataset.autoRefresh || 5) * 1000;
+  // Reload only once WebManager answers: some of these changes restart it,
+  // and a reload mid-restart would leave the browser's own error page.
+  const reloadWhenUp = async () => {
+    try {
+      const response = await fetch("/healthz", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error(String(response.status));
+    } catch {
+      window.setTimeout(reloadWhenUp, 3000);
+      return;
+    }
+    try { window.sessionStorage.setItem(autoRefreshKey, String(attempts + 1)); } catch { /* ignore */ }
+    window.location.reload();
+  };
   if (!limit || attempts < limit) {
-    window.setTimeout(() => {
-      try { window.sessionStorage.setItem(autoRefreshKey, String(attempts + 1)); } catch { /* ignore */ }
-      window.location.reload();
-    }, Number(autoRefresh.dataset.autoRefresh || 5) * 1000);
+    window.setTimeout(reloadWhenUp, delay);
   }
 } else {
   try { window.sessionStorage.removeItem(autoRefreshKey); } catch { /* ignore */ }

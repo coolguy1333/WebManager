@@ -108,6 +108,7 @@
         </a>
       </header>
       <main class="content" id="main" tabindex="-1">
+        {% include "_failover.html" %}
         {{ flashes() }}
         {% block content %}{% endblock %}
       </main>

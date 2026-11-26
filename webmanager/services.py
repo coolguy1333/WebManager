@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -83,6 +84,15 @@ class RuntimeManager:
         self.processes: dict[int, subprocess.Popen] = {}
         self._app_locks: dict[int, threading.Lock] = {}
         self._app_locks_guard = threading.Lock()
+        # One change to the managed Nginx at a time. Apps start in parallel
+        # threads (several at once after a restart or an update); without
+        # this, one start deleted another's config file while Nginx was
+        # testing it, and two starts each launched an Nginx (the second
+        # failing with "Address already in use").
+        self._nginx_lock = threading.RLock()
+        # Sites between "config written" and "marked running": every config
+        # write keeps their files, so another start can't remove them.
+        self._activating: set[int] = set()
         self._runtime_check: tuple[str, float, tuple[bool, str]] | None = None
         # Pages never call `docker stats` themselves (it takes a second or
         # more); they read the newest sample this keeps while somebody watches.
@@ -124,7 +134,7 @@ class RuntimeManager:
     def apps_status(self):
         """(enabled, message) describing whether apps can run here."""
         if not self.app.config.get("APPS_ENABLED"):
-            return False, "App hosting is turned off (set WEBMANAGER_APPS_ENABLED=1)."
+            return False, "App hosting is turned off. A super admin can turn it on under System → App hosting."
         runtime = self.container_runtime
         if runtime is None:
             return False, "No container runtime found. Install Docker or Podman."
@@ -166,6 +176,16 @@ class RuntimeManager:
     def _app_lock(self, site_id):
         with self._app_locks_guard:
             return self._app_locks.setdefault(site_id, threading.Lock())
+
+    @contextmanager
+    def _activating_site(self, site_id: int):
+        with self._nginx_lock:
+            self._activating.add(site_id)
+        try:
+            yield
+        finally:
+            with self._nginx_lock:
+                self._activating.discard(site_id)
 
     def start_app_async(self, site_id: int, force: bool = False) -> bool:
         """Start/rebuild an app in the background. Returns False if busy."""
@@ -217,9 +237,10 @@ class RuntimeManager:
         def fail(message):
             self._set_site_state(database, site_id, "error", "container", None, message)
             try:
-                self._write_all_nginx_configs(database)
-                if self.nginx_binary:
-                    self._reload_nginx()
+                with self._nginx_lock:
+                    self._write_all_nginx_configs(database)
+                    if self.nginx_binary:
+                        self._reload_nginx()
             except RuntimeErrorDetail:
                 pass
             raise RuntimeErrorDetail(message)
@@ -324,17 +345,19 @@ class RuntimeManager:
         except app_support.AppError as exc:
             fail(str(exc))
 
-        try:
-            self._write_all_nginx_configs(database, activating_site_id=site_id)
-            self._reload_nginx()
-        except RuntimeErrorDetail as exc:
-            fail(str(exc))
-        # "nginx -s reload" returns before the new workers take over; give
-        # them a moment so "Running" is only shown once the app is reachable.
-        time.sleep(0.5)
-        # After a rollback the old version is serving again, so the site is
-        # running, but the failed update is kept as last_error for the owner.
-        self._set_site_state(database, site_id, "running", "container", None, restore_error)
+        with self._activating_site(site_id):
+            try:
+                with self._nginx_lock:
+                    self._write_all_nginx_configs(database, activating_site_id=site_id)
+                    self._reload_nginx()
+            except RuntimeErrorDetail as exc:
+                fail(str(exc))
+            # "nginx -s reload" returns before the new workers take over; give
+            # them a moment so "Running" is only shown once the app is reachable.
+            time.sleep(0.5)
+            # After a rollback the old version is serving again, so the site is
+            # running, but the failed update is kept as last_error for the owner.
+            self._set_site_state(database, site_id, "running", "container", None, restore_error)
         if rolled_back:
             raise RuntimeErrorDetail(restore_error)
         return "container"
@@ -414,9 +437,10 @@ class RuntimeManager:
                     raise RuntimeErrorDetail(f"Could not stop the app container: {exc}") from exc
             self._set_site_state(database, site["id"], "stopped", None, None, None)
             try:
-                self._write_all_nginx_configs(database)
-                if self.nginx_binary:
-                    self._reload_nginx()
+                with self._nginx_lock:
+                    self._write_all_nginx_configs(database)
+                    if self.nginx_binary:
+                        self._reload_nginx()
             except RuntimeErrorDetail:
                 pass
         finally:
@@ -554,8 +578,9 @@ class RuntimeManager:
             return sites
         remaining = [site for site in sites if site["status"] != "running"]
         try:
-            self._write_all_nginx_configs(database)
-            self._reload_nginx()
+            with self._nginx_lock:
+                self._write_all_nginx_configs(database)
+                self._reload_nginx()
         except RuntimeErrorDetail:
             return sites
         for site in together:
@@ -639,17 +664,20 @@ class RuntimeManager:
         if self.nginx_binary:
             if site["runtime_backend"] == "builtin":
                 self._stop_builtin(site_id, site["runtime_pid"], site["port"])
-            try:
-                self._write_all_nginx_configs(database, activating_site_id=site_id)
-                self._reload_nginx()
-            except RuntimeErrorDetail as exc:
-                self._set_site_state(database, site_id, "error", "nginx", None, str(exc))
+            with self._activating_site(site_id):
                 try:
-                    self._write_all_nginx_configs(database)
-                except RuntimeErrorDetail:
-                    pass
-                raise
-            self._set_site_state(database, site_id, "running", "nginx", None, None)
+                    with self._nginx_lock:
+                        self._write_all_nginx_configs(database, activating_site_id=site_id)
+                        self._reload_nginx()
+                except RuntimeErrorDetail as exc:
+                    self._set_site_state(database, site_id, "error", "nginx", None, str(exc))
+                    try:
+                        with self._nginx_lock:
+                            self._write_all_nginx_configs(database)
+                    except RuntimeErrorDetail:
+                        pass
+                    raise
+                self._set_site_state(database, site_id, "running", "nginx", None, None)
             return "nginx"
 
         self._stop_builtin(site_id, site["runtime_pid"], site["port"])
@@ -763,16 +791,18 @@ class RuntimeManager:
                 (site_id,),
             )
             try:
-                self._write_all_nginx_configs(database)
-                # Graceful reload, never a stop/start: the dashboard itself is
-                # often proxied through this Nginx, and a hard stop would cut
-                # off the very request that asked to stop the site (502).
-                self._reload_nginx()
+                with self._nginx_lock:
+                    self._write_all_nginx_configs(database)
+                    # Graceful reload, never a stop/start: the dashboard itself is
+                    # often proxied through this Nginx, and a hard stop would cut
+                    # off the very request that asked to stop the site (502).
+                    self._reload_nginx()
             except RuntimeErrorDetail:
                 database.rollback()
                 try:
-                    self._write_all_nginx_configs(database)
-                    self._reload_nginx()
+                    with self._nginx_lock:
+                        self._write_all_nginx_configs(database)
+                        self._reload_nginx()
                 except RuntimeErrorDetail:
                     pass
                 raise
@@ -797,18 +827,21 @@ class RuntimeManager:
             return False, "Nginx is not installed; syntax validation is unavailable."
         database = get_db()
         try:
-            self._write_all_nginx_configs(database, activating_site_id=activating_site_id)
-            self._run_nginx(("-t",))
+            with self._nginx_lock:
+                self._write_all_nginx_configs(database, activating_site_id=activating_site_id)
+                self._run_nginx(("-t",))
         except RuntimeErrorDetail as exc:
             return False, str(exc)
         return True, "Nginx configuration is valid."
 
     def sync_nginx_configs(self):
-        self._write_all_nginx_configs(get_db())
+        with self._nginx_lock:
+            self._write_all_nginx_configs(get_db())
 
     def apply_nginx_configs(self):
-        self._write_all_nginx_configs(get_db())
-        self._reload_nginx()
+        with self._nginx_lock:
+            self._write_all_nginx_configs(get_db())
+            self._reload_nginx()
 
     def _set_site_state(self, database, site_id, status, backend, pid, error):
         database.execute(
@@ -871,6 +904,10 @@ class RuntimeManager:
         return root.is_dir() and (root / site["index_file"]).is_file()
 
     def _write_all_nginx_configs(self, database, activating_site_id=None):
+        with self._nginx_lock:
+            self._write_all_nginx_configs_locked(database, activating_site_id)
+
+    def _write_all_nginx_configs_locked(self, database, activating_site_id=None):
         # A host without IPv6 can't open [::1]; Nginx would refuse to start.
         if ipv6_loopback_available():
             def emit(path, text):
@@ -885,9 +922,15 @@ class RuntimeManager:
             for directory in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"):
                 (root / "temp" / directory).mkdir(parents=True, exist_ok=True)
 
+            # Running sites, plus every site some thread is starting right now
+            # (it isn't marked running yet, but its config must stay).
+            activating = set(self._activating)
+            if activating_site_id:
+                activating.add(activating_site_id)
+            placeholders = ",".join("?" * len(activating)) or "-1"
             active = database.execute(
-                "SELECT * FROM sites WHERE status = 'running' OR id = ?",
-                (activating_site_id or -1,),
+                f"SELECT * FROM sites WHERE status = 'running' OR id IN ({placeholders})",
+                tuple(activating),
             ).fetchall()
             # A site whose folder or index page has gone (a forced update
             # removed it, a checkout was deleted) would answer every request
@@ -895,7 +938,7 @@ class RuntimeManager:
             # instead; its own page says what is missing.
             active = [
                 site for site in active
-                if site["id"] == activating_site_id or self._has_content(site)
+                if site["id"] in activating or self._has_content(site)
             ]
             expected_configs = {
                 f"{site['id']}-{site['slug']}.conf"
@@ -1053,16 +1096,45 @@ class RuntimeManager:
         return result
 
     def _reload_nginx(self):
-        root = Path(self.app.config["NGINX_ROOT"])
-        self._run_nginx(("-t",))
-        pid_file = root / "nginx.pid"
-        if self._nginx_is_running(pid_file):
-            self._run_nginx(("-s", "reload"))
-        else:
+        with self._nginx_lock:
+            root = Path(self.app.config["NGINX_ROOT"])
+            self._run_nginx(("-t",))
+            pid_file = root / "nginx.pid"
+            if self._nginx_is_running(pid_file):
+                self._run_nginx(("-s", "reload"))
+                return
             pid_file.unlink(missing_ok=True)
-            self._run_nginx(())
+            try:
+                self._run_nginx(())
+            except RuntimeErrorDetail as exc:
+                if "Address already in use" not in str(exc):
+                    raise
+                # An Nginx started a moment ago may not have written its pid
+                # file yet: it is running, so reload it instead.
+                if self._wait_for_nginx(pid_file):
+                    self._run_nginx(("-s", "reload"))
+                    return
+                raise RuntimeErrorDetail(
+                    f"{exc} Another program holds that port, often an earlier copy of "
+                    "WebManager's own Nginx: sudo systemctl restart webmanager clears it."
+                ) from exc
+            # Nginx writes its pid file just after this returns; wait for it so
+            # the next change reloads this Nginx instead of starting another.
+            self._wait_for_nginx(pid_file)
+
+    def _wait_for_nginx(self, pid_file: Path) -> bool:
+        deadline = time.monotonic() + float(self.app.config.get("NGINX_START_WAIT_SECONDS", 3))
+        while time.monotonic() < deadline:
+            if self._nginx_is_running(pid_file):
+                return True
+            time.sleep(0.05)
+        return False
 
     def _restart_nginx(self):
+        with self._nginx_lock:
+            self._restart_nginx_locked()
+
+    def _restart_nginx_locked(self):
         root = Path(self.app.config["NGINX_ROOT"])
         pid_file = root / "nginx.pid"
         self._run_nginx(("-t",))

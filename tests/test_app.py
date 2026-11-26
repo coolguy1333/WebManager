@@ -58,6 +58,8 @@ class WebManagerTestCase(unittest.TestCase):
                 "SITE_BASE_DOMAIN": "webmanager.example",
                 "SITE_PUBLIC_SCHEME": "https",
                 "NGINX_BINARY": "definitely-not-installed-nginx",
+                # Stand-in Nginx scripts never write a pid file to wait for.
+                "NGINX_START_WAIT_SECONDS": 0,
                 "GOOGLE_CLIENT_ID": "test-client.apps.googleusercontent.com",
                 "GOOGLE_CLIENT_SECRET": "test-client-secret",
                 "GOOGLE_REDIRECT_URI": "https://webmanager.example/auth/google/callback",
@@ -307,7 +309,9 @@ class WebManagerTestCase(unittest.TestCase):
     def test_health_endpoint_checks_database(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"status": "ok", "role": "primary", "promoted_at": None})
+        # Exactly this: the updater installed on servers today compares the
+        # whole answer before installing, so more fields break every update.
+        self.assertEqual(response.get_json(), {"status": "ok"})
 
     def test_security_headers_are_set(self):
         response = self.client.get("/auth/login")

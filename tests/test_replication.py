@@ -411,7 +411,7 @@ class WriteForwardingTests(unittest.TestCase):
 
         for endpoint in (
             "admin.set_program_auto_install", "admin.create_backup", "admin.enable_server_sharing",
-            "admin.add_server", "admin.remove_server", "admin.promote_replica",
+            "admin.add_server", "admin.remove_server", "admin.promote_replica", "admin.update_server",
         ):
             self.assertIn(endpoint, _LOCAL_ONLY_ENDPOINTS)
 
@@ -603,6 +603,8 @@ class PromoteToPrimaryTests(unittest.TestCase):
         self.assertEqual(replica.status_code, 503)
         self.assertEqual(replica.get_json()["role"], "replica")
         self.assertEqual(self.client.get("/healthz?role=replica").status_code, 200)
+        self.assertEqual(self.client.get("/healthz?role=any").get_json()["role"], "replica")
+        self.assertEqual(self.client.get("/healthz").get_json(), {"status": "ok"})
 
         manager.promote()
         replication.promoted_marker(self.app).write_text("promoted\n", encoding="utf-8")
@@ -842,6 +844,8 @@ class ReplicaStartupTests(unittest.TestCase):
             self.assertFalse(restarted.extensions["data_replication_manager"].is_replica)
             self.assertEqual(restarted.config["REPLICA_OF"], "")
             self.assertEqual(restarted.config["PROMOTED_FROM"], "https://primary.example")
+            self.assertIn("https://primary.example", restarted.extensions["mesh_hub"].urls,
+                          "it keeps watching the server it replaced")
 
 
 class SignInThroughThePrimaryTests(unittest.TestCase):

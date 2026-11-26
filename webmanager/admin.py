@@ -36,8 +36,7 @@ from .domains import (
 )
 import secrets
 
-from . import activity, app_limits, backups, health, mesh, notifications, quotas, system_metrics
-from .replication import promoted_marker
+from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_control, system_metrics
 from .security import login_required, validate_csrf
 from .services import RuntimeErrorDetail
 from .update_status import (
@@ -276,6 +275,17 @@ def dashboard():
         can_manage_access=can_manage_access,
         super_admin=super_admin,
         update_status=update_status,
+        # Super admins only: the version another server can be updated to.
+        own_version=((update_status or {}).get("installed_commit") or "")[:12] or None,
+        app_control=(
+            {
+                "status": server_control.read_status(),
+                "blocked": None if server_control.control_allowed() and server_control.control_active() is not False
+                else server_control.blocked_reason(),
+            }
+            if active_section == "updates" and super_admin
+            else None
+        ),
         update_auto_requested=update_auto_requested,
         update_auto_install=(auto_install_enabled() if active_section == "updates" and super_admin else None),
         quota_defaults=quota_defaults,
@@ -948,6 +958,133 @@ def add_server():
     return redirect(back)
 
 
+@bp.post("/servers/update")
+@login_required
+def update_server():
+    """Bring another server in the group to the WebManager version this one
+    runs (typically: update the primary, then press Update on each replica)."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = url_for("admin.dashboard", section="updates") + "#servers"
+    hub = current_app.extensions["mesh_hub"]
+    url = mesh.normalize_peer_url(request.form.get("url", ""))
+    if url is None or url not in hub.urls:
+        flash("That server is not in this server's list.", "error")
+        return redirect(back)
+    if not hub.token:
+        flash("Turn on server sharing first, so the servers can talk to each other.", "error")
+        return redirect(back)
+    commit = read_update_status().get("installed_commit")
+    if not commit:
+        flash(
+            "This server doesn't know which WebManager version it runs, so there is nothing to "
+            "match. Install an update here first, then try again.",
+            "error",
+        )
+        return redirect(back)
+    ok, message = hub.request_update(url, commit)
+    if ok:
+        flash(f"Updating {url} to {commit[:12]}. {message}".strip(), "success")
+    else:
+        flash(f"Could not update {url}: {message}", "error")
+    return redirect(back)
+
+
+CONTROL_LABELS = {
+    "apps_on": "turn app hosting on",
+    "apps_off": "turn app hosting off",
+    "auto_updates_on": "install WebManager updates by itself",
+    "auto_updates_off": "wait for approval before installing updates",
+    "sync_now": "sync now",
+}
+
+
+@bp.post("/servers/control")
+@login_required
+def control_server():
+    """Change a setting of another server in the group from this one's list."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = url_for("admin.dashboard", section="updates") + "#servers"
+    hub = current_app.extensions["mesh_hub"]
+    url = mesh.normalize_peer_url(request.form.get("url", ""))
+    action = request.form.get("action", "")
+    if url is None or url not in hub.urls:
+        flash("That server is not in this server's list.", "error")
+        return redirect(back)
+    if action not in mesh.CONTROL_ACTIONS:
+        flash("Unknown change.", "error")
+        return redirect(back)
+    if not hub.token:
+        flash("Turn on server sharing first, so the servers can talk to each other.", "error")
+        return redirect(back)
+    ok, message = hub.control(url, action)
+    if ok:
+        flash(f"{url}: {message}", "success")
+    else:
+        flash(f"Could not {CONTROL_LABELS[action]} on {url}: {message}", "error")
+    return redirect(back)
+
+
+@bp.post("/apps/hosting")
+@login_required
+def set_app_hosting():
+    """Turn app hosting on or off on this server (a root helper does it)."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = url_for("admin.dashboard", section="updates") + "#apps"
+    enable = request.form.get("enabled") == "1"
+    if bool(current_app.config.get("APPS_ENABLED")) == enable:
+        flash(f"App hosting is already {'on' if enable else 'off'}.", "success")
+        return redirect(back)
+    reason = server_control.blocked_reason()
+    if reason:
+        flash(reason, "error")
+        return redirect(back)
+    try:
+        server_control.request_app_hosting(enable)
+    except OSError as exc:
+        flash(f"Could not file the request: {exc}", "error")
+        return redirect(back)
+    flash(
+        "Turning app hosting on: Docker is installed if needed, then WebManager restarts "
+        "(a minute or two). This page shows when it's done."
+        if enable
+        else "Turning app hosting off: WebManager restarts in a moment. Apps that are running keep "
+        "running until you stop them.",
+        "success",
+    )
+    return redirect(back)
+
+
+@bp.post("/failover/acknowledge")
+@login_required
+def acknowledge_failover():
+    """Hide the "failed over" warning once someone has checked things."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    try:
+        failover.acknowledge(current_app, g.user["display_name"] or g.user["email"] or g.user["username"])
+    except OSError as exc:
+        flash(f"Could not save that: {exc}", "error")
+    else:
+        flash("Thanks. The failover warning is hidden; it comes back if this server takes over again.", "success")
+    return redirect(request.referrer if _same_site(request.referrer) else url_for("deployments.dashboard"))
+
+
+def _same_site(address) -> bool:
+    from urllib.parse import urlsplit
+
+    if not address:
+        return False
+    parts = urlsplit(address)
+    return parts.netloc == request.host and parts.scheme in ("http", "https")
+
+
 @bp.post("/servers/remove")
 @login_required
 def remove_server():
@@ -1100,15 +1237,19 @@ def promote_replica():
         return redirect(url_for("admin.dashboard", section="updates"))
 
     try:
-        marker = promoted_marker(current_app)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(f"Promoted from replica of {manager.primary_url}\n", encoding="utf-8")
+        failover.write_promoted_marker(
+            current_app, manager.primary_url, "system page",
+            config_synced_at=manager.last_sync_at, data_synced_at=data_manager.last_sync_at,
+        )
         permanent = True
     except OSError:
         permanent = False
+    previous_primary = manager.primary_url
     manager.promote()
     data_manager.promote()
     current_app.config["REPLICA_OF"] = ""
+    current_app.config["PROMOTED_FROM"] = previous_primary
+    current_app.extensions["watchdog"].check_failover_now()
     current_app.extensions["runtime_manager"].restore_sites(include_apps=True)
     if current_app.config["AUTO_REFRESH_ENABLED"]:
         current_app.extensions["repository_refresh_manager"].start()

@@ -138,7 +138,7 @@
 
 <section class="card mb-16">
   <div class="card-header">
-    <div><h2>Traffic</h2><p>Last {{ analytics.days }} days · {{ "%.1f"|format(analytics.bytes / 1048576) }} MB served · {{ "{:,}".format(analytics.errors) }} error responses</p></div>
+    <div><h2>Traffic</h2><p>Last {{ analytics.days }} days · {{ analytics.bytes|filesizeformat }} served · {{ "{:,}".format(analytics.errors) }} error responses</p></div>
     <a class="btn btn-sm" href="{{ url_for('deployments.analytics', site=site.id) }}">{{ ui.icon('activity', 14) }}Full analytics</a>
   </div>
   <div class="card-body stack">

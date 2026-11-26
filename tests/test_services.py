@@ -260,3 +260,111 @@ class RestoreSitesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrentStartTests(unittest.TestCase):
+    """Several sites/apps starting at once (after a restart or an update) must
+    not trip over each other's Nginx changes. On a real server they did:
+    one start deleted another's config file while that one was being tested
+    ('open() .../38-fantasy-frc.conf failed'), and two starts each launched
+    Nginx ('bind() to 127.0.0.1:8090 failed (98: Address already in use)')."""
+
+    setUp_base = base.WebManagerTestCase.setUp
+    tearDown_base = base.WebManagerTestCase.tearDown
+    add_user = base.WebManagerTestCase.add_user
+    add_repository = base.WebManagerTestCase.add_repository
+    add_site = base.WebManagerTestCase.add_site
+    make_sites = RestoreSitesTests.make_sites
+    _rename = RestoreSitesTests._rename
+    _extra_site = RestoreSitesTests._extra_site
+    statuses = RestoreSitesTests.statuses
+
+    def setUp(self):
+        self.setUp_base()
+        root = Path(self.temp_directory.name)
+        script = root / "fake-nginx"
+        # Like real Nginx where it matters: "-t" opens each config file a
+        # moment after listing them, and a started master writes its pid file
+        # a moment after the command returns.
+        script.write_text(
+            '#!/bin/sh\n'
+            'root="$2"\n'
+            'case "$*" in\n'
+            '  serve) sleep 30; exit 0 ;;\n'
+            '  *" -t")\n'
+            '    for f in "${root}"conf.d/*.conf; do\n'
+            '      [ -e "$f" ] || continue; sleep 0.02\n'
+            '      [ -e "$f" ] || { echo "nginx: [emerg] open() \\"$f\\" failed (2: No such file or directory)" >&2; exit 1; }\n'
+            '    done; exit 0 ;;\n'
+            '  *"-s reload") exit 0 ;;\n'
+            'esac\n'
+            'if [ -e "${root}started" ]; then\n'
+            '  echo "nginx: [emerg] bind() to 127.0.0.1:43099 failed (98: Address already in use)" >&2; exit 1\n'
+            'fi\n'
+            'touch "${root}started"\n'
+            '"$0" serve >/dev/null 2>&1 &\n'
+            'echo $! > "${root}master.pid"\n'
+            '(sleep 0.3; cat "${root}master.pid" > "${root}nginx.pid") >/dev/null 2>&1 &\n'
+            'exit 0\n',
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        self.app.config["NGINX_BINARY"] = str(script)
+        self.app.config["NGINX_START_WAIT_SECONDS"] = 3  # this one writes its pid file
+        self.nginx_root = Path(self.app.config["NGINX_ROOT"]).resolve()
+        self.site_root = root / "repositories" / "1" / "1"
+        self.site_root.mkdir(parents=True)
+        (self.site_root / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
+        self.user_id = self.add_user("owner", is_admin=True)
+        self.repository_id = self.add_repository(self.user_id, self.site_root)
+
+    def tearDown(self):
+        import os
+        import signal
+
+        try:
+            os.kill(int((self.nginx_root / "master.pid").read_text().strip()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+        self.tearDown_base()
+
+    def test_sites_starting_at_the_same_time_all_come_up(self):
+        import threading
+
+        ids = self.make_sites(4, status="stopped")
+        runtime = self.app.extensions["runtime_manager"]
+        errors = []
+
+        def start(site_id):
+            with self.app.app_context():
+                try:
+                    runtime.start_site(site_id)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=start, args=(site_id,)) for site_id in ids]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(set(self.statuses().values()), {"running"})
+        configs = {path.name for path in (self.nginx_root / "conf.d").glob("*.conf")}
+        self.assertEqual(len([name for name in configs if not name.endswith(".paused.conf")]), 4, configs)
+
+    def test_a_port_held_by_another_program_says_how_to_clear_it(self):
+        root = Path(self.temp_directory.name)
+        script = root / "busy-nginx"
+        script.write_text(
+            '#!/bin/sh\ncase "$*" in *" -t") exit 0 ;; esac\n'
+            'echo "nginx: [emerg] bind() to 127.0.0.1:43099 failed (98: Address already in use)" >&2; exit 1\n',
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        self.app.config["NGINX_BINARY"] = str(script)
+        runtime = self.app.extensions["runtime_manager"]
+        with self.app.app_context(), patch.object(runtime, "_wait_for_nginx", return_value=False):
+            with self.assertRaises(Exception) as caught:
+                runtime.apply_nginx_configs()
+        self.assertIn("sudo systemctl restart webmanager", str(caught.exception))

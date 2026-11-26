@@ -132,3 +132,30 @@ class RotatedLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChartAxisTests(unittest.TestCase):
+    def labels(self, maximum):
+        import re
+
+        from tests import test_app as base
+
+        case = base.WebManagerTestCase()
+        case.setUp()
+        try:
+            with case.app.test_request_context("/"):
+                html = case.app.jinja_env.from_string(
+                    '{% import "_ui.html" as ui %}{{ ui.area_chart(series) }}'
+                ).render(series=[("2026-11-01", 0), ("2026-11-02", maximum)])
+        finally:
+            case.tearDown()
+        return re.findall(r'text-anchor="end">([\d,]+)</text>', html)
+
+    def test_every_gridline_has_its_true_value(self):
+        # Gridlines sit at quarters of the top value: it must divide by 4, or
+        # rounding labels a line at 2.5 as "2" (the axis read 0, 1, 2, 4, 5).
+        self.assertEqual(self.labels(3), ["4", "3", "2", "1", "0"])
+        self.assertEqual(self.labels(5), ["8", "6", "4", "2", "0"])
+        self.assertEqual(self.labels(21), ["24", "18", "12", "6", "0"])
+        self.assertEqual(self.labels(950), ["1,200", "900", "600", "300", "0"])
+        self.assertEqual(self.labels(0), ["4", "3", "2", "1", "0"])

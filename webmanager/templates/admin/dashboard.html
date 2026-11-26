@@ -255,7 +255,7 @@
 </section>
 
 <nav class="jump-links mb-16" aria-label="On this page">
-  <a href="#health">Health checks</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a><a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
+  <a href="#health">Health checks</a><a href="#apps">App hosting</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a><a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
 </nav>
 
 {# ---------- Health checks ---------- #}
@@ -269,6 +269,43 @@
 </section>
 
 {# ---------- Backups ---------- #}
+{# ---------- App hosting (this server) ---------- #}
+{% if app_control is not none %}
+{% set apps_on = app_hosting and app_hosting[0] %}
+{% set apps_configured = config.APPS_ENABLED %}
+{% set change = app_control.status %}
+<section class="card mb-24" id="apps"{% if change and change.state in ("requested", "running") %} data-auto-refresh="5" data-auto-refresh-max="120"{% endif %}>
+  <div class="card-header">
+    <div><h2>App hosting</h2><p>Run apps (Node, Python, anything with a <code>Dockerfile</code>) in hardened containers next to your static sites, on this server.</p></div>
+    {% if apps_on %}<span class="badge badge-success">On</span>{% elif apps_configured %}<span class="badge badge-warning">On, not working</span>{% else %}<span class="badge">Off</span>{% endif %}
+  </div>
+  <div class="card-body stack">
+    {% if change and change.state in ("requested", "running") %}
+    <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>{% if change.action == "apps_off" %}Turning app hosting off…{% else %}Turning app hosting on…{% endif %}</strong>{{ change.message }} This page refreshes by itself.</div></div>
+    {% elif change and change.state == "error" %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The last change didn't work</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
+    {% endif %}
+    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %}</p>{% endif %}
+    {% if not apps_configured %}
+    <p class="hint">Turning it on installs Docker if needed and restarts WebManager. Containers get the internet but not your network. Docker access is equivalent to root on this machine, so only give <strong>Host apps</strong> to people you trust.{% if is_replica %} On a replica, apps stay stopped until it is promoted, but their data is copied here so it can take over.{% endif %}</p>
+    {% endif %}
+    {% if app_control.blocked %}<p class="hint">{{ app_control.blocked }}</p>{% endif %}
+  </div>
+  {% if not app_control.blocked and not (change and change.state in ("requested", "running")) %}
+  <div class="card-footer end">
+    <form method="post" action="{{ url_for('admin.set_app_hosting') }}" data-loading{% if apps_configured %} data-confirm="Turn app hosting off on this server? WebManager restarts. Apps that are running keep running until you stop them; nothing is deleted."{% else %} data-confirm="Turn app hosting on for this server? It installs Docker if needed and restarts WebManager (a minute or two). Docker access is equivalent to root on this machine."{% endif %}>
+      {{ ui.csrf() }}<input type="hidden" name="enabled" value="{{ '0' if apps_configured else '1' }}">
+      {% if apps_configured %}
+      <button class="btn btn-danger-outline" type="submit" data-loading-text="Asking…">Turn app hosting off</button>
+      {% else %}
+      <button class="btn btn-primary" type="submit" data-loading-text="Asking…">{{ ui.icon('box', 14) }}Turn app hosting on</button>
+      {% endif %}
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card mb-24" id="backups">
   <div class="card-header">
     <div><h2>Backups</h2><p>{% if backups_enabled %}One is made every day; the newest {{ backup_keep }} are kept.{% else %}Automatic backups are off (<code>WEBMANAGER_BACKUPS_ENABLED=0</code>).{% endif %} A backup holds the database, the keys that protect it and this server's settings: everything needed to rebuild it.</p></div>
@@ -323,7 +360,7 @@
 
 {# ---------- Replication ---------- #}
 {% if replication.is_replica %}
-<section class="card mb-24">
+<section class="card mb-24" id="replication">
   <div class="card-header">
     <div><h2>Replication</h2><p>This server mirrors <code>{{ replication.primary_url }}</code>. Writes made here are sent there automatically.</p></div>
     <span class="badge badge-accent">Replica</span>
@@ -364,7 +401,7 @@
   </div>
 </section>
 {% else %}
-<section class="card mb-24">
+<section class="card mb-24" id="replication">
   <div class="card-header">
     <div><h2>Replication</h2><p>This server is the primary: the source of truth for shared config in its mesh. Other servers can mirror it by setting <code>WEBMANAGER_REPLICA_OF</code> to this server's address.</p></div>
     <span class="badge badge-success">Primary</span>
@@ -382,7 +419,10 @@
   {% if not mesh_token_configured %}
   <div class="alert warning mb-16">{{ ui.icon('alert') }}<div class="alert-body"><strong><code>WEBMANAGER_PEER_TOKEN</code> is not set.</strong> <code>/mesh/status</code> is public and unauthenticated. Set the same token on every server in the group.</div></div>
   {% endif %}
-  <div class="list mesh-list" role="table" aria-label="Servers">
+  {% if own_version and mesh_entries | selectattr("version") | rejectattr("version", "equalto", own_version) | list %}
+  <p class="hint mb-16">This server runs WebManager <code>{{ own_version }}</code>. Servers on another version show an <strong>Update</strong> button that installs this version there.</p>
+  {% endif %}
+  <div class="list mesh-list" role="table" aria-label="Servers" data-own-version="{{ own_version or '' }}">
     <div class="list-head" role="row">
       <span role="columnheader">Server</span>
       <span role="columnheader">Status</span>
@@ -410,13 +450,74 @@
         {% elif peer.checked_at %}<span class="badge badge-danger" title="{{ peer.error }}"><span class="dot"></span>Unreachable</span>
         {% else %}<span class="badge">Checking…</span>{% endif %}
       </div>
-      <div role="cell" data-mesh-stat="version" data-label="Version">{{ peer.version or "—" }}</div>
+      <div role="cell" class="mesh-version" data-label="Version">
+        <span data-mesh-stat="version">{{ peer.version or "—" }}</span>
+        {% if own_version %}
+        {% set peer_updating = peer.update_state in ("requested", "testing", "backing_up", "installing") %}
+        <span class="badge badge-info" data-mesh-updating{% if not peer_updating %} hidden{% endif %}>Updating…</span>
+        <form method="post" action="{{ url_for('admin.update_server') }}" data-loading data-mesh-update{% if not peer.reachable or not peer.version or peer.version == own_version or peer_updating %} hidden{% endif %} data-confirm="Update WebManager on {{ peer.hostname }} to {{ own_version }}, the version this server runs? It tests the update, backs up its data and restarts WebManager there (a minute or two); its sites keep running. A failed update is rolled back.">
+          {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}">
+          <button class="btn btn-sm" type="submit" data-loading-text="Asking…" title="Install {{ own_version }} (this server's version) there">{{ ui.icon('download', 12) }}Update</button>
+        </form>
+        <small class="hint" data-mesh-update-failed{% if peer.update_state != "error" or peer.version == own_version %} hidden{% endif %}>Its last update failed; see its System page.</small>
+        {% endif %}
+      </div>
       <div role="cell" data-mesh-stat="sites" data-label="Sites">{% if peer.sites %}{{ peer.sites.running }}/{{ peer.sites.total }} running{% else %}—{% endif %}</div>
       <div role="cell" data-mesh-stat="apps" data-label="Apps">{% if peer.apps %}{{ peer.apps.running }}/{{ peer.apps.total }} running{% elif peer.apps_enabled == false %}Off{% else %}—{% endif %}</div>
       <div role="cell" data-mesh-stat="cpu" data-label="CPU">{{ (peer.cpu_percent ~ "%") if peer.cpu_percent is not none else "—" }}</div>
       <div role="cell" data-mesh-stat="memory" data-label="Memory">{{ (peer.memory_percent ~ "%") if peer.memory_percent is not none else "—" }}</div>
       <div role="cell" data-mesh-stat="disk" data-label="Disk">{{ (peer.disk_percent ~ "%") if peer.disk_percent is not none else "—" }}</div>
       <div class="site-error" data-mesh-problem{% if peer.reachable or not peer.checked_at %} hidden{% endif %}>{{ peer.hint or peer.error }}{% if peer.last_seen %} Last seen {{ peer.last_seen }}.{% elif peer.checked_at and not peer.reachable %} Never reached yet.{% endif %}</div>
+      {% if mesh_token %}
+      <details class="mesh-manage" data-mesh-manage{% if peer.apps_change in ("requested", "running") %} data-apps-busy{% endif %}>
+        <summary>{{ ui.icon('settings', 14) }}Manage {{ peer.hostname }}{{ ui.icon('chevron', 14) }}</summary>
+        {% if not peer.reachable %}
+        <p class="hint">It isn't answering, so it can't be changed from here right now.</p>
+        {% else %}
+        <div class="mesh-controls">
+          <div class="mesh-control">
+            <div>
+              <strong>App hosting</strong>
+              <span data-mesh-apps-state>{% if peer.apps_change in ("requested", "running") %}<span class="badge badge-info">Changing…</span>{% elif peer.apps_enabled %}<span class="badge badge-success">On</span>{% else %}<span class="badge">Off</span>{% endif %}</span>
+              {% if peer.apps_change == "error" %}<small class="site-error">{{ peer.apps_change_message }}</small>{% endif %}
+              {% if peer.role == "replica" and not peer.apps_enabled %}<small class="hint">Needed for it to copy app data and run your apps if it ever takes over.</small>{% endif %}
+            </div>
+            {% if peer.apps_change not in ("requested", "running") %}
+            <form method="post" action="{{ url_for('admin.control_server') }}" data-loading data-confirm="{% if peer.apps_enabled %}Turn app hosting off on {{ peer.hostname }}? WebManager restarts there; nothing is deleted.{% else %}Turn app hosting on for {{ peer.hostname }}? It installs Docker if needed and restarts WebManager there (a minute or two). Docker access is equivalent to root on that machine.{% endif %}">
+              {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}"><input type="hidden" name="action" value="{{ 'apps_off' if peer.apps_enabled else 'apps_on' }}">
+              <button class="btn btn-sm{{ '' if peer.apps_enabled else ' btn-primary' }}" type="submit" data-loading-text="Asking…">{{ 'Turn off' if peer.apps_enabled else 'Turn on' }}</button>
+            </form>
+            {% endif %}
+          </div>
+          <div class="mesh-control">
+            <div>
+              <strong>Install WebManager updates by itself</strong>
+              {% if peer.auto_install is none %}<span class="badge">Unknown</span>{% elif peer.auto_install %}<span class="badge badge-success">On</span>{% else %}<span class="badge">Off: waits for approval</span>{% endif %}
+            </div>
+            {% if peer.auto_install is not none %}
+            <form method="post" action="{{ url_for('admin.control_server') }}" data-loading>
+              {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}"><input type="hidden" name="action" value="{{ 'auto_updates_off' if peer.auto_install else 'auto_updates_on' }}">
+              <button class="btn btn-sm" type="submit" data-loading-text="Asking…">{{ 'Turn off' if peer.auto_install else 'Turn on' }}</button>
+            </form>
+            {% endif %}
+          </div>
+          {% if peer.role == "replica" %}
+          <div class="mesh-control">
+            <div><strong>Copy everything from the primary now</strong><small class="hint">It does this by itself every 15 seconds (settings) and every minute (site and app data).</small></div>
+            <form method="post" action="{{ url_for('admin.control_server') }}" data-loading>
+              {{ ui.csrf() }}<input type="hidden" name="url" value="{{ peer.url }}"><input type="hidden" name="action" value="sync_now">
+              <button class="btn btn-sm" type="submit" data-loading-text="Syncing…">{{ ui.icon('refresh', 12) }}Sync now</button>
+            </form>
+          </div>
+          {% endif %}
+          <div class="mesh-control">
+            <div><strong>Everything else</strong><small class="hint">Open its own dashboard{% if peer.role == "replica" %} and choose <em>Sign in through the primary</em>{% endif %}.</small></div>
+            <a class="btn btn-sm" href="{{ peer.url }}/admin/?section=updates" target="_blank" rel="noopener noreferrer">Open its System page{{ ui.icon('external', 12) }}</a>
+          </div>
+        </div>
+        {% endif %}
+      </details>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
