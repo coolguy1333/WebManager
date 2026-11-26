@@ -205,6 +205,17 @@
 {%- else -%}{{ "%.0f"|format(value / 1024) }} KB{%- endif -%}
 {%- endmacro %}
 
+{% if public_scheme_mismatch %}
+<div class="alert warning mb-24" id="public-scheme-warning" role="alert">
+  {{ ui.icon('alert') }}
+  <div class="alert-body">
+    <strong>Apps are given http:// addresses, but this dashboard is reached over https</strong>
+    Each app's <code>PUBLIC_URL</code> starts with <code>http://</code> (<code>WEBMANAGER_SITE_PUBLIC_SCHEME=http</code>), while visitors arrive over https, for example through Cloudflare Tunnel. Links and sign-in (OAuth) addresses that apps give out are then wrong, and clients that require https can't connect.
+    <p class="mt-8">To fix it, on the server: set <code>WEBMANAGER_SITE_PUBLIC_SCHEME=https</code> in <code>/etc/webmanager/webmanager.env</code>, run <code>sudo systemctl restart webmanager</code>, then restart each running app (its page shows a <em>Restart needed</em> button).</p>
+  </div>
+</div>
+{% endif %}
+
 {# ---------- Resource usage ---------- #}
 <section class="mb-24" data-metrics data-metrics-url="{{ url_for('admin.system_metrics_json') }}">
   <div class="section-title">

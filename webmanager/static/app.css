@@ -326,6 +326,11 @@ li + li { margin-top: 4px; }
 }
 .alert > .icon { margin-top: 2px; color: var(--info); }
 .alert-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* A notice with buttons: on narrow screens the buttons go below the text. */
+@media (max-width: 640px) {
+  .alert:has(> .actions) { flex-wrap: wrap; }
+  .alert > .actions { flex-basis: 100%; padding-left: 26px; }
+}
 .alert-body strong { display: block; margin-bottom: 2px; }
 .alert-body ul { margin-top: 4px; }
 .alert.success { background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
