@@ -82,6 +82,26 @@ def summarize_build_failure(output: str, limit: int = 1500) -> tuple[str, str]:
     return reason, tidy
 
 
+_NETWORK_FAILURE_RE = re.compile(
+    r"temporary error|temporary failure|could not resolve|EAI_AGAIN|ENOTFOUND|getaddrinfo"
+    r"|name or service not known|network is unreachable|i/o timeout|failed to fetch",
+    re.IGNORECASE,
+)
+
+
+def network_failure_hint(output: str) -> str:
+    """A plain explanation when a build failed because it couldn't reach the
+    internet (package downloads, name lookups), or "" otherwise."""
+    if not _NETWORK_FAILURE_RE.search(output or ""):
+        return ""
+    return (
+        "The build couldn't reach the internet: looking up or downloading packages failed. "
+        "If this server's DNS server is on your local network (a router or Pi-hole), update "
+        "WebManager or run sudo webmanager-enable-apps --refresh-firewall on the server so "
+        "containers can reach it, then deploy again."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -355,7 +375,10 @@ class ContainerRuntime:
             except OSError:
                 pass
         if result.returncode != 0:
-            reason, tail = summarize_build_failure((result.stderr or "") + "\n" + (result.stdout or ""))
+            output = (result.stderr or "") + "\n" + (result.stdout or "")
+            reason, tail = summarize_build_failure(output)
+            hint = network_failure_hint(output)
+            tail = f"{hint}\n{tail}" if hint else tail
             raise AppError(f"The app image failed to build: {reason}\n{tail}" if reason else f"The app image failed to build:\n{tail}")
         return image
 

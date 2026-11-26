@@ -4,6 +4,7 @@
 #   sudo bash deploy/debian/enable-apps.sh            # enable (asks first)
 #   sudo bash deploy/debian/enable-apps.sh --yes      # enable without asking
 #   sudo bash deploy/debian/enable-apps.sh --disable  # turn it off again
+#   sudo bash deploy/debian/enable-apps.sh --refresh-firewall  # re-apply the app firewall rules
 #
 # Enabling installs Docker if needed, lets the webmanager service use it,
 # blocks containers from reaching the cloud metadata address and your LAN
@@ -25,12 +26,14 @@ BLOCKED_RANGES="169.254.169.254/32 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.1
 
 ASSUME_YES=0
 DISABLE=0
+REFRESH_FIREWALL=0
 for argument in "$@"; do
     case $argument in
         --yes | -y) ASSUME_YES=1 ;;
         --disable) DISABLE=1 ;;
+        --refresh-firewall) REFRESH_FIREWALL=1 ;;
         -h | --help)
-            sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -57,6 +60,60 @@ set_env() {
     install -o root -g webmanager -m 0640 "$temp" "$CONFIG_FILE"
     rm -f "$temp"
 }
+
+# Block containers from the cloud metadata service (it can hand out
+# credentials for the whole machine on AWS/GCP/Azure/etc.) and from every
+# private/link-local address range, so apps can reach the internet but not
+# your LAN or the host's other services. Each range gets its own idempotent
+# insert/delete so re-running this script or restarting the unit is safe.
+#
+# DNS (port 53) is the one exception, and it is put above the blocks: the
+# DNS server a home or office network hands out is usually on that network
+# (the router, a Pi-hole), and without it containers and image builds can't
+# look up anything ("apk add" / "apt-get" / "npm install" all fail).
+write_firewall_unit() {
+    {
+        echo "[Unit]"
+        echo "Description=WebManager app firewall (internet-only containers)"
+        echo "After=docker.service"
+        echo "PartOf=docker.service"
+        echo
+        echo "[Service]"
+        echo "Type=oneshot"
+        echo "RemainAfterExit=yes"
+        for range in $BLOCKED_RANGES; do
+            printf 'ExecStart=/bin/sh -c '\''iptables -C DOCKER-USER -d %s -j DROP 2>/dev/null || iptables -I DOCKER-USER -d %s -j DROP'\''\n' "$range" "$range"
+        done
+        for protocol in udp tcp; do
+            # Delete, then insert at the top: always above the blocks.
+            printf 'ExecStart=/bin/sh -c '\''while iptables -D DOCKER-USER -p %s --dport 53 -j ACCEPT 2>/dev/null; do :; done; iptables -I DOCKER-USER -p %s --dport 53 -j ACCEPT'\''\n' "$protocol" "$protocol"
+        done
+        for range in $BLOCKED_RANGES; do
+            printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -d %s -j DROP 2>/dev/null || true'\''\n' "$range"
+        done
+        for protocol in udp tcp; do
+            printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -p %s --dport 53 -j ACCEPT 2>/dev/null || true'\''\n' "$protocol"
+        done
+        echo
+        echo "[Install]"
+        echo "WantedBy=docker.service"
+    } >"$FIREWALL_UNIT"
+}
+
+if [[ $REFRESH_FIREWALL -eq 1 ]]; then
+    # Used by updates: bring an existing app firewall up to date.
+    if [[ ! -f $FIREWALL_UNIT ]]; then
+        echo "App hosting's firewall isn't installed here; nothing to refresh."
+        exit 0
+    fi
+    write_firewall_unit
+    systemctl daemon-reload
+    if systemctl is-active --quiet webmanager-app-firewall.service; then
+        systemctl restart webmanager-app-firewall.service
+    fi
+    echo "App firewall rules refreshed."
+    exit 0
+fi
 
 if [[ $DISABLE -eq 1 ]]; then
     set_env WEBMANAGER_APPS_ENABLED 0
@@ -108,30 +165,7 @@ cat >"$DROPIN_FILE" <<'EOF'
 SupplementaryGroups=docker
 EOF
 
-# Block containers from the cloud metadata service (it can hand out
-# credentials for the whole machine on AWS/GCP/Azure/etc.) and from every
-# private/link-local address range, so apps can reach the internet but not
-# your LAN or the host's other services. Each range gets its own idempotent
-# insert/delete so re-running this script or restarting the unit is safe.
-{
-    echo "[Unit]"
-    echo "Description=WebManager app firewall (internet-only containers)"
-    echo "After=docker.service"
-    echo "PartOf=docker.service"
-    echo
-    echo "[Service]"
-    echo "Type=oneshot"
-    echo "RemainAfterExit=yes"
-    for range in $BLOCKED_RANGES; do
-        printf 'ExecStart=/bin/sh -c '\''iptables -C DOCKER-USER -d %s -j DROP 2>/dev/null || iptables -I DOCKER-USER -d %s -j DROP'\''\n' "$range" "$range"
-    done
-    for range in $BLOCKED_RANGES; do
-        printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -d %s -j DROP 2>/dev/null || true'\''\n' "$range"
-    done
-    echo
-    echo "[Install]"
-    echo "WantedBy=docker.service"
-} >"$FIREWALL_UNIT"
+write_firewall_unit
 
 set_env WEBMANAGER_APPS_ENABLED 1
 systemctl daemon-reload
