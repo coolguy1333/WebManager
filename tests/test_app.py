@@ -4223,3 +4223,13 @@ class SecurityRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignInReturnsToThePageTests(unittest.TestCase):
+    setUp = WebManagerTestCase.setUp
+    tearDown = WebManagerTestCase.tearDown
+
+    def test_the_sign_in_page_brings_you_back_with_the_query(self):
+        response = self.client.get("/admin/?section=updates")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("next=/admin/?section%3Dupdates", response.headers["Location"])

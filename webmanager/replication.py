@@ -270,13 +270,20 @@ class ReplicationManager:
             self.last_error = None
             self.last_sync_at = time.time()
             after = self._served_state()
-        if after is not None and after != before:
-            # A site was started, stopped, renamed or re-addressed on the
-            # primary: serve it the same way here now, not at the next data sync.
-            try:
-                self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
-            except Exception:  # noqa: BLE001 - the data sync round applies it again
-                self.app.logger.exception("Replication: could not apply the new site state")
+            if after is not None and after != before:
+                # A site was started, stopped, renamed or re-addressed on the
+                # primary, or a dashboard address or replica name changed: serve
+                # it the same way here now, not at the next data sync. Still
+                # under the lock: another sync swapping the database file
+                # meanwhile would make these writes fail (read-only database).
+                runtime = self.app.extensions["runtime_manager"]
+                try:
+                    runtime.restore_sites(include_apps=False)
+                    # Dashboard addresses and replica names live in the main
+                    # Nginx config, which starting sites doesn't always rewrite.
+                    runtime.restore_gateway()
+                except Exception:  # noqa: BLE001 - the data sync round applies it again
+                    self.app.logger.exception("Replication: could not apply the new site state")
         return True
 
     def _served_state(self):
@@ -286,14 +293,25 @@ class ReplicationManager:
             connection = sqlite3.connect(
                 f"file:{self.app.config['DATABASE']}?mode=ro", uri=True, timeout=5
             )
+            def rows(query):
+                try:
+                    return connection.execute(query).fetchall()
+                except sqlite3.OperationalError:  # a table this copy doesn't have
+                    return None
+
             try:
+                if connection.execute("SELECT name FROM sqlite_master WHERE name = 'sites'").fetchone() is None:
+                    return None
                 return [
-                    connection.execute(query).fetchall()
+                    rows(query)
                     for query in (
                         "SELECT id, kind, status, slug, port, document_root, index_file, "
                         "nginx_config, domain_id FROM sites ORDER BY id",
                         "SELECT * FROM domains ORDER BY id",
                         "SELECT * FROM site_domain_aliases ORDER BY site_id, domain_id",
+                        # Replica names (replica1.<dashboard domain>) it answers.
+                        "SELECT * FROM dashboard_domains ORDER BY name",
+                        "SELECT value FROM app_settings WHERE key = 'server_aliases'",
                     )
                 ]
             finally:

@@ -25,7 +25,10 @@ def login_required(view):
     @wraps(view)
     def wrapped_view(**kwargs):
         if g.user is None:
-            return redirect(url_for("auth.login", next=request.path))
+            # Come back to the same page, query included (?section=updates):
+            # only for a GET, which can simply be loaded again.
+            target = request.full_path.rstrip("?") if request.method == "GET" else request.path
+            return redirect(url_for("auth.login", next=target))
         return view(**kwargs)
 
     return wrapped_view
