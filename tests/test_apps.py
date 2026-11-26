@@ -236,6 +236,19 @@ class BuildNetworkFailureTests(unittest.TestCase):
         installer = (Path(base.__file__).resolve().parent.parent / "deploy" / "debian" / "install.sh").read_text()
         self.assertIn('enable-apps.sh" --refresh-firewall', installer, "updates refresh existing firewalls")
 
+    def test_the_app_firewall_lets_replies_back_to_containers(self):
+        # A reply to a container is addressed to its 172.17.x.x address, which
+        # is inside the blocked 172.16.0.0/12: without an ESTABLISHED accept on
+        # top, every reply (DNS answers included) is dropped.
+        script = (Path(base.__file__).resolve().parent.parent / "deploy" / "debian" / "enable-apps.sh").read_text()
+        start = script.index("write_firewall_unit() {")
+        body = script[start:script.index("\n}\n", start)]
+        rule = "-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+        self.assertIn(rule, body)
+        starts = [line for line in body.splitlines() if "ExecStart" in line]
+        self.assertIn(rule, starts[-1], "inserted last, so it ends up above the blocks and DNS")
+        self.assertTrue(any(rule in line for line in body.splitlines() if "ExecStop" in line))
+
 
 class AppHostingTests(unittest.TestCase):
     setUp_base = base.WebManagerTestCase.setUp

@@ -12,6 +12,7 @@ about to overwrite.
 """
 
 import atexit
+import contextlib
 import os
 import posixpath
 import shutil
@@ -113,9 +114,18 @@ class DataReplicationManager:
 
     def _run(self):
         self.stop_leftover_apps()
-        self.sync_once()
+        self._sync_safely()
         while not self._stop_event.wait(DATA_POLL_SECONDS):
+            self._sync_safely()
+
+    def _sync_safely(self):
+        # An unexpected error must not end the thread: the replica would then
+        # silently stop mirroring app data until WebManager restarts.
+        try:
             self.sync_once()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self.app.logger.exception("Data replication: sync failed unexpectedly; retrying next round")
 
     def stop_leftover_apps(self):
         """A replica never runs apps. If this server was a primary before
@@ -144,8 +154,14 @@ class DataReplicationManager:
         self.last_error = None
         self.last_sync_at = time.time()
         # Safe immediately: static sites are read-only, stateless files.
-        # Apps stay stopped until this replica is promoted.
-        self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+        # Apps stay stopped until this replica is promoted. Hold the database
+        # replication lock: that thread swaps the database file (os.replace)
+        # every few seconds, and writing through a connection to the replaced
+        # file fails with "attempt to write a readonly database".
+        replication = self.app.extensions.get("replication_manager")
+        lock = getattr(replication, "_sync_lock", None) or contextlib.nullcontext()
+        with lock:
+            self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
         return True
 
     def _pull_and_apply(self):

@@ -114,7 +114,10 @@ reaching:
 The one exception is DNS (port 53): the DNS server a home or office network
 hands out is usually on that network (the router, a Pi-hole), and without it
 image builds (`apk add`, `apt-get`, `npm install`) and apps can't look up any
-name. Updates apply this to existing servers; to do it by hand, run
+name. Replies to connections a container opened are also let through above
+the blocks (a reply is addressed to the container's `172.17.x.x` address,
+which is inside `172.16.0.0/12`; without this, containers have no network at
+all). Updates apply this to existing servers; to do it by hand, run
 `sudo webmanager-enable-apps --refresh-firewall`.
 
 Outbound internet traffic (webhooks, package installs, HTTP checks) is left
