@@ -6,7 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from webmanager import app_limits, apps
 from webmanager.db import get_db
@@ -186,6 +186,55 @@ class BuildFailureSummaryTests(unittest.TestCase):
         reason, tidy = apps.summarize_build_failure("something odd happened\n")
         self.assertEqual(reason, "")
         self.assertEqual(tidy, "something odd happened")
+
+
+class BuildNetworkFailureTests(unittest.TestCase):
+    """Builds that can't reach the internet say so in plain words (on a real
+    server every rebuild failed: the app firewall blocked its LAN DNS server)."""
+
+    APK = (
+        "#5 [2/4] RUN apk add --no-cache iputils tzdata\n"
+        "#5 0.512 WARNING: fetching https://dl-cdn.alpinelinux.org/alpine/v3.20/main: temporary error (try again later)\n"
+        "#5 0.601 ERROR: unable to select packages:\n#5 0.601   iputils (no such package)\n"
+        'ERROR: failed to build: failed to solve: process "/bin/sh -c apk add --no-cache iputils tzdata" '
+        "did not complete successfully: exit code: 2\n"
+    )
+    APT = (
+        "#6 5.1 W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  "
+        "Temporary failure resolving 'deb.debian.org'\n"
+        "#6 5.3 E: Unable to locate package fonts-dejavu-core\n"
+        'ERROR: failed to build: failed to solve: process "/bin/sh -c apt-get update" '
+        "did not complete successfully: exit code: 100\n"
+    )
+
+    def test_package_downloads_that_could_not_reach_the_internet_are_explained(self):
+        for output in (self.APK, self.APT, "npm ERR! code EAI_AGAIN\n"):
+            self.assertIn("couldn't reach the internet", apps.network_failure_hint(output))
+            self.assertIn("--refresh-firewall", apps.network_failure_hint(output))
+
+    def test_other_build_failures_get_no_network_hint(self):
+        self.assertEqual(apps.network_failure_hint(BuildFailureSummaryTests.OUTPUT), "")
+
+    def test_the_hint_is_part_of_the_build_error(self):
+        runtime = apps.ContainerRuntime("docker", Path("."))
+        failed = Mock(returncode=1, stdout="", stderr=self.APK)
+        with patch.object(runtime, "_run", return_value=failed):
+            with self.assertRaises(apps.AppError) as caught:
+                runtime.build(7, Path("."), "abc")
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("The app image failed to build: process"))
+        self.assertIn("couldn't reach the internet", message)
+
+    def test_the_app_firewall_lets_containers_reach_dns(self):
+        script = (Path(base.__file__).resolve().parent.parent / "deploy" / "debian" / "enable-apps.sh").read_text()
+        self.assertIn("--dport 53 -j ACCEPT", script)
+        self.assertIn("--refresh-firewall", script)
+        # DNS is allowed above the blocks: inserted (-I, to the top) after them.
+        start = script.index("write_firewall_unit() {")
+        body = script[start:script.index("\n}\n", start)]
+        self.assertLess(body.index("-j DROP"), body.index("--dport 53 -j ACCEPT"))
+        installer = (Path(base.__file__).resolve().parent.parent / "deploy" / "debian" / "install.sh").read_text()
+        self.assertIn('enable-apps.sh" --refresh-firewall', installer, "updates refresh existing firewalls")
 
 
 class AppHostingTests(unittest.TestCase):

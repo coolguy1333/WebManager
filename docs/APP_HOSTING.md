@@ -111,6 +111,12 @@ reaching:
   `169.254.0.0/16` (link-local) — your LAN, and any service on the host that
   listens on all interfaces (SSH, Nginx on other ports, another database, …).
 
+The one exception is DNS (port 53): the DNS server a home or office network
+hands out is usually on that network (the router, a Pi-hole), and without it
+image builds (`apk add`, `apt-get`, `npm install`) and apps can't look up any
+name. Updates apply this to existing servers; to do it by hand, run
+`sudo webmanager-enable-apps --refresh-firewall`.
+
 Outbound internet traffic (webhooks, package installs, HTTP checks) is left
 open. If one specific app legitimately needs a LAN address (an internal API,
 a mail relay), add a higher-priority `ACCEPT` rule for just that host, above

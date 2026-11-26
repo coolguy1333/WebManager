@@ -852,6 +852,13 @@ elif [[ $SELF_UPDATE -eq 0 ]]; then
     systemctl disable --now webmanager-update.path 2>/dev/null || true
 fi
 
+# Keep an existing app firewall's rules current (e.g. letting containers
+# reach a DNS server on the local network). Never fatal: apps keep running.
+if [[ -f /etc/systemd/system/webmanager-app-firewall.service ]]; then
+    bash "$SCRIPT_DIR/enable-apps.sh" --refresh-firewall \
+        || echo "Could not refresh the app firewall; run: sudo webmanager-enable-apps --refresh-firewall"
+fi
+
 if [[ ${CONTROL_INSTALLED:-0} -eq 1 ]]; then
     systemctl daemon-reload
     systemctl enable --now webmanager-control.path 2>/dev/null \
