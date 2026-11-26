@@ -113,6 +113,23 @@ class RestoreSitesTests(unittest.TestCase):
         self.assertEqual(sum(" -t" in call for call in calls), 1, calls)
         self.assertEqual(len(calls), 2, calls)  # one syntax test, one start/reload
 
+    def test_restore_starts_apps_that_failed_but_not_stopped_ones(self):
+        self.make_sites(3)
+        with self.app.app_context():
+            database = get_db()
+            database.execute("UPDATE sites SET kind = 'app'")
+            database.execute("UPDATE sites SET status = 'error' WHERE slug = 'site0'")
+            database.execute("UPDATE sites SET status = 'stopped' WHERE slug = 'site1'")
+            database.commit()
+            ids = {row["slug"]: row["id"] for row in database.execute("SELECT id, slug FROM sites")}
+        runtime = self.app.extensions["runtime_manager"]
+        with patch.object(runtime, "start_app_async") as start:
+            runtime.restore_sites()
+        self.assertEqual(sorted(call.args[0] for call in start.call_args_list), sorted([ids["site0"], ids["site2"]]))
+        with patch.object(runtime, "start_app_async") as start:
+            runtime.restore_sites(include_apps=False)  # a replica never starts apps
+        start.assert_not_called()
+
     def test_a_replica_stops_serving_the_last_site_once_the_primary_stopped_it(self):
         self.make_sites(1)
         runtime = self.app.extensions["runtime_manager"]

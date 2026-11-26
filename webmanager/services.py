@@ -526,10 +526,15 @@ class RuntimeManager:
             database = get_db()
             sites = database.execute(
                 "SELECT * FROM sites WHERE status IN ('running', 'starting')"
+                " OR (kind = 'app' AND status = 'error')"
             ).fetchall()
             static_sites = []
             for site in sites:
                 if site["kind"] == "app":
+                    # An app in "error" failed to start while it was meant to
+                    # run (stopping one sets "stopped"), often for a passing
+                    # reason such as no network during an image build after a
+                    # failover; try it again rather than leave it down.
                     if not include_apps:
                         # A data replica: apps stay stopped until it's
                         # promoted, so nothing writes to data the next
