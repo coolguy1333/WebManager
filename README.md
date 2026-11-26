@@ -1278,7 +1278,7 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_SITE_PORT_MAX` | `8999` | Last assignable site port |
 | `WEBMANAGER_SITE_GATEWAY_PORT` | `8090` | Loopback gateway used by wildcard system Nginx |
 | `WEBMANAGER_SITE_BASE_DOMAIN` | empty | Base domain appended to each globally unique site slug |
-| `WEBMANAGER_SITE_PUBLIC_SCHEME` | `http` | Public site URL scheme, normally `https` |
+| `WEBMANAGER_SITE_PUBLIC_SCHEME` | `http` | Scheme of the public site and app addresses, including each app's `PUBLIC_URL`. Set it to `https` whenever the sites are served through Cloudflare (Tunnel or proxy) or another TLS proxy, or apps give out `http://` links and sign-in (OAuth) addresses. The System page warns when it is `http` but the dashboard is reached over https. Restart WebManager after changing it, then restart running apps: they keep the `PUBLIC_URL` they were started with (each app's page shows it, with a restart button when it is out of date) |
 | `WEBMANAGER_NGINX_BINARY` | `/usr/sbin/nginx` | Nginx executable used for deployed sites |
 | `WEBMANAGER_TRUST_PROXY` | `1` | Trust one local reverse-proxy hop |
 | `WEBMANAGER_SESSION_COOKIE_SECURE` | `0` | Send session cookies only over HTTPS when set to `1` |

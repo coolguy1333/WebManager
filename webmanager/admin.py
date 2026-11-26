@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -277,6 +278,13 @@ def dashboard():
         update_status=update_status,
         # Super admins only: the version another server can be updated to.
         own_version=((update_status or {}).get("installed_commit") or "")[:12] or None,
+        # Opened over https while apps are told http:// (PUBLIC_URL): their
+        # links and sign-in addresses are wrong (Cloudflare Tunnel setups).
+        public_scheme_mismatch=(
+            active_section == "updates"
+            and current_app.config["SITE_PUBLIC_SCHEME"] == "http"
+            and dashboard_reached_over_https()
+        ),
         app_control=(
             {
                 "status": server_control.read_status(),
@@ -1080,6 +1088,19 @@ def acknowledge_failover():
     else:
         flash("Thanks. The failover warning is hidden; it comes back if this server takes over again.", "success")
     return redirect(request.referrer if _same_site(request.referrer) else url_for("deployments.dashboard"))
+
+
+def dashboard_reached_over_https() -> bool:
+    """Whether the browser reached this page over https, as told by a trusted
+    proxy (X-Forwarded-Proto, believed only with WEBMANAGER_TRUST_PROXY on)
+    or by Cloudflare (Cf-Visitor: {"scheme": "https"})."""
+    if current_app.config.get("TRUST_PROXY") and request.scheme == "https":
+        return True
+    try:
+        visitor = json.loads(request.headers.get("Cf-Visitor") or "{}")
+    except ValueError:
+        return False
+    return isinstance(visitor, dict) and visitor.get("scheme") == "https"
 
 
 def _same_site(address) -> bool:

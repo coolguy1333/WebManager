@@ -50,6 +50,21 @@
 </div>
 {% endif %}
 
+{% if app is not none and app.public_url_stale %}
+<div class="alert warning mb-16" id="public-url-stale">
+  {{ ui.icon('refresh') }}
+  <div class="alert-body"><strong>Restart needed to use {{ app.public_url_now }}</strong>This app was started with <code>PUBLIC_URL={{ app.public_url }}</code>, so the links and sign-in (OAuth) addresses it gives out still use that until it restarts.</div>
+  {% if can_manage %}
+  <div class="actions">
+    <form method="post" action="{{ url_for('deployments.restart_site', site_id=site.id) }}" data-loading>
+      {{ ui.csrf() }}
+      <button class="btn btn-sm btn-primary" type="submit" data-loading-text="Restarting…">{{ ui.icon('refresh', 14) }}Restart now</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if site.repository_pending_commit and can_manage_repository %}
 <div class="alert warning mb-16">
   {{ ui.icon('download') }}
@@ -181,6 +196,7 @@
       <div><dt>Process limit</dt><dd>{{ app_limits.pids }}</dd></div>
       <div><dt>Health check</dt><dd><code>{{ app_manifest.health if app_manifest else "—" }}</code></dd></div>
       <div><dt>Data volume</dt><dd><code>{{ app.volume }}</code></dd></div>
+      <div class="fact-wide"><dt>Public address (<code>PUBLIC_URL</code>)</dt><dd data-app-public-url>{% if app.public_url is not none %}<code>{{ app.public_url or "none" }}</code>{% if app.public_url_stale %} <span class="badge badge-warning">Restart needed to use <code>{{ app.public_url_now }}</code></span>{% endif %}{% else %}—{% endif %}</dd></div>
       <div><dt>CPU</dt><dd data-app-stat="cpu">{{ (app.stats.cpu_percent ~ "%") if app.stats and app.stats.cpu_percent is not none else "—" }}</dd></div>
       <div><dt>Memory in use</dt><dd data-app-stat="memory">{% if app.stats %}{{ app.stats.memory_used }} / {{ app.stats.memory_limit }}{% else %}—{% endif %}</dd></div>
       <div><dt>Network I/O</dt><dd data-app-stat="net">{% if app.stats %}↓ {{ app.stats.net_rx }} ↑ {{ app.stats.net_tx }}{% else %}—{% endif %}</dd></div>

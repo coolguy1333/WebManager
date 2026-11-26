@@ -68,7 +68,11 @@ class FakeRuntime:
         memory_mb, cpus, pids = container.get("limits", (None, None, None))
         return {
             "State": {"Status": container["status"], "StartedAt": "2026-01-01T00:00:00Z"},
-            "Config": {"Labels": {"webmanager.config": container["hash"]}, "Image": container["image"]},
+            "Config": {
+                "Labels": {"webmanager.config": container["hash"]},
+                "Image": container["image"],
+                "Env": [f"{key}={value}" for key, value in container.get("env", {}).items()],
+            },
             "HostConfig": {
                 "Memory": memory_mb * 1048576 if memory_mb else 0,
                 "NanoCpus": int(cpus * 1e9) if cpus else 0,

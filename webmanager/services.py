@@ -73,6 +73,15 @@ def allocate_port(database, minimum: int, maximum: int, requested: int | None = 
     raise RuntimeErrorDetail("No available site ports remain in the configured range.")
 
 
+def _container_env_value(info, key):
+    """One variable from a container's inspect data, or None."""
+    for item in ((info or {}).get("Config") or {}).get("Env") or []:
+        name, _sep, value = str(item).partition("=")
+        if name == key:
+            return value
+    return None
+
+
 class RuntimeManager:
     # How long "the container runtime is reachable" (or not) is remembered, so
     # page loads don't each ask the runtime. A failure is rechecked sooner.
@@ -224,13 +233,16 @@ class RuntimeManager:
         threading.Thread(target=worker, name=f"webmanager-app-{site_id}", daemon=True).start()
         return True
 
+    def app_public_url(self, site) -> str:
+        """The PUBLIC_URL an app gets when it starts now: its main address with
+        WEBMANAGER_SITE_PUBLIC_SCHEME ("" when it has no address)."""
+        hostname = site_hostname(get_db(), site)
+        return f"{self.app.config['SITE_PUBLIC_SCHEME']}://{hostname}" if hostname else ""
+
     def _app_env(self, site, manifest):
-        database = get_db()
         stored = app_support.decrypt_env(site["app_env"], self.app.config["SECRET_KEY"])
-        hostname = site_hostname(database, site)
-        public_url = f"{self.app.config['SITE_PUBLIC_SCHEME']}://{hostname}" if hostname else ""
         return app_support.effective_env(
-            manifest, stored, app_id=site["id"], public_url=public_url
+            manifest, stored, app_id=site["id"], public_url=self.app_public_url(site)
         )
 
     def _start_app(self, site_id: int, force: bool = False, rebuild: bool = False):
@@ -481,8 +493,15 @@ class RuntimeManager:
             (Path(self.app.instance_path) / "app-backups" / str(site["id"])).glob("data-*.tar"),
             reverse=True,
         )
+        # What the running container was really given, against what it
+        # would get now (the scheme or its address may have changed since).
+        started_with = _container_env_value(info, "PUBLIC_URL") if running else None
+        public_url_now = self.app_public_url(site)
         return {
             "available": True,
+            "public_url": started_with,
+            "public_url_now": public_url_now,
+            "public_url_stale": started_with is not None and started_with != public_url_now,
             "status": info["State"]["Status"] if info else None,
             "started_at": info["State"].get("StartedAt") if info else None,
             "restarts": info.get("RestartCount") if info else None,
