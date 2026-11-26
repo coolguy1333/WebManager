@@ -392,6 +392,48 @@ class WatchdogTests(Fixture):
             self.round(None)
         start.assert_called_once_with(site_id)
 
+    def test_an_app_that_failed_to_start_is_retried_with_a_growing_delay(self):
+        _, site_id = self.site(status="error")
+        with self.app.app_context():
+            get_db().execute("UPDATE sites SET kind = 'app' WHERE id = ?", (site_id,))
+            get_db().commit()
+        self.app.config["APPS_ENABLED"] = True
+        clock = [1000.0]
+
+        def start(app_id, force=False):
+            with self.app.app_context():  # like the real one: "starting", then it fails again
+                get_db().execute("UPDATE sites SET status = 'error' WHERE id = ?", (app_id,))
+                get_db().commit()
+            return True
+
+        with patch.object(watchdog.time, "time", side_effect=lambda: clock[0]), \
+                patch.object(self.runtime, "start_app_async", side_effect=start) as started:
+            self.round(None)
+            self.assertEqual(started.call_count, 0, "not at once: the failure is fresh")
+            clock[0] += watchdog.APP_RETRY_FIRST_SECONDS
+            self.round(None)
+            self.assertEqual(started.call_count, 1)
+            clock[0] += watchdog.APP_RETRY_FIRST_SECONDS
+            self.round(None)
+            self.assertEqual(started.call_count, 1, "the second wait is twice as long")
+            clock[0] += watchdog.APP_RETRY_FIRST_SECONDS
+            self.round(None)
+            self.assertEqual(started.call_count, 2)
+        started.assert_called_with(site_id)
+
+    def test_a_replica_does_not_retry_failed_apps(self):
+        _, site_id = self.site(status="error")
+        with self.app.app_context():
+            get_db().execute("UPDATE sites SET kind = 'app' WHERE id = ?", (site_id,))
+            get_db().commit()
+        self.app.config["APPS_ENABLED"] = True
+        with patch.object(type(self.dog), "_is_replica", new=True), \
+                patch.object(watchdog.time, "time", side_effect=[0.0] + [10_000.0] * 50), \
+                patch.object(self.runtime, "start_app_async") as started:
+            self.round(None)
+            self.round(None)
+        started.assert_not_called()
+
     def test_stopped_sites_are_not_watched(self):
         self.site(status="stopped")
         self.round(None)

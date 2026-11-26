@@ -25,6 +25,10 @@ from .domains import site_hostnames
 INTERVAL_SECONDS = 60
 FAILURES_BEFORE_DOWN = 2
 UPTIME_KEEP_DAYS = 90
+# Apps that failed to start are tried again, first after this long, then
+# twice as long each time (up to the maximum) while they keep failing.
+APP_RETRY_FIRST_SECONDS = 120
+APP_RETRY_MAX_SECONDS = 3600
 DISK_WARN_PERCENT = 10
 DISK_REMIND_SECONDS = 24 * 3600
 
@@ -43,6 +47,7 @@ class Watchdog:
         self._stop = threading.Event()
         self._thread = None
         self._sites: dict[int, dict] = {}  # site id -> {"fails": n, "down": bool, "name": str}
+        self._app_retries: dict[int, dict] = {}  # app id -> {"delay": s, "next": epoch}
         self._state_path = Path(
             app.config.get("WATCHDOG_STATE_FILE") or Path(app.instance_path) / "watchdog-state.json"
         )
@@ -122,6 +127,7 @@ class Watchdog:
             if runtime.nginx_binary:
                 self._watch_sites(database, runtime)
             if not self._is_replica:
+                self._retry_failed_apps(database, runtime)
                 self._watch_sources(database)
             self._watch_program_update()
             self._watch_disk()
@@ -129,6 +135,36 @@ class Watchdog:
         self._primed = True
         self._save_state()
         self.last_run = time.time()
+
+    def _retry_failed_apps(self, database, runtime):
+        """Start apps that failed to start again, with a growing delay, so a
+        passing cause (no network during a build, a race while many apps start
+        at once) doesn't leave an app down until someone starts it by hand."""
+        if not self.app.config.get("APPS_ENABLED"):
+            self._app_retries.clear()
+            return
+        rows = database.execute(
+            "SELECT id, name, status FROM sites WHERE kind = 'app' AND status IN ('error', 'starting')"
+        ).fetchall()
+        failed = {row["id"]: row["name"] for row in rows if row["status"] == "error"}
+        retrying = {row["id"] for row in rows}
+        for site_id in list(self._app_retries):
+            # Keep the delay while a retry is starting, so a failing app backs
+            # off; forget it once it runs, is stopped or is deleted.
+            if site_id not in retrying:
+                del self._app_retries[site_id]
+        now = time.time()
+        for site_id, name in failed.items():
+            retry = self._app_retries.get(site_id)
+            if retry is None:
+                self._app_retries[site_id] = {"delay": APP_RETRY_FIRST_SECONDS, "next": now + APP_RETRY_FIRST_SECONDS}
+                continue
+            if now < retry["next"]:
+                continue
+            if runtime.start_app_async(site_id):
+                self.app.logger.warning("App %s (%s) failed to start earlier; trying again", site_id, name)
+                delay = min(retry["delay"] * 2, APP_RETRY_MAX_SECONDS)
+                self._app_retries[site_id] = {"delay": delay, "next": now + delay}
 
     def _watch_sites(self, database, runtime):
         gateway_port = self.app.config["SITE_GATEWAY_PORT"]
