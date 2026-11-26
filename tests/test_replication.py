@@ -144,6 +144,8 @@ class ReplicationManagerUnitTests(unittest.TestCase):
                 self.assertTrue(manager.sync_once())
             self.assertEqual(restore.call_count, expected_calls, status)
         restore.assert_called_with(include_apps=False)
+        self.assertEqual(self.app.extensions["runtime_manager"].restore_gateway.call_count, 2,
+                         "names and dashboard addresses reach Nginx too")
 
     def test_is_replica_reflects_whether_a_primary_url_is_set(self):
         self.assertTrue(self.manager().is_replica)

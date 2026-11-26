@@ -263,9 +263,14 @@ class ReplicationManager:
             after = self._served_state()
         if after is not None and after != before:
             # A site was started, stopped, renamed or re-addressed on the
-            # primary: serve it the same way here now, not at the next data sync.
+            # primary, or a dashboard address or replica name changed: serve
+            # it the same way here now, not at the next data sync.
+            runtime = self.app.extensions["runtime_manager"]
             try:
-                self.app.extensions["runtime_manager"].restore_sites(include_apps=False)
+                runtime.restore_sites(include_apps=False)
+                # Dashboard addresses and replica names live in the main
+                # Nginx config, which starting sites doesn't always rewrite.
+                runtime.restore_gateway()
             except Exception:  # noqa: BLE001 - the data sync round applies it again
                 self.app.logger.exception("Replication: could not apply the new site state")
         return True
