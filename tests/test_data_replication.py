@@ -2,8 +2,10 @@
 and applying one on a replica. See webmanager/data_replication.py."""
 
 import io
+import sqlite3
 import tarfile
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
@@ -176,6 +178,42 @@ class ApplySnapshotTests(unittest.TestCase):
         self.assertEqual(
             (self.repository_root / "keep.html").read_text(encoding="utf-8"), "kept"
         )
+
+    def test_an_unexpected_error_does_not_end_the_sync_thread(self):
+        # A sqlite3.OperationalError ("attempt to write a readonly database")
+        # from restore_sites used to escape sync_once and kill the thread, so
+        # the replica silently stopped mirroring app data.
+        rounds = []
+
+        def boom():
+            rounds.append(1)
+            if len(rounds) >= 2:
+                self.manager._stop_event.set()
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        with patch.object(self.manager, "sync_once", side_effect=boom), \
+                patch.object(self.manager, "stop_leftover_apps"), \
+                patch.object(data_replication, "DATA_POLL_SECONDS", 0):
+            self.manager._run()
+        self.assertEqual(len(rounds), 2, "the loop kept going after the first error")
+        self.assertIn("readonly", self.manager.last_error)
+
+    def test_restore_after_sync_holds_the_database_replication_lock(self):
+        # The database replication thread swaps the database file under its
+        # lock; restoring sites while it does that fails.
+        lock = threading.Lock()
+
+        class _Replication:
+            _sync_lock = lock
+
+        self.app.extensions["replication_manager"] = _Replication()
+        held = []
+        with patch.object(self.manager, "_pull_and_apply"), \
+                patch.object(self.runtime_manager, "restore_sites",
+                             side_effect=lambda **_: held.append(lock.locked())):
+            self.assertTrue(self.manager.sync_once())
+        self.assertEqual(held, [True])
+        self.assertFalse(lock.locked())
 
     def test_apply_snapshot_wipes_stale_repositories_no_longer_present(self):
         stale = self.repository_root / "99" / "old.html"

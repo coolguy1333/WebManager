@@ -243,9 +243,18 @@ class ReplicationManager:
         self._stop_event = threading.Event()
 
     def _run(self):
-        self.sync_once()
+        self._sync_safely()
         while not self._stop_event.wait(DB_POLL_SECONDS):
+            self._sync_safely()
+
+    def _sync_safely(self):
+        # An unexpected error must not end the thread (the replica would stop
+        # mirroring until WebManager restarts).
+        try:
             self.sync_once()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self.app.logger.exception("Replication: sync failed unexpectedly; retrying next round")
 
     def sync_once(self):
         """Pull and apply one database snapshot from the primary. Public so

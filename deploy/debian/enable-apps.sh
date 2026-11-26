@@ -88,12 +88,19 @@ write_firewall_unit() {
             # Delete, then insert at the top: always above the blocks.
             printf 'ExecStart=/bin/sh -c '\''while iptables -D DOCKER-USER -p %s --dport 53 -j ACCEPT 2>/dev/null; do :; done; iptables -I DOCKER-USER -p %s --dport 53 -j ACCEPT'\''\n' "$protocol" "$protocol"
         done
+        # Replies, also at the very top: a reply to a container is addressed to
+        # its 172.17.x.x address, which is inside 172.16.0.0/12, so without this
+        # every reply (DNS answers included) was dropped and containers had no
+        # network at all. It only lets in traffic for connections a container
+        # opened (or a published port); new connections to the LAN stay blocked.
+        printf 'ExecStart=/bin/sh -c '\''while iptables -D DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done; iptables -I DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT'\''\n'
         for range in $BLOCKED_RANGES; do
             printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -d %s -j DROP 2>/dev/null || true'\''\n' "$range"
         done
         for protocol in udp tcp; do
             printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -p %s --dport 53 -j ACCEPT 2>/dev/null || true'\''\n' "$protocol"
         done
+        printf 'ExecStop=/bin/sh -c '\''iptables -D DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true'\''\n'
         echo
         echo "[Install]"
         echo "WantedBy=docker.service"
