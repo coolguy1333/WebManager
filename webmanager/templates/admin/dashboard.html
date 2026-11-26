@@ -248,7 +248,7 @@
         <div><dt>Nginx data &amp; access log</dt><dd>{{ bytes(metrics.storage.nginx) }}</dd></div>
         <div><dt>Database</dt><dd>{{ bytes(metrics.storage.database) }}</dd></div>
         <div><dt>Data directory</dt><dd><code>{{ metrics.disk.path if metrics.disk else "n/a" }}</code></dd></div>
-        {% if app_hosting %}<div class="fact-wide"><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% else %}<span class="badge">Off</span> {{ app_hosting[1] }}{% endif %}</dd></div>{% endif %}
+        {% if app_hosting %}<div class="fact-wide"><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% elif not config.APPS_ENABLED %}<span class="badge">Off</span> <a href="#apps">Turn it on below</a>{% else %}<span class="badge badge-warning">Not working</span> {{ app_hosting[1] }} <a href="#apps">Details below</a>{% endif %}</dd></div>{% endif %}
       </dl>
     </div>
   </div>

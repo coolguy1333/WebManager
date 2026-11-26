@@ -625,6 +625,51 @@ class AppHostingTests(unittest.TestCase):
         self.assertEqual(self.site()["status"], "error")
         self.assertNotIn(self.fake.container_name(site_id), self.fake.containers)
 
+    def test_starting_again_after_a_failure_rebuilds_the_image(self):
+        # A bad image for a commit used to stay forever: Start and Restart
+        # reused it, so a fix only took effect with a new commit.
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        self.store(site_id, {"ADMIN_PASSWORD": "pw"})
+        with self.assertRaises(RuntimeErrorDetail):
+            self.start_now(site_id, healthy=False)
+        self.assertIn("The app didn't pass its health check", self.site()["last_error"])
+        manager = self.app.extensions["runtime_manager"]
+        with patch.object(manager, "_start_app") as start, patch.object(threading, "Thread") as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs["target"]()
+            self.assertTrue(manager.start_app_async(site_id))
+        self.assertTrue(start.call_args.kwargs["rebuild"])
+
+        self.fake.calls.clear()
+        with patch.object(apps, "wait_until_healthy", return_value=(True, "ok")), self.app.app_context():
+            manager._start_app(site_id, rebuild=True)
+        self.assertTrue([call for call in self.fake.calls if call[0] == "build"], "built again")
+        self.assertEqual(self.site()["status"], "running")
+
+        with patch.object(manager, "_start_app") as start, patch.object(threading, "Thread") as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs["target"]()
+            manager.start_app_async(site_id)
+        self.assertFalse(start.call_args.kwargs["rebuild"], "a running app keeps its image")
+
+    def test_an_app_page_says_app_and_links_to_what_it_printed(self):
+        _, repository_id = self.owner()
+        self.deploy(repository_id)
+        site_id = self.site()["id"]
+        with self.app.app_context():
+            database = get_db()
+            database.execute(
+                "UPDATE sites SET status = 'error', last_error = ? WHERE id = ?",
+                ("The app didn't pass its health check: the container exited while starting.\nPermission denied", site_id),
+            )
+            database.commit()
+        page = self.client.get(f"/sites/{site_id}").get_data(as_text=True)
+        self.assertIn("This app needs attention", page)
+        self.assertIn("Start app", page)
+        self.assertIn('href="#start-failure"', page)
+        self.assertIn('id="start-failure"', page)
+        self.assertIn("Permission denied", page)
+
     def test_missing_required_variable_blocks_start(self):
         _, repository_id = self.owner()
         self.deploy(repository_id)
@@ -1027,3 +1072,43 @@ class AppHostingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadableBuildContextTests(unittest.TestCase):
+    """Found on a real server: an app running as a non-root user couldn't
+    read its own code ("can't open file '/app/app.py': Permission denied")
+    because the checkout's 640 modes were copied into the image."""
+
+    def test_files_get_the_permissions_of_a_normal_checkout(self):
+        import os
+        import stat
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            (root / "src").mkdir(parents=True)
+            (root / "app.py").write_text("print(1)")
+            (root / "run.sh").write_text("#!/bin/sh\n")
+            (root / "src" / "lib.py").write_text("")
+            os.symlink("app.py", root / "link.py")
+            os.chmod(root / "app.py", 0o640)
+            os.chmod(root / "run.sh", 0o750)
+            os.chmod(root / "src" / "lib.py", 0o600)
+            os.chmod(root / "src", 0o750)
+            os.chmod(root, 0o750)
+
+            apps.readable_build_context(root)
+
+            mode = lambda path: stat.S_IMODE(os.stat(path).st_mode)  # noqa: E731
+            self.assertEqual(mode(root / "app.py"), 0o644)
+            self.assertEqual(mode(root / "run.sh"), 0o755)
+            self.assertEqual(mode(root / "src" / "lib.py"), 0o644)
+            self.assertEqual(mode(root / "src"), 0o755)
+            self.assertEqual(mode(root), 0o755)
+
+    def test_the_build_makes_its_context_readable_first(self):
+        runtime = apps.ContainerRuntime("docker", Path("."))
+        with patch.object(apps, "readable_build_context") as readable, \
+                patch.object(runtime, "_run", return_value=Mock(returncode=0, stdout="", stderr="")):
+            runtime.build(3, Path("/srv/x"), "abc")
+        readable.assert_called_once_with(Path("/srv/x"))

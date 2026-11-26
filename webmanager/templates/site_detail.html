@@ -22,14 +22,14 @@
       {{ ui.csrf() }}
       <button class="btn" type="submit" data-loading-text="Restarting…">{{ ui.icon('refresh', 14) }}Restart</button>
     </form>
-    <form method="post" action="{{ url_for('deployments.stop_site', site_id=site.id) }}" data-loading data-confirm="Stop this site? Its public addresses will stop serving traffic until it is started again.">
+    <form method="post" action="{{ url_for('deployments.stop_site', site_id=site.id) }}" data-loading data-confirm="Stop this {{ 'app' if app is not none else 'site' }}? Its public addresses will stop serving traffic until it is started again.">
       {{ ui.csrf() }}
       <button class="btn" type="submit" data-loading-text="Stopping…">{{ ui.icon('stop', 14) }}Stop</button>
     </form>
     {% else %}
     <form method="post" action="{{ url_for('deployments.start_site', site_id=site.id) }}" data-loading>
       {{ ui.csrf() }}
-      <button class="btn btn-primary" type="submit" data-loading-text="Starting…">{{ ui.icon('play', 14) }}Start site</button>
+      <button class="btn btn-primary" type="submit" data-loading-text="Starting…">{{ ui.icon('play', 14) }}Start {{ 'app' if app is not none else 'site' }}</button>
     </form>
     {% endif %}
     {% endif %}
@@ -43,8 +43,9 @@
 <div class="alert error mb-16">
   {{ ui.icon('alert') }}
   <div class="alert-body">
-    <strong>This site needs attention</strong>
+    <strong>This {{ 'app' if app is not none else 'site' }} needs attention</strong>
     {% if attention_reasons|length == 1 %}{{ attention_reasons[0] }}{% else %}<ul>{% for reason in attention_reasons %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+    {% if app is not none and site.last_error and "\n" in site.last_error %}<a href="#start-failure">See what the app printed</a>{% endif %}
   </div>
 </div>
 {% endif %}
@@ -100,7 +101,7 @@
 <div class="grid-2 mb-16">
   <section class="card">
     <div class="card-header">
-      <div><h2>Addresses</h2><p>Public hostnames routed to this site.</p></div>
+      <div><h2>Addresses</h2><p>Public hostnames routed to this {{ 'app' if app is not none else 'site' }}.</p></div>
       {% if can_manage %}<a class="btn btn-sm" href="{{ url_for('deployments.site_settings', site_id=site.id) }}">Manage</a>{% endif %}
     </div>
     <div class="card-body">
@@ -186,7 +187,7 @@
     </dl>
     <p class="hint" data-app-stat="hint">{% if app.stats %}CPU, memory and network refresh every 2 seconds while this page is open.{% endif %}</p>
     {% if site.last_error and site.status in ["error", "running"] %}
-    <div>
+    <div id="start-failure">
       <h3 class="mb-16">Last start failure</h3>
       <pre><code>{{ site.last_error }}</code></pre>
     </div>

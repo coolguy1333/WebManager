@@ -16,6 +16,9 @@ exposed - never site names, hostnames, or repository details.
 import atexit
 import hashlib
 import hmac
+import http.client
+import ipaddress
+import re
 import json
 import os
 import threading
@@ -89,15 +92,18 @@ def save_token(app, token: str):
         handle.write(token + "\n")
 
 
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$")
+
+
 def normalize_peer_url(value) -> str | None:
     """The bare address (scheme://host[:port]) of a server, or None if it isn't one."""
     text = str(value or "").strip()
     if "://" not in text:
         text = "http://" + text
-    parts = urlsplit(text.rstrip("/"))
     try:
+        parts = urlsplit(text.rstrip("/"))
         port = parts.port
-    except ValueError:
+    except ValueError:  # e.g. a bracketed host that isn't an IPv6 address
         return None
     if (
         parts.scheme not in {"http", "https"}
@@ -109,7 +115,17 @@ def normalize_peer_url(value) -> str | None:
         or parts.path not in {"", "/"}
     ):
         return None
-    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    hostname = parts.hostname
+    if ":" in hostname:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ValueError:
+            return None
+        host = f"[{hostname}]"
+    elif _HOSTNAME_RE.fullmatch(hostname):
+        host = hostname
+    else:
+        return None  # spaces, underscores, other characters no address has
     return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
@@ -258,7 +274,7 @@ class MeshHub:
             if not isinstance(body, dict) or "sites" not in body:
                 return False, "It answered, but not like a WebManager server.", None
             return True, None, None
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError, OSError) as exc:
             message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             return False, message, hint
 
@@ -292,7 +308,7 @@ class MeshHub:
                 ), body
             message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
             return False, body.get("error") or hint or message, body
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError, OSError) as exc:
             message, hint = explain_failure(exc, UPDATE_REQUEST_TIMEOUT_SECONDS)
             return False, f"It could not be reached: {hint or message}", {}
         if not isinstance(body, dict):
@@ -379,7 +395,7 @@ class MeshHub:
                 self._name_replica(url)
             if was_reachable is False:
                 self.app.logger.info("Mesh peer %s is reachable again.", url)
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError, OSError) as exc:
             message, hint = explain_failure(exc, TIMEOUT_SECONDS)
             with self._lock:
                 previous = self._remote.get(url, {})

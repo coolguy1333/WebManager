@@ -13,6 +13,7 @@ about to overwrite.
 
 import atexit
 import contextlib
+import http.client
 import os
 import posixpath
 import shutil
@@ -179,7 +180,7 @@ class DataReplicationManager:
                         raise RuntimeError(f"Primary returned HTTP {response.status}.")
                     with open(temporary_path, "wb") as handle:
                         shutil.copyfileobj(response, handle)
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, http.client.HTTPException) as exc:
                 raise RuntimeError(
                     f"Could not reach primary {self.primary_url}: "
                     f"{peer_http.describe_failure(exc, TIMEOUT_SECONDS)}"

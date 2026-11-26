@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from webmanager import create_app, mesh
+from unittest.mock import patch
+
+from webmanager import create_app, mesh, peer_http
 
 from tests import test_app as base
 
@@ -334,3 +336,22 @@ class MeshSelfExclusionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PeerAddressTests(unittest.TestCase):
+    def test_only_real_addresses_are_accepted(self):
+        # "not a url" used to pass as a hostname and crash "Add by address" (500).
+        for bad in ("not a url", "http://bad host:8080", "http://under_score.example", "http://a..b", "http://[zz]:80"):
+            self.assertIsNone(mesh.normalize_peer_url(bad), bad)
+        self.assertEqual(mesh.normalize_peer_url("192.168.10.116:8080"), "http://192.168.10.116:8080")
+        self.assertEqual(mesh.normalize_peer_url("https://replica.example.com/"), "https://replica.example.com")
+        self.assertEqual(mesh.normalize_peer_url("http://[::1]:8080"), "http://[::1]:8080")
+
+    def test_a_broken_answer_from_another_server_is_reported_not_raised(self):
+        import http.client
+
+        hub = mesh.MeshHub(None, [], token="x" * mesh.MIN_TOKEN_LENGTH)
+        with patch.object(peer_http, "open_peer", side_effect=http.client.IncompleteRead(b"")):
+            ok, error, _hint = hub.probe("http://192.168.10.116:8080")
+        self.assertFalse(ok)
+        self.assertTrue(error)

@@ -155,8 +155,8 @@
       {% else %}<span class="muted">No public domain</span>{% endif %}
     </div>
     <div class="col-status" role="cell">{{ ui.status_badge(site.status, attention=reasons) }}</div>
-    <div role="cell" data-stat="cpu">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
-    <div role="cell" data-stat="memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
+    <div role="cell" data-stat="cpu" data-label="CPU">{{ app_stats.cpu_percent ~ "%" if app_stats and app_stats.cpu_percent is not none else "—" }}</div>
+    <div role="cell" data-stat="memory" data-label="Memory">{% if app_stats %}{{ app_stats.memory_used }} / {{ app_stats.memory_limit }}{% else %}—{% endif %}</div>
     <div class="row-actions col-actions" role="cell">
       {% if site.status == "running" %}<a class="btn btn-sm btn-ghost" href="{{ site_public_url(site) }}" target="_blank" rel="noopener noreferrer" aria-label="Open {{ site.name }}">{{ ui.icon('external', 14) }}Open</a>{% endif %}
       <a class="btn btn-sm" href="{{ url_for('deployments.site_detail', site_id=site.id) }}">{{ "Manage" if site.id in manageable_site_ids else "View" }}</a>
