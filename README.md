@@ -378,8 +378,8 @@ Administrators see an **Administration** group in the sidebar:
   **Site exceptions**. Super admins also set **Default limits** here.
 - **Domains** (super admins): deployment domains, dashboard domains, and the
   domain blocklist.
-- **System** (super admins): resource usage, app hosting status, WebManager
-  updates, and hosted-site update checks.
+- **System** (super admins): resource usage, app hosting status, this
+  server's settings, WebManager updates, and hosted-site update checks.
 
 Account, team, pool, and site editors stay collapsed until opened. The
 administration pages can:
@@ -1241,6 +1241,17 @@ The production environment file is:
 /etc/webmanager/webmanager.env
 ```
 
+Super admins can change the common settings from the browser: **System >
+Settings** (allowed Google emails and domains, Secure cookies, proxy trust,
+the sites' http/https scheme, scheduled update checks, the largest Git source,
+backups, the watchdog and, with app hosting on, the app limits). Saving
+writes this file through the root helper `webmanager-control`, restarts
+WebManager and, if it doesn't come back, puts the previous file back and
+shows why. Each server has its own file, so on a replica it changes that
+replica only. Secrets, addresses, the Google client and the server group
+can only be changed on the server. Set `WEBMANAGER_DASHBOARD_SETTINGS=0`
+to turn the browser editing off.
+
 Default contents:
 
 ```text
@@ -1302,6 +1313,7 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
 | `WEBMANAGER_MAX_REPOSITORY_MB` | `1024` | Largest repository checkout accepted; bigger clones are rejected |
 | `WEBMANAGER_APPS_ENABLED` | `0` | Turns on [app hosting](docs/APP_HOSTING.md); use **System → App hosting** or `sudo webmanager-enable-apps` rather than editing by hand |
+| `WEBMANAGER_DASHBOARD_SETTINGS` | `1` | `0` turns off **System > Settings**, keeping this file a shell-only matter |
 | `WEBMANAGER_DASHBOARD_APP_CONTROL` | `1` | `0` removes the dashboard's app-hosting switch (on this server and from other servers), keeping it a shell-only decision |
 | `WEBMANAGER_CONTAINER_RUNTIME` | empty | Container CLI for apps; empty auto-detects `docker`, then `podman` |
 | `WEBMANAGER_APP_DEFAULT_MEMORY_MB` | `256` | Memory limit for apps that don't set `memory_mb` |

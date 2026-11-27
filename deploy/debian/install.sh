@@ -861,8 +861,10 @@ fi
 
 if [[ ${CONTROL_INSTALLED:-0} -eq 1 ]]; then
     systemctl daemon-reload
-    systemctl enable --now webmanager-control.path 2>/dev/null \
-        || echo "Could not start webmanager-control.path; the System page can't switch app hosting until it runs."
+    # restart, not just --now: a running path unit keeps watching only the
+    # files it was started with (settings requests were added later).
+    { systemctl enable webmanager-control.path && systemctl restart webmanager-control.path; } 2>/dev/null \
+        || echo "Could not start webmanager-control.path; the System page can't switch app hosting or save settings until it runs."
 fi
 
 echo "[8/8] Configuring UFW when it is already active"

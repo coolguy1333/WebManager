@@ -294,7 +294,7 @@
 </section>
 
 <nav class="jump-links mb-16" aria-label="On this page">
-  <a href="#health">Health checks</a><a href="#apps">App hosting</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a><a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
+  <a href="#health">Health checks</a><a href="#apps">App hosting</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a>{% if settings_form %}<a href="#settings">Settings</a>{% endif %}<a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
 </nav>
 
 {# ---------- Health checks ---------- #}
@@ -312,7 +312,7 @@
 {% if app_control is not none %}
 {% set apps_on = app_hosting and app_hosting[0] %}
 {% set apps_configured = config.APPS_ENABLED %}
-{% set change = app_control.status %}
+{% set change = app_control.status if app_control.status and app_control.status.action != "settings" else none %}
 <section class="card mb-24" id="apps"{% if change and change.state in ("requested", "running") %} data-auto-refresh="5" data-auto-refresh-max="120"{% endif %}>
   <div class="card-header">
     <div><h2>App hosting</h2><p>Run apps (Node, Python, anything with a <code>Dockerfile</code>) in hardened containers next to your static sites, on this server.</p></div>
@@ -601,6 +601,67 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
     {% endif %}
   </section>
 </section>
+
+{# ---------- Settings (this server's settings file) ---------- #}
+{% if settings_form %}
+{% set change = settings_form.status if settings_form.status and settings_form.status.action == "settings" else none %}
+{% set busy = change and change.state in ("requested", "running") %}
+<section class="card mb-24" id="settings"{% if busy %} data-auto-refresh="5" data-auto-refresh-max="60"{% endif %}>
+  <div class="card-header">
+    <div><h2>Settings</h2><p>This server's settings (<code>/etc/webmanager/webmanager.env</code>). Saving restarts WebManager; if it doesn't come back, the old settings are put back. Secrets, addresses and the server group stay a change on the server.</p></div>
+  </div>
+  <form method="post" action="{{ url_for('admin.save_settings') }}" data-loading data-confirm="Save these settings and restart WebManager on this server? Sites and apps keep running.">
+    {{ ui.csrf() }}
+    <div class="card-body stack">
+      {% if busy %}
+      <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>Saving the settings…</strong>{{ change.message }} This page refreshes by itself.</div></div>
+      {% elif change and change.state == "error" %}
+      <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The settings weren't saved</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
+      {% elif change and change.state == "done" %}
+      <div class="alert success">{{ ui.icon('check') }}<div class="alert-body">{{ change.message }}{% if change.at %} <span class="faint">({{ change.at }} UTC)</span>{% endif %}</div></div>
+      {% endif %}
+      {% if settings_form.blocked and not busy %}<p class="hint">{{ settings_form.blocked }}</p>{% endif %}
+      {% set groups = [] %}{% for setting in settings_form.settings %}{% if setting.group not in groups %}{% set _ = groups.append(setting.group) %}{% endif %}{% endfor %}
+      {% for group in groups %}
+      <fieldset{% if settings_form.blocked %} disabled{% endif %}>
+        <legend>{{ group }}</legend>
+        <div class="grid-2">
+          {% for setting in settings_form.settings if setting.group == group %}
+          {% set value = settings_form["values"][setting.key] %}
+          {% if setting.kind == "flag" %}
+          <label class="check">
+            <input type="checkbox" name="{{ setting.key }}" value="1" {% if value == "1" %}checked{% endif %}>
+            <span><strong>{{ setting.label }}</strong><small>{{ setting.help }} <code>{{ setting.key }}</code></small></span>
+          </label>
+          {% elif setting.kind == "choice" %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <select name="{{ setting.key }}">{% for choice in setting.choices %}<option value="{{ choice }}" {% if value == choice %}selected{% endif %}>{{ choice }}</option>{% endfor %}</select>
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% elif setting.kind in ("int", "float") %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <input type="number" name="{{ setting.key }}" value="{{ value }}" min="{{ setting.low }}" max="{{ setting.high }}" step="{{ '1' if setting.kind == 'int' else '0.05' }}" required>
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% else %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <input name="{{ setting.key }}" value="{{ value|replace(',', ', ') }}" autocomplete="off" spellcheck="false" placeholder="{{ 'you@gmail.com, someone@example.com' if setting.kind == 'emails' else 'example.com' }}">
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </fieldset>
+      {% endfor %}
+    </div>
+    {% if not settings_form.blocked and not busy %}
+    <div class="card-footer end">
+      <button class="btn btn-primary" type="submit" data-loading-text="Saving…">Save and restart WebManager</button>
+    </div>
+    {% endif %}
+  </form>
+</section>
+{% endif %}
 
 {# ---------- WebManager update ---------- #}
 <section class="card mb-24" id="updates">

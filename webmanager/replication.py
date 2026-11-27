@@ -78,6 +78,8 @@ _LOCAL_ONLY_ENDPOINTS = {
     "admin.add_server",
     "admin.update_server",
     "admin.control_server",
+    # This machine's own settings file.
+    "admin.save_settings",
     "admin.acknowledge_failover",
     # Root-level change to this machine (Docker), never the primary's.
     "admin.set_app_hosting",
