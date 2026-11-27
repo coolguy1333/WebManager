@@ -91,19 +91,41 @@ def readable_build_context(context: Path):
     app that runs as a non-root user (as it should) then can't read its own
     code. The checkout stays private on the server: the folders above it
     are closed to other users. Git ignores these bits, so nothing shows as
-    a local change."""
+    a local change.
+
+    Only ever touches an app's own folder: it refuses anything that isn't a
+    folder with a Dockerfile at least two levels below / (so never /, /srv
+    or the current directory of a process started from /), and it doesn't
+    cross into other filesystems or follow symlinks. Raises AppError."""
+    try:
+        context = Path(context).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise AppError(f"The app folder {context} doesn't exist.") from exc
+    if len(context.parts) < 3 or not context.is_dir() or not (context / DOCKERFILE_NAME).is_file():
+        raise AppError(f"{context} isn't an app folder (no {DOCKERFILE_NAME}); it was left as it is.")
+    device = context.stat().st_dev
+
+    def widen(path, extra):
+        mode = os.lstat(path).st_mode
+        if mode & extra != extra:
+            os.chmod(path, mode | extra)
+
     for root, directories, files in os.walk(context):
+        kept = []
         for name in directories:
             path = os.path.join(root, name)
-            if not os.path.islink(path):
-                os.chmod(path, os.stat(path).st_mode | 0o055)
+            if os.path.islink(path) or os.lstat(path).st_dev != device:
+                continue
+            widen(path, 0o055)
+            kept.append(name)
+        directories[:] = kept
         for name in files:
             path = os.path.join(root, name)
             if os.path.islink(path):
                 continue
-            mode = os.stat(path).st_mode
-            os.chmod(path, mode | 0o044 | (0o011 if mode & 0o100 else 0))
-    os.chmod(context, os.stat(context).st_mode | 0o055)
+            mode = os.lstat(path).st_mode
+            widen(path, 0o044 | (0o011 if mode & 0o100 else 0))
+    widen(context, 0o055)
 
 
 _NETWORK_FAILURE_RE = re.compile(

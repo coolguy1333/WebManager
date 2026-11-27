@@ -220,11 +220,17 @@ class BuildNetworkFailureTests(unittest.TestCase):
         self.assertEqual(apps.network_failure_hint(BuildFailureSummaryTests.OUTPUT), "")
 
     def test_the_hint_is_part_of_the_build_error(self):
-        runtime = apps.ContainerRuntime("docker", Path("."))
+        import tempfile
+
         failed = Mock(returncode=1, stdout="", stderr=self.APK)
-        with patch.object(runtime, "_run", return_value=failed):
-            with self.assertRaises(apps.AppError) as caught:
-                runtime.build(7, Path("."), "abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / "app"
+            context.mkdir()
+            (context / "Dockerfile").write_text("FROM scratch\n")
+            runtime = apps.ContainerRuntime("docker", Path(tmp))
+            with patch.object(runtime, "_run", return_value=failed):
+                with self.assertRaises(apps.AppError) as caught:
+                    runtime.build(7, context, "abc")
         message = str(caught.exception)
         self.assertTrue(message.startswith("The app image failed to build: process"))
         self.assertIn("couldn't reach the internet", message)
@@ -1092,6 +1098,7 @@ class ReadableBuildContextTests(unittest.TestCase):
             root = Path(tmp) / "app"
             (root / "src").mkdir(parents=True)
             (root / "app.py").write_text("print(1)")
+            (root / "Dockerfile").write_text("FROM scratch\n")
             (root / "run.sh").write_text("#!/bin/sh\n")
             (root / "src" / "lib.py").write_text("")
             os.symlink("app.py", root / "link.py")
@@ -1110,8 +1117,38 @@ class ReadableBuildContextTests(unittest.TestCase):
             self.assertEqual(mode(root / "src"), 0o755)
             self.assertEqual(mode(root), 0o755)
 
+    def test_anything_but_an_app_folder_is_left_alone(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "no-dockerfile"
+            empty.mkdir()
+            for folder in (Path("/"), Path("/srv"), Path(tmp) / "missing", empty):
+                with self.subTest(folder=folder), patch.object(os, "chmod") as chmod:
+                    with self.assertRaises(apps.AppError):
+                        apps.readable_build_context(folder)
+                    chmod.assert_not_called()
+            # A relative path is the current directory, which is / for the updater.
+            previous = os.getcwd()
+            os.chdir("/")
+            try:
+                with patch.object(os, "chmod") as chmod:
+                    with self.assertRaises(apps.AppError):
+                        apps.readable_build_context(Path("."))
+                    chmod.assert_not_called()
+            finally:
+                os.chdir(previous)
+
+    def test_a_failed_check_stops_the_build(self):
+        runtime = apps.ContainerRuntime("docker", Path("/nonexistent"))
+        with patch.object(runtime, "_run") as run:
+            with self.assertRaises(apps.AppError):
+                runtime.build(3, Path("/"), "abc")
+        run.assert_not_called()
+
     def test_the_build_makes_its_context_readable_first(self):
-        runtime = apps.ContainerRuntime("docker", Path("."))
+        runtime = apps.ContainerRuntime("docker", Path("/nonexistent"))
         with patch.object(apps, "readable_build_context") as readable, \
                 patch.object(runtime, "_run", return_value=Mock(returncode=0, stdout="", stderr="")):
             runtime.build(3, Path("/srv/x"), "abc")
