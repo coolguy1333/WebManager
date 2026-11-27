@@ -67,6 +67,7 @@ LABELS = {
     "admin.delete_pool": "Deleted a pool",
     "admin.update_site_access": "Changed who can access a site",
     "admin.update_user": "Changed a person's account",
+    "admin.delete_user": "Deleted a person's account",
     "admin.update_default_limits": "Changed the default limits",
     "admin.sync_replication": "Synced settings from the primary",
     "admin.sync_data_replication": "Synced data from the primary",

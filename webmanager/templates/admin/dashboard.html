@@ -3,7 +3,7 @@
 {% block content %}
 {% if active_section == "updates" %}
 <header class="page-header">
-  <div><h1>System</h1><p>Server health, WebManager updates, and hosted site updates.</p></div>
+  <div><h1>System</h1><p>Server health, WebManager updates, and hosted site updates. WebManager {{ webmanager_version }}.</p></div>
 </header>
 {% else %}
 {% set current_tab = active_section %}
@@ -12,8 +12,8 @@
 <div class="alert warning mb-24" role="alert">
   {{ ui.icon('alert') }}
   <div class="alert-body">
-    <strong>Google sign-in is unrestricted.</strong>
-    Any verified Google account can create an active user. Run <code>bash configure-google.sh</code> on the server to limit sign-in to specific emails or domains.
+    <strong>No allowed Google accounts are listed.</strong>
+    Only people who already have an account here can sign in; anyone new is refused. To let someone new in, add their email to <code>WEBMANAGER_GOOGLE_ALLOWED_EMAILS</code> (run <code>bash configure-google.sh</code> on the server).
   </div>
 </div>
 {% endif %}
@@ -65,6 +65,20 @@
     </summary>
     <form class="record-body" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
       {{ ui.csrf() }}
+      {% if super_admin %}
+      <fieldset>
+        <legend>Account <span class="hint">{% if user.google_sub %}the email comes from their Google account{% else %}their first Google sign-in with this email links to this account{% endif %}</span></legend>
+        <div class="form-row">
+          <label class="field"><span>Name</span><input name="display_name" maxlength="100" value="{{ user.display_name or '' }}" autocomplete="off"></label>
+          <label class="field"><span>Username</span><input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{2,31}" value="{{ user.username }}" autocomplete="off"></label>
+          {% if user.google_sub %}
+          <label class="field"><span>Email</span><input value="{{ user.email or '' }}" readonly></label>
+          {% else %}
+          <label class="field"><span>Email</span><input type="email" name="email" maxlength="254" value="{{ user.email or '' }}" autocomplete="off"></label>
+          {% endif %}
+        </div>
+      </fieldset>
+      {% endif %}
       <div class="grid-2">
         <label class="check">
           <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
@@ -102,6 +116,9 @@
       </fieldset>
       <div class="record-actions">
         <small class="faint">Joined {{ ui.when(user.created_at) }}</small>
+        {% if super_admin and user.id != g.user.id %}
+        <button class="btn btn-sm btn-danger-outline" type="submit" formaction="{{ url_for('admin.delete_user', user_id=user.id) }}" formnovalidate data-confirm-button="Delete the account of {{ user.display_name or user.username }}? This can't be undone. Their sites and Git sources must be deleted first.">{{ ui.icon('trash', 14) }}Delete account</button>
+        {% endif %}
         <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save changes</button>
       </div>
     </form>
@@ -212,6 +229,17 @@
     <strong>Apps are given http:// addresses, but this dashboard is reached over https</strong>
     Each app's <code>PUBLIC_URL</code> starts with <code>http://</code> (<code>WEBMANAGER_SITE_PUBLIC_SCHEME=http</code>), while visitors arrive over https, for example through Cloudflare Tunnel. Links and sign-in (OAuth) addresses that apps give out are then wrong, and clients that require https can't connect.
     <p class="mt-8">To fix it, on the server: set <code>WEBMANAGER_SITE_PUBLIC_SCHEME=https</code> in <code>/etc/webmanager/webmanager.env</code>, run <code>sudo systemctl restart webmanager</code>, then restart each running app (its page shows a <em>Restart needed</em> button).</p>
+  </div>
+</div>
+{% endif %}
+
+{% if insecure_cookie_reasons %}
+<div class="alert warning mb-24" id="insecure-cookie-warning" role="alert">
+  {{ ui.icon('alert') }}
+  <div class="alert-body">
+    <strong>Sign-in cookies aren't marked Secure, but this dashboard is used over https</strong>
+    <code>WEBMANAGER_SESSION_COOKIE_SECURE=0</code>, while {{ insecure_cookie_reasons|join("; ") }}. A browser then also sends the sign-in cookie over plain http, where it can be read on the way.
+    <p class="mt-8">To fix it, on the server: set <code>WEBMANAGER_SESSION_COOKIE_SECURE=1</code> in <code>/etc/webmanager/webmanager.env</code> and run <code>sudo systemctl restart webmanager</code>. Only do this if the dashboard is always opened over https: with Secure cookies, signing in at an <code>http://</code> address stops working.</p>
   </div>
 </div>
 {% endif %}

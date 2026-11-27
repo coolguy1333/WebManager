@@ -6,6 +6,20 @@ from urllib.parse import urlsplit
 from flask import abort, g, redirect, request, session, url_for
 
 
+def insecure_cookie_reasons(config) -> list[str]:
+    """What says this dashboard is used over https while session cookies
+    aren't marked Secure (WEBMANAGER_SESSION_COOKIE_SECURE=0), so a browser
+    would also send them over plain http. Empty when all is well."""
+    if config.get("SESSION_COOKIE_SECURE"):
+        return []
+    reasons = []
+    if urlsplit(config.get("GOOGLE_REDIRECT_URI") or "").scheme == "https":
+        reasons.append("the Google sign-in address (WEBMANAGER_GOOGLE_REDIRECT_URI) starts with https")
+    if config.get("SITE_PUBLIC_SCHEME") == "https":
+        reasons.append("sites are served as https (WEBMANAGER_SITE_PUBLIC_SCHEME=https)")
+    return reasons
+
+
 def csrf_token():
     token = session.get("_csrf_token")
     if not token:

@@ -69,15 +69,38 @@ def _unique_username(database, email):
     return username
 
 
-def _identity_is_allowed(claims):
+REFUSED_MESSAGE = (
+    "This Google account isn't allowed. Ask the admin to add it to "
+    "WEBMANAGER_GOOGLE_ALLOWED_EMAILS."
+)
+
+
+def allow_lists_configured():
+    return bool(
+        _configured_values("GOOGLE_ALLOWED_EMAILS")
+        or _configured_values("GOOGLE_ALLOWED_DOMAINS")
+    )
+
+
+def _identity_is_listed(claims):
     email = claims["email"].lower()
     hosted_domain = str(claims.get("hd", "")).lower()
-    allowed_emails = _configured_values("GOOGLE_ALLOWED_EMAILS")
-    allowed_domains = _configured_values("GOOGLE_ALLOWED_DOMAINS")
+    return (
+        email in _configured_values("GOOGLE_ALLOWED_EMAILS")
+        or hosted_domain in _configured_values("GOOGLE_ALLOWED_DOMAINS")
+    )
 
-    if not allowed_emails and not allowed_domains:
-        return True
-    return email in allowed_emails or hosted_domain in allowed_domains
+
+def _identity_is_allowed(claims, *, account_exists, first_account=False):
+    """Whether this Google identity may sign in.
+
+    With WEBMANAGER_GOOGLE_ALLOWED_EMAILS or _DOMAINS set, only listed
+    identities. With both empty, only accounts that already exist, plus the
+    very first account on an empty database (so setup works): a stranger
+    never gets a new account."""
+    if allow_lists_configured():
+        return _identity_is_listed(claims)
+    return account_exists or first_account
 
 
 def _find_or_create_user(claims):
@@ -92,6 +115,8 @@ def _find_or_create_user(claims):
         (subject,),
     ).fetchone()
     if user is not None:
+        if not _identity_is_allowed(claims, account_exists=True):
+            raise ValueError(REFUSED_MESSAGE)
         if not user["is_active"]:
             raise ValueError("This WebManager account has been disabled.")
         conflict = database.execute(
@@ -102,7 +127,7 @@ def _find_or_create_user(claims):
         database.execute(
             """
             UPDATE users
-            SET email = ?, display_name = ?, picture_url = ?,
+            SET email = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), picture_url = ?,
                 auth_provider = 'google', last_login_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
@@ -116,6 +141,8 @@ def _find_or_create_user(claims):
         (email,),
     ).fetchone()
     if email_user is not None:
+        if not _identity_is_allowed(claims, account_exists=True):
+            raise ValueError(REFUSED_MESSAGE)
         if not email_user["is_active"]:
             raise ValueError("This WebManager account has been disabled.")
         if email_user["google_sub"] and email_user["google_sub"] != subject:
@@ -123,7 +150,7 @@ def _find_or_create_user(claims):
         database.execute(
             """
             UPDATE users
-            SET google_sub = ?, display_name = ?, picture_url = ?,
+            SET google_sub = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), picture_url = ?,
                 auth_provider = 'google', last_login_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
@@ -133,10 +160,13 @@ def _find_or_create_user(claims):
         return email_user["id"]
 
     database.execute("BEGIN IMMEDIATE")
-    username = _unique_username(database, email)
     first_account = (
         database.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None
     )
+    if not _identity_is_allowed(claims, account_exists=False, first_account=first_account):
+        database.rollback()
+        raise ValueError(REFUSED_MESSAGE)
+    username = _unique_username(database, email)
     cursor = database.execute(
         """
         INSERT INTO users (
@@ -252,8 +282,10 @@ def google_callback():
             raise ValueError("Google did not return a usable identity.")
         if claims.get("email_verified") is not True:
             raise ValueError("Google has not verified this account's email address.")
-        if not _identity_is_allowed(claims):
-            raise ValueError("This Google account is not allowed to use WebManager.")
+        # The full check (existing account, first account) happens where the
+        # account is written: here, or on the primary for a replica.
+        if allow_lists_configured() and not _identity_is_listed(claims):
+            raise ValueError(REFUSED_MESSAGE)
 
         replication_manager = current_app.extensions["replication_manager"]
         if replication_manager.is_replica:

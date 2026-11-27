@@ -1,6 +1,7 @@
-{# Large warning on every page while the group is in a failover situation (see failover.py). #}
+{# Large warning on every page, for super admins only (the failover_warning
+   context processor gives others none), while the group is in a failover
+   situation (see failover.py). #}
 {% if failover %}
-{% set super_admin = g.user and g.user["is_admin"] %}
 <section class="failover-banner {{ 'warning' if failover.kind == 'primary_down' else 'danger' }}" role="alert" aria-labelledby="failover-title">
   <div class="failover-head">
     {{ ui.icon('alert', 28) }}
@@ -19,7 +20,6 @@
       {% endif %}
     </div>
   </div>
-  {% if super_admin %}
   <div class="failover-body">
     <h3>Check now</h3>
     <ol class="failover-checklist">
@@ -45,8 +45,5 @@
     </form>
     {% endif %}
   </div>
-  {% else %}
-  <p class="failover-detail">An administrator has been notified and is checking things.</p>
-  {% endif %}
 </section>
 {% endif %}

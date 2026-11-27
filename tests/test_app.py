@@ -422,7 +422,7 @@ class WebManagerTestCase(unittest.TestCase):
         response = self.client.get("/admin/", follow_redirects=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Google sign-in is unrestricted", response.data)
+        self.assertIn(b"No allowed Google accounts are listed", response.data)
 
     def test_admin_console_keeps_workspaces_separate(self):
         admin_id = self.add_user("admin", is_admin=True)
@@ -3389,7 +3389,8 @@ class ServiceUnitTests(unittest.TestCase):
             google_setup,
         )
         self.assertIn("Client secret is required. Try again.", google_setup)
-        self.assertIn("Allow unrestricted Google sign-in? [y/N]:", google_setup)
+        self.assertIn("Allowed emails, comma-separated", google_setup)
+        self.assertIn("Leave the list empty? [y/N]:", google_setup)
         self.assertIn("wildcard TLS coverage", google_setup)
         self.assertIn("Hosted site base domain", google_setup)
         self.assertIn("CONFIGURED_SITE_BASE_DOMAIN", google_setup)

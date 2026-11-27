@@ -385,6 +385,9 @@ Account, team, pool, and site editors stay collapsed until opened. The
 administration pages can:
 
 - Enable or disable user accounts
+- Edit a person's name, username and email, or delete their account (super
+  admins; an account that still owns sites or Git sources can't be deleted,
+  and a Google-linked account keeps the email Google gives it)
 - Promote additional super administrators
 - Create and delete teams
 - Assign people to one or more teams
@@ -521,23 +524,31 @@ unavailable" page.
 
 ### 3. Restrict who may sign in
 
-If both allowlists are left blank, any Google account with a verified email can
-create an active WebManager account. Setup requires explicit confirmation
-before enabling this unrestricted mode, and **People & access** displays a warning
-while it remains enabled.
+`configure-google.sh` asks who may sign in. Enter one or both of:
 
-To restrict access, run:
+- Individual Google account emails (`WEBMANAGER_GOOGLE_ALLOWED_EMAILS`); list your own first
+- Google Workspace domains, such as `example.com` (`WEBMANAGER_GOOGLE_ALLOWED_DOMAINS`)
+
+An account is accepted when its verified email is listed or Google's `hd` claim
+matches an allowed Workspace domain. Everyone else, existing accounts included,
+is refused.
+
+If both lists are left blank (the script asks you to confirm that), **no new
+accounts are created**: only people who already have an account here can sign
+in (matched by their Google identity or email), plus the very first account on
+a new install, which becomes the super admin. Anyone else sees *"This Google
+account isn't allowed. Ask the admin to add it to
+WEBMANAGER_GOOGLE_ALLOWED_EMAILS."* WebManager logs a warning at startup and
+**People & access** shows one while both lists are empty.
+
+To let someone new in, add their email and restart:
 
 ```bash
 bash configure-google.sh
+# or edit /etc/webmanager/webmanager.env, then: sudo systemctl restart webmanager
 ```
 
-Enter one or both of:
-
-- Google Workspace domains, such as `example.com`
-- Individual Google account emails
-
-When both lists are present, an account is accepted when its verified email is listed or Google's `hd` claim matches an allowed Workspace domain.
+On a mesh, the primary decides: replicas send every sign-in to it.
 
 ### Link an account from an older WebManager version
 
@@ -884,7 +895,7 @@ WEBMANAGER_REPLICA_OF=https://primary.example.com   # this server's primary; bla
   needed and restarts WebManager on that server), switch its automatic
   WebManager updates, make a replica sync now, or open its own System page.
 - **Failover warning.** While a server has taken over as the primary, every
-  page on it shows a large warning with what to check (keep the old primary
+  page on it shows super admins (only them) a large warning with what to check (keep the old primary
   off, DNS, apps, changes made after the last copy, a backup) until a super
   admin confirms they have checked. A replica whose primary stops answering,
   and two servers that both act as the primary, get the same kind of
@@ -1281,12 +1292,12 @@ Defaults below are the values in the installed file.
 | `WEBMANAGER_SITE_PUBLIC_SCHEME` | `http` | Scheme of the public site and app addresses, including each app's `PUBLIC_URL`. Set it to `https` whenever the sites are served through Cloudflare (Tunnel or proxy) or another TLS proxy, or apps give out `http://` links and sign-in (OAuth) addresses. The System page warns when it is `http` but the dashboard is reached over https. Restart WebManager after changing it, then restart running apps: they keep the `PUBLIC_URL` they were started with (each app's page shows it, with a restart button when it is out of date) |
 | `WEBMANAGER_NGINX_BINARY` | `/usr/sbin/nginx` | Nginx executable used for deployed sites |
 | `WEBMANAGER_TRUST_PROXY` | `1` | Trust one local reverse-proxy hop |
-| `WEBMANAGER_SESSION_COOKIE_SECURE` | `0` | Send session cookies only over HTTPS when set to `1` |
+| `WEBMANAGER_SESSION_COOKIE_SECURE` | `0` | Send session cookies only over HTTPS when set to `1`. Left at `0` while the Google callback address or `WEBMANAGER_SITE_PUBLIC_SCHEME` is https (or the dashboard is opened over https), WebManager logs a warning and the System page shows one |
 | `WEBMANAGER_GOOGLE_CLIENT_ID` | empty | Google OAuth web client ID |
 | `WEBMANAGER_GOOGLE_CLIENT_SECRET` | empty | Google OAuth client secret |
 | `WEBMANAGER_GOOGLE_REDIRECT_URI` | empty | Exact authorized callback URL |
-| `WEBMANAGER_GOOGLE_ALLOWED_DOMAINS` | empty | Comma-separated Workspace `hd` claims |
-| `WEBMANAGER_GOOGLE_ALLOWED_EMAILS` | empty | Comma-separated verified Google emails |
+| `WEBMANAGER_GOOGLE_ALLOWED_DOMAINS` | empty | Comma-separated Workspace `hd` claims allowed to sign in |
+| `WEBMANAGER_GOOGLE_ALLOWED_EMAILS` | empty | Comma-separated verified Google emails allowed to sign in. With both lists empty, only existing accounts (and the first account on a new install) can sign in; no new accounts are created |
 | `WEBMANAGER_AUTO_REFRESH_ENABLED` | `1` | Enables the background repository scheduler |
 | `WEBMANAGER_AUTO_REFRESH_POLL_SECONDS` | `30` | How often the scheduler checks for due repositories |
 | `WEBMANAGER_MAX_REPOSITORY_MB` | `1024` | Largest repository checkout accepted; bigger clones are rejected |
@@ -2053,7 +2064,7 @@ Before exposing WebManager publicly:
 
 1. Enable HTTPS for the dashboard.
 2. Set `WEBMANAGER_SESSION_COOKIE_SECURE=1`.
-3. Configure Google domain or email allowlists unless every Google account should be allowed.
+3. List who may sign in in `WEBMANAGER_GOOGLE_ALLOWED_EMAILS` (or `_DOMAINS`).
 4. Restrict dashboard access by firewall or VPN when possible.
 5. Do not expose internal ports `5000` or `8090`; expose `8100-8999` only if
    you deploy sites without a deployment domain.

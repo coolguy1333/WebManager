@@ -38,7 +38,8 @@ from .domains import (
 import secrets
 
 from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, system_metrics
-from .security import login_required, validate_csrf
+from .security import insecure_cookie_reasons, login_required, validate_csrf
+from .version import VERSION
 from .services import RuntimeErrorDetail
 from .update_status import (
     auto_install_enabled,
@@ -284,6 +285,15 @@ def dashboard():
             active_section == "updates"
             and current_app.config["SITE_PUBLIC_SCHEME"] == "http"
             and dashboard_reached_over_https()
+        ),
+        webmanager_version=VERSION,
+        # Used over https while sign-in cookies aren't marked Secure.
+        insecure_cookie_reasons=(
+            insecure_cookie_reasons(current_app.config)
+            + (["this page was opened over https"] if not current_app.config.get("SESSION_COOKIE_SECURE")
+               and dashboard_reached_over_https() else [])
+            if active_section == "updates"
+            else []
         ),
         app_control=(
             {
@@ -1652,6 +1662,14 @@ def update_user(user_id):
         if not delegated_permissions <= g.permissions:
             abort(403)
 
+    username, display_name, email = user["username"], user["display_name"], user["email"]
+    if is_admin() and "username" in request.form:
+        try:
+            username, display_name, email = _account_details(database, user, request.form)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("admin.dashboard", section="people"))
+
     max_sites, max_sources, max_apps = user["max_sites"], user["max_sources"], user["max_apps"]
     if is_admin() and "max_sites" in request.form:
         try:
@@ -1663,8 +1681,12 @@ def update_user(user_id):
             flash(str(exc) if "between" in str(exc) else "Limits must be whole numbers.", "error")
             return redirect(url_for("admin.dashboard", section="people"))
     database.execute(
-        "UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ?, max_apps = ? WHERE id = ?",
-        (int(active), int(admin), max_sites, max_sources, max_apps, user_id),
+        """
+        UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ?, max_apps = ?,
+                         username = ?, display_name = ?, email = ?
+        WHERE id = ?
+        """,
+        (int(active), int(admin), max_sites, max_sources, max_apps, username, display_name, email, user_id),
     )
     database.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
     database.executemany(
@@ -1672,8 +1694,82 @@ def update_user(user_id):
         ((user_id, group_id) for group_id in sorted(group_ids)),
     )
     database.commit()
-    flash(f"Updated {user['display_name'] or user['username']}.", "success")
+    flash(f"Updated {display_name or username}.", "success")
     return redirect(url_for("admin.dashboard", section="people"))
+
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$")
+EMAIL_RE = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
+
+
+def _account_details(database, user, form):
+    """(username, display name, email) from a super admin's edit. An account
+    linked to Google keeps the email Google gives it. Raises ValueError."""
+    username = (form.get("username") or "").strip()
+    if not USERNAME_RE.fullmatch(username):
+        raise ValueError("Usernames are 3-32 letters, digits, dots, dashes or underscores.")
+    if database.execute(
+        "SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id != ?", (username, user["id"])
+    ).fetchone():
+        raise ValueError(f"The username {username} is already taken.")
+    display_name = " ".join((form.get("display_name") or "").split())
+    if len(display_name) > 100:
+        raise ValueError("Names can be at most 100 characters.")
+    email = user["email"]
+    if not user["google_sub"] and "email" in form:
+        email = (form.get("email") or "").strip().lower() or None
+        if email is not None:
+            if len(email) > 254 or not EMAIL_RE.fullmatch(email):
+                raise ValueError("Enter a valid email address.")
+            if database.execute(
+                "SELECT 1 FROM users WHERE email = ? COLLATE NOCASE AND id != ?", (email, user["id"])
+            ).fetchone():
+                raise ValueError(f"Another account already uses {email}.")
+    return username, display_name or None, email
+
+
+@bp.post("/users/<int:user_id>/delete")
+@login_required
+def delete_user(user_id):
+    """Super admins only. Sites and sources are never deleted along with an
+    account (their files, containers and web server settings would be left
+    behind): those must be removed first."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    database = get_db()
+    user = database.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if user is None:
+        abort(404)
+    name = user["display_name"] or user["username"]
+    back = redirect(url_for("admin.dashboard", section="people"))
+    if user_id == g.user["id"]:
+        flash("You can't delete your own account.", "error")
+        return back
+    if user["is_admin"] and user["is_active"]:
+        remaining = database.execute(
+            "SELECT COUNT(*) AS count FROM users WHERE is_admin = 1 AND is_active = 1 AND id != ?", (user_id,)
+        ).fetchone()["count"]
+        if remaining < 1:
+            flash("The final active administrator can't be deleted.", "error")
+            return back
+    sites = database.execute("SELECT COUNT(*) AS count FROM sites WHERE user_id = ?", (user_id,)).fetchone()["count"]
+    sources = database.execute(
+        "SELECT COUNT(*) AS count FROM repositories WHERE user_id = ?", (user_id,)
+    ).fetchone()["count"]
+    if sites or sources:
+        owned = " and ".join(
+            part for part in (
+                f"{sites} site{'' if sites == 1 else 's'}" if sites else "",
+                f"{sources} Git source{'' if sources == 1 else 's'}" if sources else "",
+            ) if part
+        )
+        flash(f"{name} still owns {owned}. Delete them first, or disable the account instead.", "error")
+        return back
+    database.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    database.commit()
+    flash(f"Deleted the account of {name}.", "success")
+    return back
 
 
 @bp.post("/groups")

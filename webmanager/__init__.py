@@ -148,6 +148,24 @@ def create_app(test_config=None):
     app.config["SITE_BASE_DOMAIN"] = site_domain
     if app.config["SITE_PUBLIC_SCHEME"] not in {"http", "https"}:
         raise StartupError("WEBMANAGER_SITE_PUBLIC_SCHEME must be http or https.")
+    from .security import insecure_cookie_reasons
+
+    if app.config["GOOGLE_CLIENT_ID"] and app.config["GOOGLE_CLIENT_SECRET"] and not (
+        app.config["GOOGLE_ALLOWED_EMAILS"].strip(" ,") or app.config["GOOGLE_ALLOWED_DOMAINS"].strip(" ,")
+    ):
+        app.logger.warning(
+            "Google sign-in is on but WEBMANAGER_GOOGLE_ALLOWED_EMAILS and "
+            "WEBMANAGER_GOOGLE_ALLOWED_DOMAINS are both empty: only accounts that "
+            "already exist (or the first account on an empty database) can sign in. "
+            "List who may sign in with: bash configure-google.sh"
+        )
+    for reason in insecure_cookie_reasons(app.config):
+        app.logger.warning(
+            "WEBMANAGER_SESSION_COOKIE_SECURE=0 but %s: sign-in cookies can be sent over "
+            "plain http. Set WEBMANAGER_SESSION_COOKIE_SECURE=1 in "
+            "/etc/webmanager/webmanager.env and restart.", reason,
+        )
+
     if app.config["SITE_GATEWAY_PORT"] in range(
         app.config["SITE_PORT_MIN"],
         app.config["SITE_PORT_MAX"] + 1,
@@ -298,7 +316,9 @@ def create_app(test_config=None):
 
         from . import failover
 
-        if getattr(g, "user", None) is None:
+        # Server alerts are for super admins: they are the ones who can act.
+        user = getattr(g, "user", None)
+        if user is None or not user["is_admin"]:
             return {"failover": None}
         try:
             return {"failover": failover.state(app)}

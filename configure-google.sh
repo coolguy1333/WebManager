@@ -249,26 +249,67 @@ while true; do
     echo "Client secret is required. Try again." >&2
 done
 
+current_env() {
+    sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1
+}
+CURRENT_EMAILS=$(current_env WEBMANAGER_GOOGLE_ALLOWED_EMAILS)
+CURRENT_DOMAINS=$(current_env WEBMANAGER_GOOGLE_ALLOWED_DOMAINS)
+EMAIL_RE='^[^@,[:space:]]+@[^@,[:space:]]+\.[^@,[:space:]]+$'
+DOMAIN_RE='^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
+
+valid_list() {
+    local list=$1 pattern=$2 item
+    local -a items
+    [[ -z $list ]] && return 0
+    IFS=, read -r -a items <<<"$list"
+    for item in "${items[@]}"; do
+        if [[ -n $item && ! $item =~ $pattern ]]; then
+            echo "Not valid: $item" >&2
+            return 1
+        fi
+    done
+}
+
 while true; do
     echo
-    echo "Restrict sign-in to trusted Google accounts."
-    read -r -p "Allowed Google Workspace domains (comma-separated, blank for none): " ALLOWED_DOMAINS
-    read -r -p "Allowed individual emails (comma-separated, blank for none): " ALLOWED_EMAILS
-    ALLOWED_DOMAINS=${ALLOWED_DOMAINS//[[:space:]]/}
+    echo "Who may sign in with Google? List the Google accounts (your own first)."
+    echo "Anyone not listed is refused."
+    if [[ -n $CURRENT_EMAILS ]]; then
+        read -r -p "Allowed emails, comma-separated [$CURRENT_EMAILS]: " ALLOWED_EMAILS
+        ALLOWED_EMAILS=${ALLOWED_EMAILS:-$CURRENT_EMAILS}
+    else
+        read -r -p "Allowed emails, comma-separated: " ALLOWED_EMAILS
+    fi
+    if [[ -n $CURRENT_DOMAINS ]]; then
+        read -r -p "Allowed Google Workspace domains, comma-separated (enter - for none) [$CURRENT_DOMAINS]: " ALLOWED_DOMAINS
+        ALLOWED_DOMAINS=${ALLOWED_DOMAINS:-$CURRENT_DOMAINS}
+        [[ $ALLOWED_DOMAINS == "-" ]] && ALLOWED_DOMAINS=
+    else
+        read -r -p "Allowed Google Workspace domains, comma-separated (blank for none): " ALLOWED_DOMAINS
+    fi
     ALLOWED_EMAILS=${ALLOWED_EMAILS//[[:space:]]/}
-    if [[ -n $ALLOWED_DOMAINS || -n $ALLOWED_EMAILS ]]; then
+    ALLOWED_DOMAINS=${ALLOWED_DOMAINS//[[:space:]]/}
+    ALLOWED_EMAILS=${ALLOWED_EMAILS,,}
+    ALLOWED_DOMAINS=${ALLOWED_DOMAINS,,}
+    if ! valid_list "$ALLOWED_EMAILS" "$EMAIL_RE" || ! valid_list "$ALLOWED_DOMAINS" "$DOMAIN_RE"; then
+        echo "Enter email addresses like you@gmail.com and domains like example.com."
+        continue
+    fi
+    if [[ -n ${ALLOWED_EMAILS//,/} || -n ${ALLOWED_DOMAINS//,/} ]]; then
         break
     fi
 
     echo
-    echo "Warning: leaving both blank lets any verified Google account create an active user."
-    read -r -p "Allow unrestricted Google sign-in? [y/N]: " OPEN_ACCESS
+    echo "Warning: with no allowed emails or domains, only accounts that already exist"
+    echo "in WebManager (and the very first account on a new install) can sign in."
+    echo "Nobody else can be added until you list them here."
+    read -r -p "Leave the list empty? [y/N]: " OPEN_ACCESS
     case $OPEN_ACCESS in
         [Yy] | [Yy][Ee][Ss])
             break
             ;;
         *)
-            echo "Enter at least one trusted domain or email address."
+            echo "Enter at least one email address."
             ;;
     esac
 done

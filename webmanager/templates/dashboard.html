@@ -185,7 +185,7 @@
   <div class="actions"><span class="badge {{ 'badge-warning' if quota.sources.full else '' }}">{% if quota.sources.limit %}{{ quota.sources.used }} of {{ quota.sources.limit }} sources used{% else %}{{ summary.repositories }} source{{ "" if summary.repositories == 1 else "s" }}{% endif %}</span></div>
 </header>
 
-{% if not auto_refresh_service_enabled %}
+{% if not auto_refresh_service_enabled and g.user.is_admin %}
 <div class="alert warning mb-16">
   {{ ui.icon('alert') }}
   <div class="alert-body">Scheduled update checks are turned off for this installation. "Check now" still works. Set <code>WEBMANAGER_AUTO_REFRESH_ENABLED=1</code> and restart WebManager to enable schedules.</div>

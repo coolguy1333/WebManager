@@ -137,7 +137,8 @@ def find_or_create_user_via_primary(manager, claims: dict) -> int:
     creates or updates a user row on every login. Ask the primary to do
     that write instead and hand back the resulting user_id, which the
     replica can safely put in the session (the row itself arrives on the
-    next database sync). Raises ReplicationError on any failure."""
+    next database sync). Raises ValueError (with the primary's message) when
+    the primary refuses the person, ReplicationError on any other failure."""
     body = json.dumps(claims).encode("utf-8")
     req = urllib.request.Request(
         f"{manager.primary_url}/replication/find-or-create-user",
@@ -153,6 +154,15 @@ def find_or_create_user_via_primary(manager, claims: dict) -> int:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 400:
+            # The primary refused this person (not allowed, disabled): say so
+            # as it does, rather than "the primary could not be reached".
+            try:
+                message = json.loads(detail).get("error")
+            except (ValueError, AttributeError):
+                message = None
+            if isinstance(message, str) and message.strip():
+                raise ValueError(message.strip()[:300]) from exc
         raise ReplicationError(f"The primary rejected the sign-in: {detail}") from exc
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise ReplicationError(
