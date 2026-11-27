@@ -207,8 +207,8 @@ def check_sign_in(inputs):
         return result(
             "sign_in", title, WARN if not problems else FAIL,
             ("; ".join(problems) + "; " if problems else "")
-            + "any Google account can sign in (no allowed domains or emails are set).",
-            "; ".join(fixes) or "Set WEBMANAGER_GOOGLE_ALLOWED_DOMAINS or WEBMANAGER_GOOGLE_ALLOWED_EMAILS (bash configure-google.sh).",
+            + "no allowed emails or domains are set, so only existing accounts can sign in and anyone new is refused.",
+            "; ".join(fixes) or "List who may sign in in WEBMANAGER_GOOGLE_ALLOWED_EMAILS (bash configure-google.sh).",
         )
     if problems:
         return result("sign_in", title, FAIL, "; ".join(problems).capitalize() + ".", "; ".join(fixes))

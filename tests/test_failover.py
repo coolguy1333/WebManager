@@ -50,15 +50,14 @@ class FailoverWarningTests(unittest.TestCase):
         self.assertIn("Point your domain", page)
         self.assertIn("I've checked everything", page)
 
-    def test_people_who_are_not_super_admins_see_it_without_the_checklist(self):
+    def test_people_who_are_not_super_admins_do_not_see_it(self):
         self.promote()
         other = self.app.test_client()
         with other.session_transaction() as session:
             session["user_id"] = self.add_user("alice")
         page = self.page(other)
-        self.assertIn("Failed over", page)
-        self.assertIn("An administrator has been notified", page)
-        self.assertNotIn("acknowledge", page)
+        self.assertNotIn("failover-banner", page)
+        self.assertNotIn("Failed over", page)
 
     def test_hiding_it_once_checked_and_it_returns_on_the_next_takeover(self):
         self.promote()
