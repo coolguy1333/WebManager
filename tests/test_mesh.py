@@ -152,7 +152,7 @@ class MeshEndpointTests(unittest.TestCase):
         self.assertEqual(
             set(data.keys()),
             {
-                "role", "promoted_at", "hostname", "version", "update_state", "auto_install", "apps_change", "apps_change_message", "sites", "apps_enabled", "apps",
+                "role", "promoted_at", "hostname", "version", "update_state", "peers_updating", "auto_install", "apps_change", "apps_change_message", "sites", "apps_enabled", "apps",
                 "cpu_percent", "memory_percent", "disk_percent",
             },
         )

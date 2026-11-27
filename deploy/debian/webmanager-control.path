@@ -3,6 +3,7 @@ Description=Apply a root-only change requested on the WebManager System page
 
 [Path]
 PathChanged=/var/lib/webmanager-updater/requests/apps
+PathChanged=/var/lib/webmanager-updater/requests/settings
 Unit=webmanager-control.service
 
 [Install]

@@ -37,7 +37,7 @@ from .domains import (
 )
 import secrets
 
-from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, system_metrics
+from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, settings_editor, system_metrics
 from .security import insecure_cookie_reasons, login_required, validate_csrf
 from .version import VERSION
 from .services import RuntimeErrorDetail
@@ -287,6 +287,19 @@ def dashboard():
             and dashboard_reached_over_https()
         ),
         webmanager_version=VERSION,
+        settings_form=(
+            {
+                "settings": [
+                    setting for setting in settings_editor.SETTINGS
+                    if not setting["apps"] or current_app.config.get("APPS_ENABLED")
+                ],
+                "values": settings_editor.current_values(current_app.config),
+                "status": server_control.read_status(),
+                "blocked": server_control.settings_blocked_reason(),
+            }
+            if active_section == "updates" and super_admin
+            else None
+        ),
         # Used over https while sign-in cookies aren't marked Secure.
         insecure_cookie_reasons=(
             insecure_cookie_reasons(current_app.config)
@@ -908,7 +921,7 @@ def install_program_update():
         or status["state"] not in {"available", "error"}
     ):
         flash("That update is no longer available. Wait for the next check.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
     if updater_active() is False:
         flash(
@@ -917,7 +930,7 @@ def install_program_update():
             "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then approve again.",
             "error",
         )
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
     try:
         request_program_update(commit)
@@ -928,7 +941,7 @@ def install_program_update():
             "Update approved. WebManager will test, back up all data, and install it.",
             "success",
         )
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 @bp.post("/servers/sharing")
@@ -1084,6 +1097,70 @@ def set_app_hosting():
     return redirect(back)
 
 
+@bp.post("/settings")
+@login_required
+def save_settings():
+    """Save the settings in settings_editor.SETTINGS to this server's settings
+    file (a root helper does it, then restarts WebManager)."""
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+    back = redirect(url_for("admin.dashboard", section="updates") + "#settings")
+    reason = server_control.settings_blocked_reason()
+    if reason:
+        flash(reason, "error")
+        return back
+    current = settings_editor.current_values(current_app.config)
+    changes = {}
+    try:
+        for setting in settings_editor.SETTINGS:
+            key = setting["key"]
+            if setting["kind"] == "flag":
+                raw = "1" if request.form.get(key) == "1" else "0"
+            elif key in request.form:
+                raw = request.form.get(key)
+            else:
+                continue
+            value = settings_editor.normalize(key, raw)
+            if value != current.get(key):
+                changes[key] = value
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return back
+    if not changes:
+        flash("Nothing changed.", "success")
+        return back
+    lockout = _signs_out_yourself(changes)
+    if lockout:
+        flash(lockout, "error")
+        return back
+    try:
+        server_control.request_settings(changes)
+    except OSError as exc:
+        flash(f"Could not file the request: {exc}", "error")
+        return back
+    names = ", ".join(settings_editor.BY_KEY[key]["label"] for key in changes)
+    flash(f"Saving {names}. WebManager restarts in a moment; this page shows when it's done.", "success")
+    return back
+
+
+def _signs_out_yourself(changes) -> str | None:
+    """Refuse allow lists that leave out the super admin making the change."""
+    emails = changes.get("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", current_app.config["GOOGLE_ALLOWED_EMAILS"])
+    domains = changes.get("WEBMANAGER_GOOGLE_ALLOWED_DOMAINS", current_app.config["GOOGLE_ALLOWED_DOMAINS"])
+    emails = {item.strip().lower() for item in emails.split(",") if item.strip()}
+    domains = {item.strip().lower() for item in domains.split(",") if item.strip()}
+    if not emails and not domains:
+        return None
+    mine = (g.user["email"] or "").lower()
+    if mine in emails or mine.rpartition("@")[2] in domains:
+        return None
+    return (
+        f"Your own account ({mine or 'no email'}) isn't in the allowed emails or domains, so you couldn't "
+        "sign in again. Add it to the list."
+    )
+
+
 @bp.post("/failover/acknowledge")
 @login_required
 def acknowledge_failover():
@@ -1162,12 +1239,12 @@ def set_program_auto_install():
             "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then try again.",
             "error",
         )
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
     try:
         set_auto_install(enable)
     except OSError as exc:
         flash(f"Could not change the setting: {exc}", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
     if enable:
         # Let the updater look now, so an update that is already waiting goes in.
         try:
@@ -1181,7 +1258,7 @@ def set_program_auto_install():
         )
     else:
         flash("Automatic installation is off. New versions wait for your approval.", "success")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 AUTO_CHECK_AFTER = timedelta(hours=1)
@@ -1258,12 +1335,12 @@ def sync_replication():
     manager = current_app.extensions["replication_manager"]
     if not manager.is_replica:
         flash("This server is not a replica; there is nothing to sync.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
     if manager.sync_once():
         flash("Synced the latest config from the primary.", "success")
     else:
         flash(f"Could not sync from the primary: {manager.last_error}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 @bp.post("/replication/promote")
@@ -1279,7 +1356,7 @@ def promote_replica():
     data_manager = current_app.extensions["data_replication_manager"]
     if not manager.is_replica:
         flash("This server is already a primary.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
     try:
         failover.write_promoted_marker(
@@ -1311,7 +1388,7 @@ def promote_replica():
         "replica (System → Servers → Add a server), so only one server accepts changes.",
         "warning",
     )
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 @bp.post("/replication/sync-data")
@@ -1323,12 +1400,12 @@ def sync_data_replication():
     manager = current_app.extensions["data_replication_manager"]
     if not manager.is_replica:
         flash("This server is not a replica; there is nothing to sync.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
     if manager.sync_once():
         flash("Synced the latest site/app data from the primary.", "success")
     else:
         flash(f"Could not sync data from the primary: {manager.last_error}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 def _source_update_summary(database):
@@ -1574,7 +1651,7 @@ def check_all_sources():
         for row in database.execute("SELECT id FROM repositories").fetchall():
             manager.refresh(row["id"], wait=False)
         flash(f"Checked {count} source{'' if count == 1 else 's'} for updates.", "success")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#site-updates")
 
 
 @bp.post("/updates/check")
@@ -1604,7 +1681,7 @@ def check_program_update():
         flash("Update check requested. Refresh this page in a few seconds.", "success")
     else:
         flash(f"Could not request an update check: {error or 'the updater service is switched off.'}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 @bp.post("/users/<int:user_id>")

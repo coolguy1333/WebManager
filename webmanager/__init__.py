@@ -90,6 +90,7 @@ def create_app(test_config=None):
         # Lets a super admin turn app hosting on/off from the System page
         # (a root helper does it). 0 keeps it a shell-only decision.
         DASHBOARD_APP_CONTROL=_env_flag("WEBMANAGER_DASHBOARD_APP_CONTROL", "1"),
+        DASHBOARD_SETTINGS=_env_flag("WEBMANAGER_DASHBOARD_SETTINGS", "1"),
         CONTAINER_RUNTIME=os.environ.get("WEBMANAGER_CONTAINER_RUNTIME", "").strip(),
         APP_DEFAULT_MEMORY_MB=int(os.environ.get("WEBMANAGER_APP_DEFAULT_MEMORY_MB", "256")),
         APP_CPUS=float(os.environ.get("WEBMANAGER_APP_CPUS", "0.5")),

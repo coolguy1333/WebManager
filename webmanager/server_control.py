@@ -3,8 +3,9 @@
 The web process never gets root. It writes a one-word request file; the root
 service ``webmanager-control`` (started by ``webmanager-control.path``, see
 deploy/debian/control.sh) does the work and writes a status file this module
-reads back. Today the one change is turning app hosting on or off, which is
-exactly what ``sudo webmanager-enable-apps`` does on the server.
+reads back. The changes: turning app hosting on or off (exactly what
+``sudo webmanager-enable-apps`` does on the server), and saving the settings
+listed in settings_editor.py to /etc/webmanager/webmanager.env.
 """
 
 import json
@@ -26,11 +27,20 @@ def apps_request_file() -> Path:
     return Path(current_app.config.get("APPS_CONTROL_REQUEST_FILE") or _requests_dir() / "apps")
 
 
+def settings_request_file() -> Path:
+    return Path(current_app.config.get("SETTINGS_CONTROL_REQUEST_FILE") or _requests_dir() / "settings")
+
+
 def status_file() -> Path:
     configured = current_app.config.get("CONTROL_STATUS_FILE")
     if configured:
         return Path(configured)
     return Path(current_app.config["PROGRAM_UPDATE_STATUS_FILE"]).with_name("control-status.json")
+
+
+def settings_allowed() -> bool:
+    """WEBMANAGER_DASHBOARD_SETTINGS=0 keeps the settings file a shell-only matter."""
+    return bool(current_app.config.get("DASHBOARD_SETTINGS", True))
 
 
 def control_allowed() -> bool:
@@ -57,11 +67,13 @@ def control_active():
 def read_status() -> dict | None:
     """{"state": "requested"|"running"|"done"|"error", "action", "message",
     "detail", "at"} for the latest change, or None if there never was one."""
-    if apps_request_file().exists():
-        return {
-            "state": "requested", "action": None, "detail": None, "at": None,
-            "message": "Waiting for the server to pick up the request…",
-        }
+    for action, request_file in (("apps", apps_request_file()), ("settings", settings_request_file())):
+        if request_file.exists():
+            return {
+                "state": "requested", "action": "settings" if action == "settings" else None,
+                "detail": None, "at": None,
+                "message": "Waiting for the server to pick up the request…",
+            }
     try:
         path = status_file()
         if path.stat().st_size > 64 * 1024:
@@ -73,7 +85,7 @@ def read_status() -> dict | None:
         return None
     return {
         "state": data["state"],
-        "action": data.get("action") if data.get("action") in {"apps_on", "apps_off"} else None,
+        "action": data.get("action") if data.get("action") in {"apps_on", "apps_off", "settings"} else None,
         "message": str(data.get("message") or ""),
         "detail": data.get("detail") if isinstance(data.get("detail"), str) else None,
         "at": data.get("at") if isinstance(data.get("at"), str) else None,
@@ -98,14 +110,40 @@ def blocked_reason() -> str | None:
     return None
 
 
+def settings_blocked_reason() -> str | None:
+    """Why the settings can't be saved from the dashboard here, or None."""
+    if not settings_allowed():
+        return (
+            "Changing settings from the dashboard is turned off on this server "
+            "(WEBMANAGER_DASHBOARD_SETTINGS=0). Edit /etc/webmanager/webmanager.env on the server."
+        )
+    if control_active() is False:
+        return (
+            "The service that makes this change isn't running on this server. "
+            "Re-run setup.sh there (or: sudo systemctl enable --now webmanager-control.path)."
+        )
+    status = read_status()
+    if status and status["state"] in BUSY_STATES:
+        return "Another change to this server is under way. Try again when it's done."
+    return None
+
+
+def request_settings(changes: dict):
+    """File the settings to save (already checked). Raises OSError."""
+    _write_request(settings_request_file(), json.dumps(changes, sort_keys=True) + "\n")
+
+
 def request_app_hosting(enabled: bool):
     """File the request. Raises OSError."""
-    path = apps_request_file()
+    _write_request(apps_request_file(), "on\n" if enabled else "off\n")
+
+
+def _write_request(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".apps.", dir=path.parent, text=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-            handle.write("on\n" if enabled else "off\n")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)

@@ -244,6 +244,30 @@
 </div>
 {% endif %}
 
+{# Tabs (app.js shows one panel at a time; without scripts every panel shows).
+   Each tab links to the first section in its panel, so links like ?section=updates#apps keep working. #}
+<nav class="tabs system-tabs" role="tablist" aria-label="System sections" data-tabs>
+  <a href="#health" role="tab" id="tab-health" aria-controls="panel-health" data-tab="health">{{ ui.icon('activity', 14) }} Health</a>
+  <a href="#updates" role="tab" id="tab-updates" aria-controls="panel-updates" data-tab="updates">{{ ui.icon('download', 14) }} Updates{% if nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}</a>
+  <a href="#servers" role="tab" id="tab-servers" aria-controls="panel-servers" data-tab="servers">{{ ui.icon('server', 14) }} Servers</a>
+  <a href="#backups" role="tab" id="tab-backups" aria-controls="panel-backups" data-tab="backups">{{ ui.icon('archive', 14) }} Backups</a>
+  <a href="#site-updates" role="tab" id="tab-site-updates" aria-controls="panel-site-updates" data-tab="site-updates">{{ ui.icon('git', 14) }} Site updates</a>
+  <a href="#apps" role="tab" id="tab-apps" aria-controls="panel-apps" data-tab="apps">{{ ui.icon('box', 14) }} App hosting</a>
+  {% if settings_form %}<a href="#settings" role="tab" id="tab-settings" aria-controls="panel-settings" data-tab="settings">{{ ui.icon('settings', 14) }} Settings</a>{% endif %}
+  <a href="#notifications" role="tab" id="tab-notifications" aria-controls="panel-notifications" data-tab="notifications">{{ ui.icon('bell', 14) }} Notifications</a>
+</nav>
+
+<div class="tab-panel" id="panel-health" role="tabpanel" aria-labelledby="tab-health" data-tab-panel="health">
+{# ---------- Health checks ---------- #}
+<section class="card mb-24" id="health" data-health data-health-url="{{ url_for('admin.health_json') }}">
+  <div class="card-header">
+    <div><h2>Health checks</h2><p>Is everything WebManager depends on working? Anything wrong says what to do about it.</p></div>
+    <span class="badge" data-health-badge>Checking…</span>
+  </div>
+  <div class="card-body stack" data-health-list><p class="muted">Running the checks…</p></div>
+  <div class="card-footer end"><button class="btn" type="button" data-health-run>{{ ui.icon('refresh', 14) }}Check again</button></div>
+</section>
+
 {# ---------- Resource usage ---------- #}
 <section class="mb-24" data-metrics data-metrics-url="{{ url_for('admin.system_metrics_json') }}">
   <div class="section-title">
@@ -287,116 +311,65 @@
         <div><dt>Nginx data &amp; access log</dt><dd>{{ bytes(metrics.storage.nginx) }}</dd></div>
         <div><dt>Database</dt><dd>{{ bytes(metrics.storage.database) }}</dd></div>
         <div><dt>Data directory</dt><dd><code>{{ metrics.disk.path if metrics.disk else "n/a" }}</code></dd></div>
-        {% if app_hosting %}<div class="fact-wide"><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% elif not config.APPS_ENABLED %}<span class="badge">Off</span> <a href="#apps">Turn it on below</a>{% else %}<span class="badge badge-warning">Not working</span> {{ app_hosting[1] }} <a href="#apps">Details below</a>{% endif %}</dd></div>{% endif %}
+        {% if app_hosting %}<div class="fact-wide"><dt>App hosting</dt><dd>{% if app_hosting[0] %}<span class="badge badge-success">On</span> {{ app_hosting[1] }}{% elif not config.APPS_ENABLED %}<span class="badge">Off</span> <a href="#apps">Turn it on</a>{% else %}<span class="badge badge-warning">Not working</span> {{ app_hosting[1] }} <a href="#apps">Details</a>{% endif %}</dd></div>{% endif %}
       </dl>
     </div>
   </div>
 </section>
+</div>
 
-<nav class="jump-links mb-16" aria-label="On this page">
-  <a href="#health">Health checks</a><a href="#apps">App hosting</a><a href="#backups">Backups</a><a href="#notifications">Notifications</a><a href="#servers">Servers</a><a href="#updates">WebManager updates</a><a href="#site-updates">Site updates</a>
-</nav>
-
-{# ---------- Health checks ---------- #}
-<section class="card mb-24" id="health" data-health data-health-url="{{ url_for('admin.health_json') }}">
+<div class="tab-panel" id="panel-updates" role="tabpanel" aria-labelledby="tab-updates" data-tab-panel="updates">
+{# ---------- WebManager update ---------- #}
+<section class="card mb-24" id="updates">
   <div class="card-header">
-    <div><h2>Health checks</h2><p>Is everything WebManager depends on working? Anything wrong says what to do about it.</p></div>
-    <span class="badge" data-health-badge>Checking…</span>
-  </div>
-  <div class="card-body stack" data-health-list><p class="muted">Running the checks…</p></div>
-  <div class="card-footer end"><button class="btn" type="button" data-health-run>{{ ui.icon('refresh', 14) }}Check again</button></div>
-</section>
-
-{# ---------- Backups ---------- #}
-{# ---------- App hosting (this server) ---------- #}
-{% if app_control is not none %}
-{% set apps_on = app_hosting and app_hosting[0] %}
-{% set apps_configured = config.APPS_ENABLED %}
-{% set change = app_control.status %}
-<section class="card mb-24" id="apps"{% if change and change.state in ("requested", "running") %} data-auto-refresh="5" data-auto-refresh-max="120"{% endif %}>
-  <div class="card-header">
-    <div><h2>App hosting</h2><p>Run apps (Node, Python, anything with a <code>Dockerfile</code>) in hardened containers next to your static sites, on this server.</p></div>
-    {% if apps_on %}<span class="badge badge-success">On</span>{% elif apps_configured %}<span class="badge badge-warning">On, not working</span>{% else %}<span class="badge">Off</span>{% endif %}
+    <div><h2>WebManager updates</h2><p>{% if update_auto_install %}Checked every 15 minutes. New versions are tested, backed up and installed by themselves, and rolled back if anything fails.{% else %}Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing needs your approval, or switch on automatic installation.{% endif %}</p></div>
+    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] or update_auto_requested else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{% if update_auto_requested and update_status.state in ['unknown', 'current', 'error'] %}Checking…{% elif update_status.state == "unknown" %}Not checked{% elif update_status.state == "current" %}Up to date{% else %}{{ update_status.state|replace('_', ' ')|capitalize }}{% endif %}</span>
   </div>
   <div class="card-body stack">
-    {% if change and change.state in ("requested", "running") %}
-    <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>{% if change.action == "apps_off" %}Turning app hosting off…{% else %}Turning app hosting on…{% endif %}</strong>{{ change.message }} This page refreshes by itself.</div></div>
-    {% elif change and change.state == "error" %}
-    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The last change didn't work</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
+    {% if update_status.update_available and update_status.state == 'available' %}
+    <div class="alert warning">{{ ui.icon('download') }}<div class="alert-body"><strong>A new version of WebManager is available</strong>Commit <code>{{ update_status.available_commit[:12] }}</code>. It is tested and backed up before installing, and rolled back automatically if anything fails.</div></div>
+    {% elif update_auto_requested %}
+    <div class="alert info" data-auto-refresh="3" data-auto-refresh-max="12">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check is out of date{% else %}No check has run yet{% endif %}, so WebManager is asking GitHub now. This page refreshes by itself for a short while; press “Check now” to try again.</div></div>
     {% endif %}
-    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %}</p>{% endif %}
-    {% if not apps_configured %}
-    <p class="hint">Turning it on installs Docker if needed and restarts WebManager. Containers get the internet but not your network. Docker access is equivalent to root on this machine, so only give <strong>Host apps</strong> to people you trust.{% if is_replica %} On a replica, apps stay stopped until it is promoted, but their data is copied here so it can take over.{% endif %}</p>
+    {% if updater_is_active is sameas false %}
+    <div class="alert warning">{{ ui.icon('alert') }}<div class="alert-body"><strong>The updater service is switched off on this server.</strong>WebManager can still check GitHub, but it can't install an update from here. On the server run <code>sudo systemctl enable --now webmanager-update.path webmanager-update.timer</code> (or re-run <code>setup.sh</code>).</div></div>
     {% endif %}
-    {% if app_control.blocked %}<p class="hint">{{ app_control.blocked }}</p>{% endif %}
-  </div>
-  {% if not app_control.blocked and not (change and change.state in ("requested", "running")) %}
-  <div class="card-footer end">
-    <form method="post" action="{{ url_for('admin.set_app_hosting') }}" data-loading{% if apps_configured %} data-confirm="Turn app hosting off on this server? WebManager restarts. Apps that are running keep running until you stop them; nothing is deleted."{% else %} data-confirm="Turn app hosting on for this server? It installs Docker if needed and restarts WebManager (a minute or two). Docker access is equivalent to root on this machine."{% endif %}>
-      {{ ui.csrf() }}<input type="hidden" name="enabled" value="{{ '0' if apps_configured else '1' }}">
-      {% if apps_configured %}
-      <button class="btn btn-danger-outline" type="submit" data-loading-text="Asking…">Turn app hosting off</button>
-      {% else %}
-      <button class="btn btn-primary" type="submit" data-loading-text="Asking…">{{ ui.icon('box', 14) }}Turn app hosting on</button>
-      {% endif %}
-    </form>
-  </div>
-  {% endif %}
-</section>
-{% endif %}
-
-<section class="card mb-24" id="backups">
-  <div class="card-header">
-    <div><h2>Backups</h2><p>{% if backups_enabled %}One is made every day; the newest {{ backup_keep }} are kept.{% else %}Automatic backups are off (<code>WEBMANAGER_BACKUPS_ENABLED=0</code>).{% endif %} A backup holds the database, the keys that protect it and this server's settings: everything needed to rebuild it.</p></div>
-    <span class="badge {{ 'badge-success' if backup_list and backup_list[0].age_seconds < 129600 else 'badge-warning' }}">{% if backup_list %}Last: {{ ui.when(backup_list[0].created_at) }}{% else %}None yet{% endif %}</span>
-  </div>
-  <div class="card-body stack">
-    {% if backup_list %}
-    <div class="list backup-list" role="table" aria-label="Backups">
-      {% for item in backup_list[:5] %}
-      <div class="list-row" role="row">
-        <div role="cell"><code>{{ item.name }}</code></div>
-        <div role="cell" class="row-meta">{{ ui.when(item.created_at) }} · {{ "%.0f"|format(item.size / 1024) }} KB</div>
-        <div role="cell" class="row-actions col-actions"><a class="btn btn-sm" href="{{ url_for('admin.download_backup', name=item.name) }}">{{ ui.icon('download', 14) }}Download</a></div>
-      </div>
-      {% endfor %}
-    </div>
-    {% if backup_list|length > 5 %}<p class="hint">{{ backup_list|length - 5 }} older backup{{ "" if backup_list|length == 6 else "s" }} are kept on the server in the data folder under <code>backups/</code>.</p>{% endif %}
-    {% else %}
-    <p class="muted">No backup has been made yet. The first automatic one is made a few minutes after WebManager starts.</p>
+    <p>{{ update_status.message }}</p>
+    {% if update_status.state == 'error' and update_status.detail %}
+    <details class="inline-disclosure">
+      <summary>{{ ui.icon('code', 14) }}What went wrong</summary>
+      <pre class="mt-16"><code>{{ update_status.detail }}</code></pre>
+    </details>
     {% endif %}
-    <p class="hint">Backups stay on this server, so download one now and then and keep it somewhere else: it contains secrets, so treat it like a password. To restore, copy it to the server and run <code>sudo webmanager-restore FILE</code>. Sites are cloned again from their Git sources; app data has its own backups.</p>
+    <dl class="facts">
+      <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
+      <div><dt>Latest on GitHub</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "—" }}</code></dd></div>
+      <div><dt>Last checked</dt><dd>{{ ui.when(update_status.checked_at) if update_status.checked_at else "Never" }}</dd></div>
+      <div><dt>Automatic installation</dt><dd>{{ "On" if update_auto_install else "Off" }}</dd></div>
+    </dl>
   </div>
   <div class="card-footer end">
-    <form method="post" action="{{ url_for('admin.create_backup') }}" data-loading>
+    <form method="post" action="{{ url_for('admin.check_program_update') }}" data-loading>
       {{ ui.csrf() }}
-      <button class="btn" type="submit" data-loading-text="Backing up…">{{ ui.icon('download', 14) }}Back up now</button>
+      <button class="btn" type="submit">{{ ui.icon('refresh', 14) }}Check now</button>
     </form>
+    <form method="post" action="{{ url_for('admin.set_program_auto_install') }}" data-loading{% if not update_auto_install %} data-confirm="Install new versions automatically? Each one is tested and backed up first and rolled back if anything fails, but WebManager restarts briefly whenever one is installed."{% endif %}>
+      {{ ui.csrf() }}
+      <input type="hidden" name="enabled" value="{{ '0' if update_auto_install else '1' }}">
+      <button class="btn" type="submit"{% if not update_auto_install and updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Turn off automatic installation" if update_auto_install else "Turn on automatic installation" }}</button>
+    </form>
+    {% if update_status.update_available and update_status.state in ['available', 'error'] %}
+    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
+      {{ ui.csrf() }}
+      <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
+      <button class="btn btn-primary" type="submit"{% if updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Try again" if update_status.state == 'error' else "Approve and install" }}</button>
+    </form>
+    {% endif %}
   </div>
 </section>
+</div>
 
-{# ---------- Notifications ---------- #}
-<section class="card mb-24" id="notifications">
-  <div class="card-header">
-    <div><h2>Notifications</h2><p>Get a message when a site stops answering or comes back, an update fails or is waiting for you, a backup fails, or the disk is nearly full.</p></div>
-    <span class="badge {{ 'badge-success' if notify_url else '' }}">{{ "On" if notify_url else "Off" }}</span>
-  </div>
-  <form method="post" action="{{ url_for('admin.save_notifications') }}" data-loading>
-    {{ ui.csrf() }}
-    <div class="card-body stack">
-      <label class="field">
-        <span>Webhook address</span>
-        <input type="url" name="webhook_url" value="{{ notify_url or '' }}" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false">
-        <small class="hint">A Discord or Slack webhook address works as it is (in Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL). Any other address gets a small JSON message. Leave empty to turn notifications off.</small>
-      </label>
-    </div>
-    <div class="card-footer end">
-      {% if notify_url %}<button class="btn" type="submit" formaction="{{ url_for('admin.test_notification') }}" formnovalidate>Send a test</button>{% endif %}
-      <button class="btn btn-primary" type="submit">Save</button>
-    </div>
-  </form>
-</section>
-
+<div class="tab-panel" id="panel-servers" role="tabpanel" aria-labelledby="tab-servers" data-tab-panel="servers">
 {# ---------- Replication ---------- #}
 {% if replication.is_replica %}
 <section class="card mb-24" id="replication">
@@ -601,56 +574,42 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
     {% endif %}
   </section>
 </section>
+</div>
 
-{# ---------- WebManager update ---------- #}
-<section class="card mb-24" id="updates">
+<div class="tab-panel" id="panel-backups" role="tabpanel" aria-labelledby="tab-backups" data-tab-panel="backups">
+{# ---------- Backups ---------- #}
+<section class="card mb-24" id="backups">
   <div class="card-header">
-    <div><h2>WebManager updates</h2><p>{% if update_auto_install %}Checked every 15 minutes. New versions are tested, backed up and installed by themselves, and rolled back if anything fails.{% else %}Checked automatically every 15 minutes, and again whenever this page is opened with stale results. Installing needs your approval, or switch on automatic installation.{% endif %}</p></div>
-    <span class="badge {{ 'badge-success' if update_status.state == 'current' else 'badge-info' if update_status.state in ['testing', 'backing_up', 'installing'] or update_auto_requested else 'badge-warning' if update_status.state == 'available' else 'badge-danger' if update_status.state == 'error' else '' }}">{% if update_auto_requested and update_status.state in ['unknown', 'current', 'error'] %}Checking…{% elif update_status.state == "unknown" %}Not checked{% elif update_status.state == "current" %}Up to date{% else %}{{ update_status.state|replace('_', ' ')|capitalize }}{% endif %}</span>
+    <div><h2>Backups</h2><p>{% if backups_enabled %}One is made every day; the newest {{ backup_keep }} are kept.{% else %}Automatic backups are off (<code>WEBMANAGER_BACKUPS_ENABLED=0</code>).{% endif %} A backup holds the database, the keys that protect it and this server's settings: everything needed to rebuild it.</p></div>
+    <span class="badge {{ 'badge-success' if backup_list and backup_list[0].age_seconds < 129600 else 'badge-warning' }}">{% if backup_list %}Last: {{ ui.when(backup_list[0].created_at) }}{% else %}None yet{% endif %}</span>
   </div>
   <div class="card-body stack">
-    {% if update_status.update_available and update_status.state == 'available' %}
-    <div class="alert warning">{{ ui.icon('download') }}<div class="alert-body"><strong>A new version of WebManager is available</strong>Commit <code>{{ update_status.available_commit[:12] }}</code>. It is tested and backed up before installing, and rolled back automatically if anything fails.</div></div>
-    {% elif update_auto_requested %}
-    <div class="alert info" data-auto-refresh="3" data-auto-refresh-max="12">{{ ui.icon('refresh') }}<div class="alert-body">{% if update_status.checked_at %}The last check is out of date{% else %}No check has run yet{% endif %}, so WebManager is asking GitHub now. This page refreshes by itself for a short while; press “Check now” to try again.</div></div>
+    {% if backup_list %}
+    <div class="list backup-list" role="table" aria-label="Backups">
+      {% for item in backup_list[:5] %}
+      <div class="list-row" role="row">
+        <div role="cell"><code>{{ item.name }}</code></div>
+        <div role="cell" class="row-meta">{{ ui.when(item.created_at) }} · {{ "%.0f"|format(item.size / 1024) }} KB</div>
+        <div role="cell" class="row-actions col-actions"><a class="btn btn-sm" href="{{ url_for('admin.download_backup', name=item.name) }}">{{ ui.icon('download', 14) }}Download</a></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if backup_list|length > 5 %}<p class="hint">{{ backup_list|length - 5 }} older backup{{ "" if backup_list|length == 6 else "s" }} are kept on the server in the data folder under <code>backups/</code>.</p>{% endif %}
+    {% else %}
+    <p class="muted">No backup has been made yet. The first automatic one is made a few minutes after WebManager starts.</p>
     {% endif %}
-    {% if updater_is_active is sameas false %}
-    <div class="alert warning">{{ ui.icon('alert') }}<div class="alert-body"><strong>The updater service is switched off on this server.</strong>WebManager can still check GitHub, but it can't install an update from here. On the server run <code>sudo systemctl enable --now webmanager-update.path webmanager-update.timer</code> (or re-run <code>setup.sh</code>).</div></div>
-    {% endif %}
-    <p>{{ update_status.message }}</p>
-    {% if update_status.state == 'error' and update_status.detail %}
-    <details class="inline-disclosure">
-      <summary>{{ ui.icon('code', 14) }}What went wrong</summary>
-      <pre class="mt-16"><code>{{ update_status.detail }}</code></pre>
-    </details>
-    {% endif %}
-    <dl class="facts">
-      <div><dt>Installed</dt><dd><code>{{ update_status.installed_commit[:12] if update_status.installed_commit else "unknown" }}</code></dd></div>
-      <div><dt>Latest on GitHub</dt><dd><code>{{ update_status.available_commit[:12] if update_status.available_commit else "—" }}</code></dd></div>
-      <div><dt>Last checked</dt><dd>{{ ui.when(update_status.checked_at) if update_status.checked_at else "Never" }}</dd></div>
-      <div><dt>Automatic installation</dt><dd>{{ "On" if update_auto_install else "Off" }}</dd></div>
-    </dl>
+    <p class="hint">Backups stay on this server, so download one now and then and keep it somewhere else: it contains secrets, so treat it like a password. To restore, copy it to the server and run <code>sudo webmanager-restore FILE</code>. Sites are cloned again from their Git sources; app data has its own backups.</p>
   </div>
   <div class="card-footer end">
-    <form method="post" action="{{ url_for('admin.check_program_update') }}" data-loading>
+    <form method="post" action="{{ url_for('admin.create_backup') }}" data-loading>
       {{ ui.csrf() }}
-      <button class="btn" type="submit">{{ ui.icon('refresh', 14) }}Check now</button>
+      <button class="btn" type="submit" data-loading-text="Backing up…">{{ ui.icon('download', 14) }}Back up now</button>
     </form>
-    <form method="post" action="{{ url_for('admin.set_program_auto_install') }}" data-loading{% if not update_auto_install %} data-confirm="Install new versions automatically? Each one is tested and backed up first and rolled back if anything fails, but WebManager restarts briefly whenever one is installed."{% endif %}>
-      {{ ui.csrf() }}
-      <input type="hidden" name="enabled" value="{{ '0' if update_auto_install else '1' }}">
-      <button class="btn" type="submit"{% if not update_auto_install and updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Turn off automatic installation" if update_auto_install else "Turn on automatic installation" }}</button>
-    </form>
-    {% if update_status.update_available and update_status.state in ['available', 'error'] %}
-    <form method="post" action="{{ url_for('admin.install_program_update') }}" data-loading data-confirm="Install this GitHub commit? WebManager will prepare and test the update while online, then briefly reconnect during installation.">
-      {{ ui.csrf() }}
-      <input type="hidden" name="commit" value="{{ update_status.available_commit }}">
-      <button class="btn btn-primary" type="submit"{% if updater_is_active is sameas false %} disabled title="Switch the updater service on first (see the warning above)."{% endif %}>{{ ui.icon('download', 14) }}{{ "Try again" if update_status.state == 'error' else "Approve and install" }}</button>
-    </form>
-    {% endif %}
   </div>
 </section>
+</div>
 
+<div class="tab-panel" id="panel-site-updates" role="tabpanel" aria-labelledby="tab-site-updates" data-tab-panel="site-updates">
 {# ---------- Hosted site updates ---------- #}
 <section class="card" id="site-updates">
   <div class="card-header">
@@ -685,5 +644,133 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
     </form>
   </div>
 </section>
+</div>
+
+<div class="tab-panel" id="panel-apps" role="tabpanel" aria-labelledby="tab-apps" data-tab-panel="apps">
+{# ---------- App hosting (this server) ---------- #}
+{% if app_control is not none %}
+{% set apps_on = app_hosting and app_hosting[0] %}
+{% set apps_configured = config.APPS_ENABLED %}
+{% set change = app_control.status if app_control.status and app_control.status.action != "settings" else none %}
+<section class="card mb-24" id="apps"{% if change and change.state in ("requested", "running") %} data-auto-refresh="5" data-auto-refresh-max="120"{% endif %}>
+  <div class="card-header">
+    <div><h2>App hosting</h2><p>Run apps (Node, Python, anything with a <code>Dockerfile</code>) in hardened containers next to your static sites, on this server.</p></div>
+    {% if apps_on %}<span class="badge badge-success">On</span>{% elif apps_configured %}<span class="badge badge-warning">On, not working</span>{% else %}<span class="badge">Off</span>{% endif %}
+  </div>
+  <div class="card-body stack">
+    {% if change and change.state in ("requested", "running") %}
+    <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>{% if change.action == "apps_off" %}Turning app hosting off…{% else %}Turning app hosting on…{% endif %}</strong>{{ change.message }} This page refreshes by itself.</div></div>
+    {% elif change and change.state == "error" %}
+    <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The last change didn't work</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
+    {% endif %}
+    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %}</p>{% endif %}
+    {% if not apps_configured %}
+    <p class="hint">Turning it on installs Docker if needed and restarts WebManager. Containers get the internet but not your network. Docker access is equivalent to root on this machine, so only give <strong>Host apps</strong> to people you trust.{% if is_replica %} On a replica, apps stay stopped until it is promoted, but their data is copied here so it can take over.{% endif %}</p>
+    {% endif %}
+    {% if app_control.blocked %}<p class="hint">{{ app_control.blocked }}</p>{% endif %}
+  </div>
+  {% if not app_control.blocked and not (change and change.state in ("requested", "running")) %}
+  <div class="card-footer end">
+    <form method="post" action="{{ url_for('admin.set_app_hosting') }}" data-loading{% if apps_configured %} data-confirm="Turn app hosting off on this server? WebManager restarts. Apps that are running keep running until you stop them; nothing is deleted."{% else %} data-confirm="Turn app hosting on for this server? It installs Docker if needed and restarts WebManager (a minute or two). Docker access is equivalent to root on this machine."{% endif %}>
+      {{ ui.csrf() }}<input type="hidden" name="enabled" value="{{ '0' if apps_configured else '1' }}">
+      {% if apps_configured %}
+      <button class="btn btn-danger-outline" type="submit" data-loading-text="Asking…">Turn app hosting off</button>
+      {% else %}
+      <button class="btn btn-primary" type="submit" data-loading-text="Asking…">{{ ui.icon('box', 14) }}Turn app hosting on</button>
+      {% endif %}
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+</div>
+
+<div class="tab-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" data-tab-panel="settings">
+{# ---------- Settings (this server's settings file) ---------- #}
+{% if settings_form %}
+{% set change = settings_form.status if settings_form.status and settings_form.status.action == "settings" else none %}
+{% set busy = change and change.state in ("requested", "running") %}
+<section class="card mb-24" id="settings"{% if busy %} data-auto-refresh="5" data-auto-refresh-max="60"{% endif %}>
+  <div class="card-header">
+    <div><h2>Settings</h2><p>This server's settings (<code>/etc/webmanager/webmanager.env</code>). Saving restarts WebManager; if it doesn't come back, the old settings are put back. Secrets, addresses and the server group stay a change on the server.</p></div>
+  </div>
+  <form method="post" action="{{ url_for('admin.save_settings') }}" data-loading data-confirm="Save these settings and restart WebManager on this server? Sites and apps keep running.">
+    {{ ui.csrf() }}
+    <div class="card-body stack">
+      {% if busy %}
+      <div class="alert info">{{ ui.icon('refresh') }}<div class="alert-body"><strong>Saving the settings…</strong>{{ change.message }} This page refreshes by itself.</div></div>
+      {% elif change and change.state == "error" %}
+      <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The settings weren't saved</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
+      {% elif change and change.state == "done" %}
+      <div class="alert success">{{ ui.icon('check') }}<div class="alert-body">{{ change.message }}{% if change.at %} <span class="faint">({{ change.at }} UTC)</span>{% endif %}</div></div>
+      {% endif %}
+      {% if settings_form.blocked and not busy %}<p class="hint">{{ settings_form.blocked }}</p>{% endif %}
+      {% set groups = [] %}{% for setting in settings_form.settings %}{% if setting.group not in groups %}{% set _ = groups.append(setting.group) %}{% endif %}{% endfor %}
+      {% for group in groups %}
+      <fieldset{% if settings_form.blocked %} disabled{% endif %}>
+        <legend>{{ group }}</legend>
+        <div class="grid-2">
+          {% for setting in settings_form.settings if setting.group == group %}
+          {% set value = settings_form["values"][setting.key] %}
+          {% if setting.kind == "flag" %}
+          <label class="check">
+            <input type="checkbox" name="{{ setting.key }}" value="1" {% if value == "1" %}checked{% endif %}>
+            <span><strong>{{ setting.label }}</strong><small>{{ setting.help }} <code>{{ setting.key }}</code></small></span>
+          </label>
+          {% elif setting.kind == "choice" %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <select name="{{ setting.key }}">{% for choice in setting.choices %}<option value="{{ choice }}" {% if value == choice %}selected{% endif %}>{{ choice }}</option>{% endfor %}</select>
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% elif setting.kind in ("int", "float") %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <input type="number" name="{{ setting.key }}" value="{{ value }}" min="{{ setting.low }}" max="{{ setting.high }}" step="{{ '1' if setting.kind == 'int' else '0.05' }}" required>
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% else %}
+          <label class="field"><span>{{ setting.label }}</span>
+            <input name="{{ setting.key }}" value="{{ value|replace(',', ', ') }}" autocomplete="off" spellcheck="false" placeholder="{{ 'you@gmail.com, someone@example.com' if setting.kind == 'emails' else 'example.com' }}">
+            <small class="hint">{{ setting.help }} <code>{{ setting.key }}</code></small>
+          </label>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </fieldset>
+      {% endfor %}
+    </div>
+    {% if not settings_form.blocked and not busy %}
+    <div class="card-footer end">
+      <button class="btn btn-primary" type="submit" data-loading-text="Saving…">Save and restart WebManager</button>
+    </div>
+    {% endif %}
+  </form>
+</section>
+{% endif %}
+</div>
+
+<div class="tab-panel" id="panel-notifications" role="tabpanel" aria-labelledby="tab-notifications" data-tab-panel="notifications">
+{# ---------- Notifications ---------- #}
+<section class="card mb-24" id="notifications">
+  <div class="card-header">
+    <div><h2>Notifications</h2><p>Get a message when a site stops answering or comes back, an update fails or is waiting for you, a backup fails, or the disk is nearly full.</p></div>
+    <span class="badge {{ 'badge-success' if notify_url else '' }}">{{ "On" if notify_url else "Off" }}</span>
+  </div>
+  <form method="post" action="{{ url_for('admin.save_notifications') }}" data-loading>
+    {{ ui.csrf() }}
+    <div class="card-body stack">
+      <label class="field">
+        <span>Webhook address</span>
+        <input type="url" name="webhook_url" value="{{ notify_url or '' }}" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false">
+        <small class="hint">A Discord or Slack webhook address works as it is (in Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL). Any other address gets a small JSON message. Leave empty to turn notifications off.</small>
+      </label>
+    </div>
+    <div class="card-footer end">
+      {% if notify_url %}<button class="btn" type="submit" formaction="{{ url_for('admin.test_notification') }}" formnovalidate>Send a test</button>{% endif %}
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</section>
+</div>
+
 {% endif %}
 {% endblock %}
