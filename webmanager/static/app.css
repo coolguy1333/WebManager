@@ -570,6 +570,9 @@ details > summary::-webkit-details-marker { display: none; }
 .system-tabs a { display: inline-flex; align-items: center; gap: 6px; }
 .system-tabs .nav-badge { margin-left: 2px; }
 .tab-panel[hidden] { display: none; }
+.plain-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.plain-list .icon { vertical-align: -1px; }
+.card-footer .check.grow { flex: 1 1 280px; }
 
 /* ---------- Site detail ---------- */
 

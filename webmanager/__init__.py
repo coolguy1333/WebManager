@@ -304,7 +304,9 @@ def create_app(test_config=None):
                 version = "missing"
             return url_for("static", filename=filename, v=version)
 
-        return {"static_asset": static_asset}
+        from .version import VERSION
+
+        return {"static_asset": static_asset, "webmanager_version": VERSION}
 
     @app.context_processor
     def replication_role():

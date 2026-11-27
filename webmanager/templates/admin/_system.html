@@ -1,0 +1,38 @@
+{#- The System area: one header and one tab strip, shared by the System page
+    (whose tabs switch panels in place, see app.js) and the pages that live
+    under it as tabs of their own (Domains, Logs, every app). -#}
+{% macro header() -%}
+<header class="page-header">
+  <div><h1>System</h1><p>This server's health, updates, domains and settings. WebManager {{ webmanager_version }}.</p></div>
+</header>
+{%- endmacro %}
+
+{% macro tabs(current=none) -%}
+{#- current: none on the System page itself, else the page's own tab. -#}
+{% set in_page = current is none %}
+{% set system_url = url_for('admin.dashboard', section='updates') %}
+{% set items = [
+  ("health", "Health", "activity"),
+  ("updates", "Updates", "download"),
+  ("servers", "Servers", "server"),
+  ("domains", "Domains", "link"),
+  ("backups", "Backups", "archive"),
+  ("site-updates", "Site updates", "git"),
+  ("apps", "App hosting", "box"),
+  ("settings", "Settings", "settings"),
+  ("logs", "Logs", "clock"),
+  ("notifications", "Notifications", "bell"),
+] %}
+{% set pages = {"domains": url_for('admin.domains_dashboard'), "logs": url_for('admin.activity_log')} %}
+<nav class="tabs system-tabs" role="tablist" aria-label="System sections"{% if in_page %} data-tabs{% endif %}>
+  {% for key, label, icon in items %}
+  {% if key in pages %}
+  <a href="{{ pages[key] }}" role="tab" id="tab-{{ key }}" class="{{ 'active' if current == key }}" aria-selected="{{ 'true' if current == key else 'false' }}"{% if current == key %} aria-current="page"{% endif %}>{{ ui.icon(icon, 14) }} {{ label }}</a>
+  {% elif in_page %}
+  <a href="#{{ key }}" role="tab" id="tab-{{ key }}" aria-controls="panel-{{ key }}" data-tab="{{ key }}">{{ ui.icon(icon, 14) }} {{ label }}{% if key == "updates" and nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}</a>
+  {% else %}
+  <a href="{{ system_url }}#{{ key }}" role="tab" id="tab-{{ key }}" class="{{ 'active' if current == key }}" aria-selected="{{ 'true' if current == key else 'false' }}">{{ ui.icon(icon, 14) }} {{ label }}{% if key == "updates" and nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}</a>
+  {% endif %}
+  {% endfor %}
+</nav>
+{%- endmacro %}

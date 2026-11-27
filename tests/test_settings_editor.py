@@ -6,6 +6,7 @@ doesn't come up."""
 import html
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -57,6 +58,49 @@ class NormalizeTests(unittest.TestCase):
         ):
             with self.subTest(key=key, raw=raw), self.assertRaises(ValueError):
                 settings_editor.normalize(key, raw)
+
+    def test_nothing_a_shell_would_run_gets_through(self):
+        for raw in ("x@y.co&reboot", "a$(id)@b.co", "a`id`@b.co", "a|b@c.co", "a>b@c.co",
+                    "a<b@c.co", "a;b@c.co&x", "a(b)@c.co", "a{b}@c.co", "a*b@c.co", "a'b@c.co",
+                    'a"b@c.co', "a\\b@c.co", ".a@b.co", "a.@b.co", "a..b@c.co", "a@b..co"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                settings_editor.validate({"WEBMANAGER_GOOGLE_ALLOWED_EMAILS": raw})
+        for raw in ("ex&ample.com", "example.com&reboot", "$(id).com", "a|b.com"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                settings_editor.validate({"WEBMANAGER_GOOGLE_ALLOWED_DOMAINS": raw})
+
+    def test_normal_addresses_still_work(self):
+        self.assertEqual(
+            settings_editor.normalize("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", "me@example.com, first.last+tag@example.co.uk"),
+            "me@example.com,first.last+tag@example.co.uk",
+        )
+        self.assertEqual(settings_editor.normalize("WEBMANAGER_GOOGLE_ALLOWED_EMAILS", "a_b-c@sub.example.org"),
+                         "a_b-c@sub.example.org")
+
+    def test_every_value_that_can_be_written_is_plain(self):
+        """Whatever normalize returns for any setting holds only these characters."""
+        samples = {"flag": ["on", "off"], "choice": ["http", "https"], "int": ["1", "365"],
+                   "float": ["0.05", "2", "1.5"], "emails": ["me@example.com,first.last+tag@example.co.uk"],
+                   "domains": ["example.com,a-b.example.org"]}
+        for setting in settings_editor.SETTINGS:
+            for raw in samples[setting["kind"]]:
+                try:
+                    value = settings_editor.normalize(setting["key"], raw)
+                except ValueError:
+                    continue
+                with self.subTest(key=setting["key"], raw=raw):
+                    self.assertRegex(value, r"^[A-Za-z0-9@._+,-]*$")
+
+    def test_the_file_writer_refuses_unsafe_values_even_past_normalize(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "webmanager.env"
+            env.write_text(ENV_TEXT, encoding="utf-8")
+            with patch.object(settings_editor, "normalize", return_value="x@y.co&reboot"):
+                with self.assertRaises(ValueError):
+                    settings_editor.apply_to_file(str(env), {"WEBMANAGER_GOOGLE_ALLOWED_EMAILS": "anything"})
+            self.assertEqual(env.read_text(encoding="utf-8"), ENV_TEXT)
 
     def test_secrets_addresses_and_the_group_cannot_be_changed(self):
         for key in (
@@ -125,6 +169,81 @@ class FileTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertTrue(result.stderr.strip())
                 self.assertEqual(self.env.read_text(encoding="utf-8"), ENV_TEXT)
+
+
+class DoctorEnvLoaderTests(unittest.TestCase):
+    """sudo webmanager-doctor reads the settings file as data, never as shell
+    code, and gets the values systemd's EnvironmentFile= would."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        doctor = (ROOT / "deploy" / "debian" / "doctor.sh").read_text(encoding="utf-8")
+        self.loader = doctor.split("# --- load_env_file: begin", 1)[1].split("# --- load_env_file: end ---", 1)[0]
+        self.loader = "# --- load_env_file: begin" + self.loader
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def load(self, text, names):
+        env = self.root / "webmanager.env"
+        env.write_text(text, encoding="utf-8")
+        script = self.root / "run.sh"
+        script.write_text(
+            "set -Eeuo pipefail\n" + self.loader + f'\nload_env_file "{env}"\n'
+            + "".join(f'printf "%s\\0" "${{{name}-<unset>}}"\n' for name in names),
+            encoding="utf-8",
+        )
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=30, cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return dict(zip(names, result.stdout.split("\0")))
+
+    def test_nothing_in_a_value_runs(self):
+        marker = self.root / "marker"
+        values = self.load(
+            f"WEBMANAGER_X=a&touch {marker}\n"
+            f"WEBMANAGER_Y=$(touch {marker})\n"
+            f"WEBMANAGER_Z=`touch {marker}`;touch {marker}\n",
+            ["WEBMANAGER_X", "WEBMANAGER_Y", "WEBMANAGER_Z"],
+        )
+        self.assertFalse(marker.exists())
+        self.assertEqual(values["WEBMANAGER_X"], f"a&touch {marker}")
+        self.assertEqual(values["WEBMANAGER_Y"], f"$(touch {marker})")
+        self.assertEqual(values["WEBMANAGER_Z"], f"`touch {marker}`;touch {marker}")
+
+    def test_values_arrive_as_systemd_gives_them(self):
+        values = self.load(
+            "# comment\n\n; also a comment\n"
+            "PLAIN=1\n"
+            'DOUBLE="two words"\n'
+            "SINGLE='one'\n"
+            "MISMATCHED=\"left'\n"
+            "EMPTY=\n"
+            "  SPACED = around  \n"
+            "bad-key=1\n"
+            "lower=1\n"
+            "WITH_EQUALS=a=b\n",
+            ["PLAIN", "DOUBLE", "SINGLE", "MISMATCHED", "EMPTY", "SPACED", "lower", "WITH_EQUALS"],
+        )
+        self.assertEqual(values, {
+            "PLAIN": "1", "DOUBLE": "two words", "SINGLE": "one", "MISMATCHED": "\"left'",
+            "EMPTY": "", "SPACED": "around", "lower": "<unset>", "WITH_EQUALS": "a=b",
+        })
+
+    def test_doctor_no_longer_sources_the_settings(self):
+        doctor = (ROOT / "deploy" / "debian" / "doctor.sh").read_text(encoding="utf-8")
+        self.assertNotRegex(doctor, r"(?m)^\s*(source|\.)\s+/etc/webmanager")
+        self.assertIn("load_env_file /etc/webmanager/webmanager.env", doctor)
+
+    def test_no_script_sources_a_file_the_dashboard_can_write(self):
+        for path in [*sorted((ROOT / "deploy").rglob("*.sh")), ROOT / "setup.sh", ROOT / "configure-google.sh",
+                     ROOT / "uninstall.sh"]:
+            text = path.read_text(encoding="utf-8")
+            for match in re.finditer(r"(?m)^[ \t]*(?:source|\.)[ \t]+([^=\s]\S*)", text):
+                with self.subTest(script=path.name, sourced=match.group(1)):
+                    self.assertIn(match.group(1), {'"$ENV_FILE"', "/etc/os-release"})
+                    if match.group(1) == '"$ENV_FILE"':
+                        self.assertIn("ENV_FILE=/etc/webmanager/updater.env", text)
 
 
 class Health:
