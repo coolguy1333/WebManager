@@ -180,6 +180,10 @@ def local_status(app) -> dict:
         # "current", "available", "testing", "backing_up", "installing",
         # "error"...: lets another server show "Updating…" or "failed".
         "update_state": update.get("state"),
+        # How many peers this server sees updating right now (a count: this
+        # answer can be public). A primary's updater waits for them before
+        # installing by itself (deploy/debian/update.sh).
+        "peers_updating": _peers_updating(app),
         "auto_install": auto_install_enabled(),
         **_apps_change(),
         "sites": {"total": sites["total"], "running": sites["running"] or 0},
@@ -189,6 +193,16 @@ def local_status(app) -> dict:
         "memory_percent": (metrics.get("memory") or {}).get("percent"),
         "disk_percent": (metrics.get("disk") or {}).get("percent"),
     }
+
+
+def _peers_updating(app) -> int:
+    hub = app.extensions.get("mesh_hub")
+    if hub is None:
+        return 0
+    return sum(
+        1 for entry in hub.entries()
+        if entry["reachable"] and entry.get("update_state") in IN_PROGRESS_STATES
+    )
 
 
 def _apps_change() -> dict:

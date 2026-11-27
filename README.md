@@ -1846,6 +1846,11 @@ Before installing a new commit, the updater:
 2. Verifies that the URL is an HTTPS `github.com` repository.
 3. Rejects force-pushed or rewritten history.
 4. Requires approval for that exact 40-character commit from a super admin (unless automatic installation is on).
+   In a replica group, automatic installs never run on two servers at once:
+   the primary goes first, each replica waits until the primary runs the new
+   version (and can be reached), and the primary waits while a replica is
+   updating. The System page says what a server is waiting for. Installing
+   by hand (approving the update) doesn't wait.
 5. Runs the full test suite, reusing the installed virtual environment when
    requirements are unchanged and retrying in a clean one if that fails.
 6. Stops WebManager and backs up the database and settings in

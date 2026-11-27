@@ -122,6 +122,68 @@ wait_for_webmanager() {
     return 1
 }
 
+# Why an automatic install must wait for another server of the group, or
+# nothing. Only a replica group (WEBMANAGER_PEER_TOKEN set) is checked.
+mesh_wait_reason() {
+    local app_host app_port
+    app_host=$(sed -n 's/^WEBMANAGER_HOST=//p' "$APP_ENV_FILE" | tail -n 1)
+    app_port=$(sed -n 's/^WEBMANAGER_PORT=//p' "$APP_ENV_FILE" | tail -n 1)
+    case "${app_host:-127.0.0.1}" in
+        0.0.0.0 | "::") app_host=127.0.0.1 ;;
+        *:*) app_host="[$app_host]" ;;
+    esac
+    local promoted=0
+    [[ -e $DATA_DIR/promoted ]] && promoted=1
+    "$APP_DIR/.venv/bin/python" -I - "$APP_ENV_FILE" "$1" "$promoted" \
+        "http://${app_host:-127.0.0.1}:${app_port:-5000}" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.request
+
+env_file, new_commit, promoted, local_url = sys.argv[1:]
+settings = {}
+with open(env_file, encoding="utf-8") as handle:
+    for line in handle:
+        key, sep, value = line.strip().partition("=")
+        if sep and not key.startswith("#"):
+            settings[key] = value.strip().strip("'\"")
+token = settings.get("WEBMANAGER_PEER_TOKEN", "")
+primary = settings.get("WEBMANAGER_REPLICA_OF", "").rstrip("/")
+BUSY = {"testing", "backing_up", "installing"}
+
+
+def status(url):
+    request = urllib.request.Request(
+        f"{url}/mesh/status", headers={"Authorization": f"Bearer {token}"}
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - configured peer
+        return json.loads(response.read().decode("utf-8"))
+
+
+if not token:
+    sys.exit(0)
+if primary and promoted != "1":
+    try:
+        data = status(primary)
+    except Exception:
+        print(f"This replica waits until its primary ({primary}) can be reached and runs this version.")
+        sys.exit(0)
+    if data.get("update_state") in BUSY:
+        print("This replica waits for its primary to finish updating.")
+    elif data.get("version") != new_commit[:12]:
+        print(f"This replica waits for its primary to install this version first (it runs {data.get('version') or 'an unknown version'}).")
+    sys.exit(0)
+try:
+    data = status(local_url)
+except Exception:
+    sys.exit(0)  # the dashboard is down: nothing to coordinate with
+busy = data.get("peers_updating")
+if isinstance(busy, int) and busy > 0:
+    servers = "another server" if busy == 1 else f"{busy} other servers"
+    print(f"This server waits for {servers} in its group to finish updating.")
+PY
+}
+
 sync_data_backup() {
     local destination=$1
     # shellcheck disable=SC2086
@@ -459,6 +521,15 @@ if [[ ! -r $REQUEST_FILE ]]; then
     if [[ ! -e $AUTO_FILE ]]; then
         write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
             "An update is available and waiting for super-admin approval."
+        exit 0
+    fi
+    # Servers in a replica group never update by themselves at the same
+    # time: the primary goes first, then each replica once the primary
+    # runs the new version. A primary also waits while a replica updates.
+    WAIT_REASON=$(mesh_wait_reason "$NEW_COMMIT")
+    if [[ -n $WAIT_REASON ]]; then
+        write_status "available" "$INSTALLED_COMMIT" "$NEW_COMMIT" \
+            "An update is available. $WAIT_REASON It is installed by itself after that."
         exit 0
     fi
     # Automatic installation is on: a new version counts as approved.
