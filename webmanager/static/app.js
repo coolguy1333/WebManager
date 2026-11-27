@@ -771,6 +771,74 @@ if (appStatus) {
   poll(refreshAppStatus, { again: true });
 }
 
+// ---------- Tabs within a page (System) ----------
+// One panel shows at a time. A tab links to the first section of its panel,
+// so an address like ?section=updates#apps (or #backups after a form) opens
+// the right tab and scrolls to that section. Without scripts every panel
+// shows, in the same order.
+const tabList = document.querySelector("[data-tabs]");
+if (tabList) {
+  const tabs = [...tabList.querySelectorAll("[data-tab]")];
+  const panels = [...document.querySelectorAll("[data-tab-panel]")];
+  const tabStoreKey = `webmanager.tab:${window.location.pathname}${window.location.search}`;
+  const select = (name, { focus = false } = {}) => {
+    if (!tabs.some((tab) => tab.dataset.tab === name)) name = tabs[0]?.dataset.tab;
+    tabs.forEach((tab) => {
+      const on = tab.dataset.tab === name;
+      tab.classList.toggle("active", on);
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+      if (on && focus) tab.focus();
+      // On a phone the strip scrolls sideways: keep the chosen tab in sight.
+      if (on && (tab.offsetLeft < tabList.scrollLeft
+          || tab.offsetLeft + tab.offsetWidth > tabList.scrollLeft + tabList.clientWidth)) {
+        tabList.scrollLeft = tab.offsetLeft - 16;
+      }
+    });
+    panels.forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== name; });
+    try { window.sessionStorage.setItem(tabStoreKey, name); } catch { /* storage unavailable */ }
+  };
+  // The tab that holds the element an address's #fragment points at.
+  const tabForHash = () => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    const target = id && document.getElementById(id);
+    const panel = target && target.closest("[data-tab-panel]");
+    return panel ? { name: panel.dataset.tabPanel, target } : null;
+  };
+  const fromHash = () => {
+    const found = tabForHash();
+    if (!found) return false;
+    select(found.name);
+    const tab = tabs.find((item) => item.dataset.tab === found.name);
+    // A tab's own link stays at the top; a deeper link scrolls to its section.
+    if (tab && tab.getAttribute("href") !== `#${found.target.id}`) found.target.scrollIntoView();
+    return true;
+  };
+  if (!fromHash()) {
+    let remembered = null;
+    try { remembered = window.sessionStorage.getItem(tabStoreKey); } catch { /* ignore */ }
+    select(remembered);
+  }
+  tabList.addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-tab]");
+    if (!tab) return;
+    event.preventDefault();
+    history.replaceState(null, "", tab.getAttribute("href"));
+    select(tab.dataset.tab);
+  });
+  tabList.addEventListener("keydown", (event) => {
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    const moves = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 };
+    if (!(event.key in moves)) return;
+    event.preventDefault();
+    const next = tabs[(moves[event.key] + tabs.length) % tabs.length];
+    history.replaceState(null, "", next.getAttribute("href"));
+    select(next.dataset.tab, { focus: true });
+  });
+  window.addEventListener("hashchange", fromHash);
+}
+
 // Reload while an app is building/starting so the page reflects the result.
 // Some panels cap how often they reload (data-auto-refresh-max) so a check
 // that never finishes can't keep the page reloading forever.

@@ -567,6 +567,9 @@ details > summary::-webkit-details-marker { display: none; }
 }
 .tabs a:hover { color: var(--text); text-decoration: none; }
 .tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+.system-tabs a { display: inline-flex; align-items: center; gap: 6px; }
+.system-tabs .nav-badge { margin-left: 2px; }
+.tab-panel[hidden] { display: none; }
 
 /* ---------- Site detail ---------- */
 

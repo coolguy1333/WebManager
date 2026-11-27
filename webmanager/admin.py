@@ -921,7 +921,7 @@ def install_program_update():
         or status["state"] not in {"available", "error"}
     ):
         flash("That update is no longer available. Wait for the next check.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
     if updater_active() is False:
         flash(
@@ -930,7 +930,7 @@ def install_program_update():
             "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then approve again.",
             "error",
         )
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
     try:
         request_program_update(commit)
@@ -941,7 +941,7 @@ def install_program_update():
             "Update approved. WebManager will test, back up all data, and install it.",
             "success",
         )
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 @bp.post("/servers/sharing")
@@ -1239,12 +1239,12 @@ def set_program_auto_install():
             "webmanager-update.path webmanager-update.timer (or re-run setup.sh), then try again.",
             "error",
         )
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
     try:
         set_auto_install(enable)
     except OSError as exc:
         flash(f"Could not change the setting: {exc}", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#updates")
     if enable:
         # Let the updater look now, so an update that is already waiting goes in.
         try:
@@ -1258,7 +1258,7 @@ def set_program_auto_install():
         )
     else:
         flash("Automatic installation is off. New versions wait for your approval.", "success")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 AUTO_CHECK_AFTER = timedelta(hours=1)
@@ -1335,12 +1335,12 @@ def sync_replication():
     manager = current_app.extensions["replication_manager"]
     if not manager.is_replica:
         flash("This server is not a replica; there is nothing to sync.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
     if manager.sync_once():
         flash("Synced the latest config from the primary.", "success")
     else:
         flash(f"Could not sync from the primary: {manager.last_error}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 @bp.post("/replication/promote")
@@ -1356,7 +1356,7 @@ def promote_replica():
     data_manager = current_app.extensions["data_replication_manager"]
     if not manager.is_replica:
         flash("This server is already a primary.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
     try:
         failover.write_promoted_marker(
@@ -1388,7 +1388,7 @@ def promote_replica():
         "replica (System → Servers → Add a server), so only one server accepts changes.",
         "warning",
     )
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 @bp.post("/replication/sync-data")
@@ -1400,12 +1400,12 @@ def sync_data_replication():
     manager = current_app.extensions["data_replication_manager"]
     if not manager.is_replica:
         flash("This server is not a replica; there is nothing to sync.", "error")
-        return redirect(url_for("admin.dashboard", section="updates"))
+        return redirect(url_for("admin.dashboard", section="updates") + "#replication")
     if manager.sync_once():
         flash("Synced the latest site/app data from the primary.", "success")
     else:
         flash(f"Could not sync data from the primary: {manager.last_error}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#replication")
 
 
 def _source_update_summary(database):
@@ -1651,7 +1651,7 @@ def check_all_sources():
         for row in database.execute("SELECT id FROM repositories").fetchall():
             manager.refresh(row["id"], wait=False)
         flash(f"Checked {count} source{'' if count == 1 else 's'} for updates.", "success")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#site-updates")
 
 
 @bp.post("/updates/check")
@@ -1681,7 +1681,7 @@ def check_program_update():
         flash("Update check requested. Refresh this page in a few seconds.", "success")
     else:
         flash(f"Could not request an update check: {error or 'the updater service is switched off.'}", "error")
-    return redirect(url_for("admin.dashboard", section="updates"))
+    return redirect(url_for("admin.dashboard", section="updates") + "#updates")
 
 
 @bp.post("/users/<int:user_id>")
