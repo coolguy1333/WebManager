@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, current_app, flash, g, jsonify, redirect, render_template, request, url_for
+from werkzeug.datastructures import MultiDict
 
 from .access_control import (
     RESOURCE_MANAGE_ALL,
@@ -316,10 +317,11 @@ def recent_site_log(site_id: int, limit=80):
     return "\n".join(lines[-limit:])
 
 
-def requested_additional_domains(database, primary_domain_id: int | None):
+def requested_additional_domains(database, primary_domain_id: int | None, form=None):
+    form = request.form if form is None else form
     requested_ids = {
         int(value)
-        for value in request.form.getlist("additional_domain_ids")
+        for value in form.getlist("additional_domain_ids")
         if value.isdigit()
     }
     if primary_domain_id:
@@ -720,12 +722,12 @@ def inspect_repository():
             check_repository_host(url)
     except GitError as exc:
         flash(str(exc), "error")
-        return action_redirect("deployments.dashboard", view="sources")
+        return redirect(url_for("deployments.new_site"), code=303)
 
     limit_error = quotas.check(database, g.user["id"], "sources")
     if limit_error:
         flash(limit_error, "error")
-        return action_redirect("deployments.dashboard", view="sources")
+        return redirect(url_for("deployments.new_site"), code=303)
 
     name = repo_name_from_url(url)
     cursor = database.execute(
@@ -778,10 +780,7 @@ def inspect_repository():
         if repository_path_is_managed(target):
             shutil.rmtree(target, ignore_errors=True)
         flash(f"Could not clone {display_repo_url(url)}: {exc}", "error")
-        return redirect(
-            url_for("deployments.dashboard", view="sources", connect=1) + "#connect",
-            code=303,
-        )
+        return redirect(url_for("deployments.new_site"), code=303)
 
     if not candidates and not app_support.find_app_folders(target):
         flash(
@@ -812,10 +811,13 @@ def select_folder(repository_id):
         (index for index, candidate in enumerate(candidates) if candidate["is_build_output"]),
         0,
     )
-    app_candidates = app_support.find_app_folders(Path(repository["local_path"]))
+    app_candidates = app_support.find_app_folders(Path(repository["local_path"]), include_incomplete=True)
+    choices = _deploy_choices(repository, candidates, app_candidates, recommended)
     return render_template(
         "select_folder.html",
-        title="Select site folder",
+        title=f"Deploy {repository['name']}",
+        choices=choices,
+        selected_choice=next((choice for choice in choices if not choice["blocked"]), None),
         app_candidates=app_candidates,
         can_host_apps=can_host_apps(),
         apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
@@ -829,6 +831,65 @@ def select_folder(repository_id):
         port_max=current_app.config["SITE_PORT_MAX"],
         site_domains=available_domains(get_db()),
         site_public_scheme=current_app.config["SITE_PUBLIC_SCHEME"],
+    )
+
+
+def _deploy_choices(repository, candidates, app_candidates, recommended_site) -> list[dict]:
+    """Everything in a repository that can be deployed, best first: an app
+    (a folder with a Dockerfile and webmanager.json) before a website (a
+    folder with an index page), the repository root before sub folders, a
+    build output folder (dist/, build/...) before its sources. "blocked" says
+    why one can't be deployed here (app hosting off, no permission...)."""
+    database = get_db()
+    domains = available_domains(database)
+    repo_name = _title_from(repository["name"])
+    choices = []
+    for app in sorted(app_candidates, key=lambda item: (bool(item["error"]), item["folder"] != ".", item["folder"])):
+        parts = [] if app["folder"] == "." else app["folder"].split("/")
+        meaningful = [part for part in parts if part.lower() not in GENERIC_FOLDERS]
+        name = _title_from(meaningful[-1]) if meaningful else repo_name
+        blocked = app["error"]
+        if not blocked and not current_app.config.get("APPS_ENABLED"):
+            blocked = "App hosting is turned off on this server. A super admin can turn it on under System → App hosting."
+        elif not blocked and not can_host_apps():
+            blocked = "You don't have permission to host apps. Ask an administrator for the Host apps permission."
+        elif not blocked and not domains:
+            blocked = "Apps need a public domain. A super admin can add one under System → Domains."
+        choices.append({
+            "value": f"app:{app['folder']}", "kind": "app", "folder": app["folder"],
+            "name": name, "slug": slugify(name), "blocked": blocked,
+            "needs_manifest": bool(app.get("needs_manifest")), "manifest": app["manifest"],
+        })
+    sites = list(enumerate(candidates))
+    sites.sort(key=lambda pair: (pair[0] != recommended_site, pair[0]))
+    for _index, candidate in sites:
+        choices.append({
+            "value": f"site:{candidate['folder']}", "kind": "site", "folder": candidate["folder"],
+            "name": candidate["suggested_name"], "slug": candidate["suggested_slug"], "blocked": None,
+            "index_file": candidate["index_file"], "is_build_output": candidate["is_build_output"],
+        })
+    return choices
+
+
+@bp.get("/new")
+@login_required
+def new_site():
+    """Step one of deploying anything: which repository."""
+    database = get_db()
+    repositories = database.execute(
+        """
+        SELECT * FROM repositories
+        WHERE user_id = ? AND status IN ('ready', 'update_available')
+        ORDER BY name COLLATE NOCASE
+        """,
+        (g.user["id"],),
+    ).fetchall()
+    return render_template(
+        "new_site.html",
+        title="New site",
+        repositories=repositories,
+        quota=quotas.summary(database, g.user["id"]),
+        source_limit_error=None if g.user["is_admin"] else quotas.check(database, g.user["id"], "sources"),
     )
 
 
@@ -1006,10 +1067,14 @@ def discard_repository_update(repository_id):
 @login_required
 def deploy_repository(repository_id):
     validate_csrf()
+    return _deploy_sites(repository_id, request.form)
+
+
+def _deploy_sites(repository_id, form):
     repository = owned_repository(repository_id, manage=True)
     owner_id = repository["user_id"]
     database = get_db()
-    requested_domain = request.form.get("domain_id", "").strip()
+    requested_domain = form.get("domain_id", "").strip()
     if requested_domain:
         if not requested_domain.isdigit():
             abort(400, "Unknown domain.")
@@ -1024,20 +1089,21 @@ def deploy_repository(repository_id):
     additional_domains = requested_additional_domains(
         database,
         domain["id"] if domain else None,
+        form,
     )
     selected_domains = ([domain] if domain else []) + additional_domains
-    hosting_mode = request.form.get("hosting_mode", "")
+    hosting_mode = form.get("hosting_mode", "")
     use_domain_root = (
         hosting_mode == "root"
-        or request.form.get("use_domain_root") == "on"
+        or form.get("use_domain_root") == "on"
     )
     deployments = []
     selected_indexes = list(
         dict.fromkeys(
-            value for value in request.form.getlist("selected") if value.isdigit()
+            value for value in form.getlist("selected") if value.isdigit()
         )
     )
-    if request.form.get("multi_deploy") == "1" and not selected_indexes:
+    if form.get("multi_deploy") == "1" and not selected_indexes:
         flash("Select at least one site folder to deploy.", "error")
         return redirect(url_for("deployments.select_folder", repository_id=repository_id))
     if use_domain_root and len(selected_indexes) != 1:
@@ -1055,20 +1121,20 @@ def deploy_repository(repository_id):
         for index in selected_indexes:
             deployments.append(
                 {
-                    "name": request.form.get(f"site_name_{index}", "").strip(),
-                    "folder": request.form.get(f"folder_{index}", ""),
-                    "spa_fallback": request.form.get(f"spa_fallback_{index}") == "on",
-                    "slug": request.form.get(f"slug_{index}", "").strip().lower(),
+                    "name": form.get(f"site_name_{index}", "").strip(),
+                    "folder": form.get(f"folder_{index}", ""),
+                    "spa_fallback": form.get(f"spa_fallback_{index}") == "on",
+                    "slug": form.get(f"slug_{index}", "").strip().lower(),
                     "port": "",
                 }
             )
     else:
         deployments.append(
             {
-                "name": request.form.get("site_name", "").strip(),
-                "folder": request.form.get("folder", ""),
-                "spa_fallback": request.form.get("spa_fallback") == "on",
-                "port": request.form.get("port", "").strip(),
+                "name": form.get("site_name", "").strip(),
+                "folder": form.get("folder", ""),
+                "spa_fallback": form.get("spa_fallback") == "on",
+                "port": form.get("port", "").strip(),
             }
         )
 
@@ -1220,6 +1286,10 @@ def deploy_repository(repository_id):
 @login_required
 def deploy_app(repository_id):
     validate_csrf()
+    return _deploy_app(repository_id, request.form)
+
+
+def _deploy_app(repository_id, form):
     repository = owned_repository(repository_id, manage=True)
     back = redirect(url_for("deployments.select_folder", repository_id=repository_id))
     if not can_host_apps():
@@ -1238,8 +1308,8 @@ def deploy_app(repository_id):
                 flash(limit_error, "error")
                 return back
 
-    name = request.form.get("site_name", "").strip()
-    use_domain_root = request.form.get("use_domain_root") == "on"
+    name = form.get("site_name", "").strip()
+    use_domain_root = form.get("use_domain_root") == "on"
     if not valid_site_name(name):
         flash("Give the app a name of 80 characters or fewer.", "error")
         return back
@@ -1247,14 +1317,14 @@ def deploy_app(repository_id):
         # No subdomain is used; the slug is only an internal identifier.
         slug = unique_slug(database, name)
     else:
-        slug = request.form.get("slug", "").strip().lower() or slugify(name)
+        slug = form.get("slug", "").strip().lower() or slugify(name)
         if not HOST_LABEL_RE.fullmatch(slug):
             flash("Use lowercase letters, numbers, and dashes for the subdomain.", "error")
             return back
         if database.execute("SELECT 1 FROM sites WHERE slug = ?", (slug,)).fetchone():
             flash(f"The subdomain {slug} is already taken.", "error")
             return back
-    raw_domain = request.form.get("domain_id", "").strip()
+    raw_domain = form.get("domain_id", "").strip()
     domain = (
         database.execute("SELECT * FROM domains WHERE id = ?", (int(raw_domain),)).fetchone()
         if raw_domain.isdigit()
@@ -1271,7 +1341,7 @@ def deploy_app(repository_id):
         owner = hostname_owner(database, hostname)
         if owner:
             raise ValueError(f"{hostname} is already used by {owner['name']}.")
-        folder = request.form.get("folder", ".")
+        folder = form.get("folder", ".")
         selected = resolve_folder(Path(repository["local_path"]), folder)
         manifest = app_support.load_manifest(selected, current_app.config["APP_DEFAULT_MEMORY_MB"])
         port = allocate_port(
@@ -1309,6 +1379,34 @@ def deploy_app(repository_id):
     runtime.start_app_async(site_id)
     flash(f"Building and starting {name}. This page updates when it's ready.", "success")
     return redirect(url_for("deployments.site_detail", site_id=site_id))
+
+
+@bp.post("/repositories/<int:repository_id>/deploy-choice")
+@login_required
+def deploy_choice(repository_id):
+    """The New site page's one form: whatever was picked (a site folder or an
+    app), one name, one address."""
+    validate_csrf()
+    kind, _sep, folder = request.form.get("choice", "").partition(":")
+    name = request.form.get("site_name", "").strip()
+    slug = request.form.get("slug", "").strip().lower()
+    domain_id = request.form.get("domain_id", "").strip()
+    at_root = request.form.get("use_domain_root") == "on"
+    if kind == "app":
+        return _deploy_app(repository_id, MultiDict([
+            ("folder", folder), ("site_name", name), ("slug", slug), ("domain_id", domain_id),
+            *([("use_domain_root", "on")] if at_root else []),
+        ]))
+    if kind == "site":
+        return _deploy_sites(repository_id, MultiDict([
+            ("multi_deploy", "1"), ("selected", "0"), ("folder_0", folder), ("site_name_0", name),
+            ("slug_0", slug), ("domain_id", domain_id),
+            ("hosting_mode", "root" if at_root else "subdomain"),
+            *([("spa_fallback_0", "on")] if request.form.get("spa_fallback") == "on" else []),
+            *(("additional_domain_ids", value) for value in request.form.getlist("additional_domain_ids")),
+        ]))
+    flash("Choose what to deploy.", "error")
+    return redirect(url_for("deployments.select_folder", repository_id=repository_id))
 
 
 @bp.route("/sites/<int:site_id>/variables", methods=("GET", "POST"))

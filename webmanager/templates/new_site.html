@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>New site</h1>
+    <p>Paste a Git repository. WebManager looks inside and works out whether it's a website or an app.</p>
+  </div>
+</header>
+
+<div class="new-site">
+  {% if source_limit_error %}
+  <div class="alert warning">{{ ui.icon('info') }}<div class="alert-body"><strong>You can't connect another repository</strong>{{ source_limit_error }}{% if repositories %} You can still deploy from one you've connected, below.{% endif %}</div></div>
+  {% else %}
+  <form class="card" method="post" action="{{ url_for('deployments.inspect_repository') }}" data-loading>
+    {{ ui.csrf() }}
+    <div class="card-body stack">
+      <label class="field">
+        <span>Repository URL</span>
+        <input type="url" name="repository_url" maxlength="2048" placeholder="https://github.com/you/project" required autocomplete="off" spellcheck="false" autofocus>
+      </label>
+      <details class="inline-disclosure">
+        <summary>{{ ui.icon('settings', 14) }}Branch <span class="hint">optional, the default branch otherwise</span></summary>
+        <label class="field mt-16"><span>Branch</span><input name="branch" maxlength="200" placeholder="main" autocomplete="off" spellcheck="false"></label>
+      </details>
+      <p class="hint">Public repositories work right away. For a private one, give the server's deploy key read access first (see <a href="{{ url_for('deployments.docs') }}#private-repositories">Docs</a>).</p>
+    </div>
+    <div class="card-footer end">
+      <button class="btn btn-primary" type="submit" data-loading-text="Looking inside…">Continue {{ ui.icon('arrow-right', 14) }}</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <section class="card">
+    <div class="card-header"><div><h2>What can be deployed</h2></div></div>
+    <div class="card-body">
+      <div class="grid-2">
+        <div class="kind-explainer">
+          <span class="record-icon">{{ ui.icon('globe', 18) }}</span>
+          <div><strong>A website</strong><p class="muted">Any folder with an <code>index.html</code>: plain HTML, or the built output of React, Vue, Vite, Hugo… (commit the <code>dist/</code> or <code>build/</code> folder).</p></div>
+        </div>
+        <div class="kind-explainer">
+          <span class="record-icon">{{ ui.icon('box', 18) }}</span>
+          <div><strong>An app</strong><p class="muted">A folder with a <code>Dockerfile</code> and a small <code>webmanager.json</code>: Node, Python, anything that runs a server.{% if not config.APPS_ENABLED %} App hosting is off on this server.{% endif %}</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {% if repositories %}
+  <section class="card">
+    <div class="card-header"><div><h2>Or use a repository you've connected</h2></div></div>
+    <div class="list">
+      {% for repository in repositories %}
+      <a class="list-row link-row" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">
+        <span class="record-icon">{{ ui.icon('git', 16) }}</span>
+        <span class="record-title"><strong>{{ repository.name }}</strong><small class="truncate">{{ repository.url }}{% if repository.branch %} · {{ repository.branch }}{% endif %}</small></span>
+        {{ ui.icon('arrow-right', 14) }}
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

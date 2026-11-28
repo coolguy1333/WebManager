@@ -1622,10 +1622,8 @@ class WebManagerTestCase(unittest.TestCase):
         selection = self.client.get(
             f"/repositories/{repository_id}/select"
         )
-        self.assertIn(b"Address style", selection.data)
-        self.assertIn(b"Subdomain per site", selection.data)
-        self.assertIn(b"Domain root", selection.data)
-        self.assertIn(b'data-root-available="true"', selection.data)
+        self.assertIn(b"Use the bare domain", selection.data)
+        self.assertIn(b'name="use_domain_root"', selection.data)
 
         with patch("webmanager.services.RuntimeManager.start_site", return_value="nginx"):
             response = self.client.post(
@@ -2284,7 +2282,7 @@ class WebManagerTestCase(unittest.TestCase):
         self.login_user(user_id)
 
         pages = {
-            f"/repositories/{repository_id}/select": b"Tick each one to publish",
+            f"/repositories/{repository_id}/select": b"Name and address",
             f"/sites/{site_id}": b"Addresses",
             f"/sites/{site_id}/config": b"Nginx configuration",
         }
@@ -2430,7 +2428,7 @@ class WebManagerTestCase(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["Location"], "/?view=sources&connect=1#connect")
+        self.assertEqual(response.headers["Location"], "/new")
         with self.app.app_context():
             count = get_db().execute("SELECT COUNT(*) FROM repositories").fetchone()[0]
         # A failed first clone is reported, not kept as a broken source.
