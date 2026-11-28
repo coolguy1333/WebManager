@@ -26,7 +26,7 @@ class RotatedLogTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.log = Path(self.directory.name) / "access.log"
-        analytics._cache.clear()
+        analytics._indexes.clear()
 
     def write(self, name, lines, compress=False, age_days=0):
         path = self.log.parent / name
@@ -59,17 +59,13 @@ class RotatedLogTests(unittest.TestCase):
         self.assertEqual(self.report(days=90)["requests"], 3)
         self.assertEqual(self.report(days=30)["requests"], 2)
 
-    def test_logs_from_before_the_period_are_not_even_read(self):
+    def test_logs_from_before_the_longest_period_are_not_even_read(self):
         self.write("access.log", [entry(0)])
-        old = self.write("access.log.5.gz", [entry(60)], compress=True, age_days=59)
-        opened = []
-        real = analytics._read_lines
-        analytics._read_lines = lambda file, budget: (opened.append(file), real(file, budget))[1]
-        self.addCleanup(setattr, analytics, "_read_lines", real)
+        old = self.write("access.log.5.gz", [entry(100)], compress=True, age_days=99)
 
         self.report(days=30)
 
-        self.assertNotIn(old, opened)
+        self.assertNotIn(old, analytics._index_for(self.log).files_read)
 
     def test_a_broken_archive_does_not_break_the_report(self):
         self.write("access.log", [entry(0)])
@@ -95,20 +91,49 @@ class RotatedLogTests(unittest.TestCase):
         self.assertLessEqual(self.report()["requests"], 60)
         self.assertGreater(self.report()["requests"], 50, "today's log is read first, then older ones")
 
-    def test_the_answer_is_reused_until_a_log_changes(self):
-        self.write("access.log", [entry(0)])
-        self.assertEqual(self.report()["requests"], 1)
+    def test_only_new_lines_are_read_after_the_first_report(self):
+        self.write("access.log", [entry(0)] * 20)
+        self.write("access.log.1", [entry(1)] * 20, age_days=0.5)
+        self.assertEqual(self.report()["requests"], 40)
+        index = analytics._index_for(self.log)
 
-        calls = []
-        real = analytics._aggregate
-        analytics._aggregate = lambda *args: (calls.append(1), real(*args))[1]
-        self.addCleanup(setattr, analytics, "_aggregate", real)
         self.report()
-        self.assertEqual(calls, [], "unchanged logs: no second read")
+        self.assertEqual(index.bytes_read, 0, "unchanged logs: nothing read again")
 
+        line = entry(0) + "\n"
         with self.log.open("a") as handle:
-            handle.write(entry(0) + "\n")
+            handle.write(line)
+        self.assertEqual(self.report()["requests"], 41)
+        self.assertEqual(index.bytes_read, len(line.encode()), "only the new line")
+
+    def test_a_half_written_line_is_counted_once_it_is_complete(self):
+        self.write("access.log", [entry(0)])
+        line = entry(0)
+        with self.log.open("a") as handle:
+            handle.write(line[:20])
+        self.assertEqual(self.report()["requests"], 1)
+        with self.log.open("a") as handle:
+            handle.write(line[20:] + "\n")
         self.assertEqual(self.report()["requests"], 2)
+
+    def test_rotation_never_counts_a_line_twice_or_loses_one(self):
+        """logrotate's copytruncate, then delaycompress a day later."""
+        self.write("access.log", [entry(0, uri="/a")] * 3)
+        self.assertEqual(self.report()["requests"], 3)
+        with self.log.open("a") as handle:  # written after the last report
+            handle.write(entry(0, uri="/b") + "\n")
+        # Rotation 1: copy to .1, empty the log, new traffic arrives.
+        (self.log.parent / "access.log.1").write_bytes(self.log.read_bytes())
+        self.log.write_text(entry(0, uri="/c") + "\n")
+        self.assertEqual(self.report()["requests"], 5)
+        # Rotation 2: .1 is compressed to .2.gz, the log copied to .1 again.
+        old = self.log.parent / "access.log.1"
+        (self.log.parent / "access.log.2.gz").write_bytes(gzip.compress(old.read_bytes()))
+        old.write_bytes(self.log.read_bytes())
+        self.log.write_text(entry(0, uri="/d") + "\n")
+        data = self.report()
+        self.assertEqual(data["requests"], 6)
+        self.assertEqual(dict(data["top_paths"]), {"/a": 3, "/b": 1, "/c": 1, "/d": 1})
 
     def test_a_single_site_report_also_spans_rotations(self):
         self.write("access.log", [entry(0)])

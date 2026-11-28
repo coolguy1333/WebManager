@@ -456,10 +456,9 @@ class AppHostingTests(unittest.TestCase):
             from webmanager import quotas
 
             self.assertEqual(quotas.get_defaults(get_db())["apps"], 4)
+            self.assertEqual(quotas.limit_for(get_db(), user_id, "apps"), 4)  # the default plan's now
         page = self.client.get("/admin/?section=people")
         self.assertIn(b'name="max_apps"', page.data)
-        self.assertIn(b"0/4 apps", page.data)
-        self.assertTrue(user_id)
 
     # -- deploy and variables -------------------------------------------------
     def test_deploy_with_required_variable_goes_to_variables_first(self):
@@ -1077,7 +1076,7 @@ class AppHostingTests(unittest.TestCase):
         response = self.client.get("/docs")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"webmanager.json", response.data)
-        self.assertIn(b"App hosting", response.data)
+        self.assertIn(b"Make your project an app", response.data)
 
 
 if __name__ == "__main__":

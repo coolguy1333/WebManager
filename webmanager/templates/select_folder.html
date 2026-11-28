@@ -83,7 +83,7 @@
         </div>
         <span class="hint mono" data-choice-url></span>
         {% else %}
-        <p class="hint">No public domains are set up, so a website gets an internal port ({{ port_min }}–{{ port_max }}). A super admin can add a domain under System → Domains.</p>
+        <p class="hint">No public domains are set up, so a website gets an internal port ({{ port_min }}–{{ port_max }}). {% if g.user.is_admin %}Add a domain under System → Domains.{% else %}An administrator can add a domain.{% endif %}</p>
         {% endif %}
       </div>
       <details class="inline-disclosure">

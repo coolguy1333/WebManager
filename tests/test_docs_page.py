@@ -28,6 +28,17 @@ class DocsPageTests(unittest.TestCase):
         self.assertIn('href="/new"', self.page)
         self.assertIn("data-doc-search", self.page)
 
+    def test_members_get_no_setup_or_admin_topics(self):
+        for text in ("sudo ", "webmanager.env", "Running the server", "People &amp; access", "System →"):
+            self.assertNotIn(text, self.page)
+
+    def test_super_admins_also_get_running_the_server(self):
+        self.login_user(self.add_user("root", "root@example.com", is_admin=True))
+        page = self.client.get("/docs").get_data(as_text=True)
+        self.assertIn("Running the server", page)
+        self.assertIn("People, plans and sign-in", page)
+        self.assertNotIn("sudo ", page)
+
     def test_every_link_into_the_docs_lands_on_a_topic(self):
         ids = set(re.findall(r'id="([a-z-]+)"', self.page))
         sources = [*ROOT.joinpath("webmanager", "templates").rglob("*.html"), *ROOT.joinpath("webmanager").glob("*.py")]
@@ -38,7 +49,7 @@ class DocsPageTests(unittest.TestCase):
             anchors.update(re.findall(r'deployments\.docs"\) \+ "#([a-z-]+)', text))
             if path.name == "docs.html":
                 anchors.update(re.findall(r'href="#([a-z-]+)"', text))
-        self.assertTrue({"deploy", "apps", "private-repositories"} <= anchors)
+        self.assertTrue({"deploy", "apps"} <= anchors)
         for anchor in anchors:
             with self.subTest(anchor=anchor):
                 self.assertIn(anchor, ids)

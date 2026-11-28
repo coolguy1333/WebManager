@@ -268,6 +268,10 @@ def migrate_structure(database, local_defaults=False):
     """
     database.executescript(SCHEMA)
     _migrate_users(database)
+    from . import plans
+
+    plans.ensure_table(database)
+    plans.seed(database)
     _migrate_repositories(database)
     if local_defaults:
         _migrate_domains(database)

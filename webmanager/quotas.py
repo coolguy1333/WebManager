@@ -1,8 +1,9 @@
-"""Per-user limits on how many sites and Git sources someone may own.
+"""Per-user limits on how many sites, apps and Git sources someone may own.
 
-Defaults live in ``app_settings``; each user can have an override stored on
-their row (NULL = use the default). A limit of 0 means unlimited. Super
-admins are never limited.
+A person's limits come from their plan (plans.py: theirs, else the default
+plan). Custom limits stored on their row override the plan (NULL = use the
+plan). The old default limits in ``app_settings`` are only used if there are
+no plans at all. A limit of 0 means unlimited. Super admins are never limited.
 """
 
 DEFAULT_MAX_SITES = 3
@@ -63,20 +64,23 @@ def parse_limit(raw, allow_blank=False):
 
 def _user_row(database, user_id):
     return database.execute(
-        "SELECT id, is_admin, max_sites, max_sources, max_apps FROM users WHERE id = ?",
+        "SELECT id, is_admin, max_sites, max_sources, max_apps, plan_id FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
 
 
 def limit_for(database, user_id, kind, defaults=None):
     """Effective limit, or None when unlimited."""
+    from .plans import plan_for
+
     user = _user_row(database, user_id)
     if user is None or user["is_admin"]:
         return None
     _key, _fallback, column, _table, _noun = KINDS[kind]
     value = user[column]
     if value is None:
-        value = (defaults or get_defaults(database))[kind]
+        plan = plan_for(database, user)
+        value = plan[column] if plan is not None else (defaults or get_defaults(database))[kind]
     return value or None
 
 

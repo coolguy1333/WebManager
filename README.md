@@ -375,7 +375,7 @@ promoted automatically if no administrator exists.
 Administrators see an **Administration** group in the sidebar:
 
 - **People & access**, with tabs **People**, **Teams**, **Site pools**, and
-  **Site exceptions**. Super admins also set **Default limits** here.
+  **Site exceptions**, plus **Plans** for super admins.
 - **System** (super admins), with tabs in order of importance: **Health**
   (checks and resource usage), **Updates**, **Servers**, **Domains**
   (deployment domains, dashboard domains and the blocklist), **Backups**,
@@ -397,7 +397,8 @@ administration pages can:
 - Create pools for sites that share the same access
 - Grant View only or Can manage access to a pool or an individual site
 - Add multiple deployment domains and choose the default for new sites
-- Set how many sites, Git sources, and apps each person may own
+- Put each person on a plan (Starter, Basic, Advanced or your own), or give
+  them custom limits
 
 Available permissions:
 
@@ -414,13 +415,21 @@ Teams can use a ready-made profile (Team only, All-site viewer, All-site
 manager, App hosts, Access administrator, Account administrator, Delegated
 administrator) or **Custom permissions**.
 
-### Limits
+### Plans and limits
 
-Every person except super admins has limits on how many sites, Git sources,
-and apps they own. Defaults are 3 sites, 2 sources, and 1 app (apps also count
-as sites); 0 means unlimited. Change the defaults under **People & access >
-People > Default limits**, or override them for one person on their row.
+Every person except super admins is on a **plan**: how many sites, apps and
+Git sources they may have (apps also count as sites; 0 means unlimited) and
+whether they may host apps. WebManager starts with **Starter** (1 site, 1
+source, no apps), **Basic** (the old default limits: 3 sites, 2 sources) and
+**Advanced** (20 sites, 10 sources, 5 apps, can host apps), with Basic the
+default for new people. Super admins add, edit and delete plans and choose
+the default under **People & access > Plans**, and pick each person's plan on
+their row (**Custom limits** there override the plan for one person).
 Lowering a limit never removes existing sites; it only blocks adding more.
+
+Everyone sees their plan and what they've used of it on **Your account** (their
+name at the bottom of the sidebar), where they can also change their name.
+App hosting given by a plan can't be handed on to others through a team.
 
 Each site can belong to one pool. Pool access and direct site access use two
 roles:

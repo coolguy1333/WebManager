@@ -23,7 +23,17 @@
         <summary>{{ ui.icon('settings', 14) }}Branch <span class="hint">optional, the default branch otherwise</span></summary>
         <label class="field mt-16"><span>Branch</span><input name="branch" maxlength="200" placeholder="main" autocomplete="off" spellcheck="false"></label>
       </details>
-      <p class="hint">Public repositories work right away. For a private one, give the server's deploy key read access first (see <a href="{{ url_for('deployments.docs') }}#private-repositories">Docs</a>).</p>
+      <details class="inline-disclosure" id="private-repository">
+        <summary>{{ ui.icon('shield', 14) }}Private repository?</summary>
+        <div class="stack mt-16">
+          {% if deploy_key %}
+          <p class="hint">Add this key to the repository as a <strong>read-only deploy key</strong> (GitHub: the repository's Settings → Deploy keys), then paste its SSH address above, like <code>git@github.com:you/project.git</code>.</p>
+          <div class="copy-row"><code class="mono" data-copy-source>{{ deploy_key }}</code><button class="btn btn-sm" type="button" data-copy>Copy</button></div>
+          {% else %}
+          <p class="hint">This server has no deploy key yet, so only public repositories work. Ask an administrator.</p>
+          {% endif %}
+        </div>
+      </details>
     </div>
     <div class="card-footer end">
       <button class="btn btn-primary" type="submit" data-loading-text="Looking inside…">Continue {{ ui.icon('arrow-right', 14) }}</button>

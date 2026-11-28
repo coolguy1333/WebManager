@@ -12,119 +12,159 @@
   {{ ui.icon('alert') }}
   <div class="alert-body">
     <strong>No allowed Google accounts are listed.</strong>
-    Only people who already have an account here can sign in; anyone new is refused. To let someone new in, add their email to <code>WEBMANAGER_GOOGLE_ALLOWED_EMAILS</code> (run <code>bash configure-google.sh</code> on the server).
+    Only people who already have an account here can sign in; anyone new is refused. To let someone new in, add their email under <a href="{{ url_for('admin.dashboard', section='updates') }}#settings">System → Settings → Allowed Google emails</a>.
   </div>
 </div>
 {% endif %}
 {% endif %}
 
-{% if active_section == "people" and can_manage_users %}
 {% macro limit_text(n) %}{{ "unlimited" if not n else n }}{% endmacro %}
-{% if super_admin %}
-<details class="card disclosure mb-16">
-  <summary>{{ ui.icon('settings') }}Default limits<small>· {{ limit_text(quota_defaults.sites) }} site{{ "" if quota_defaults.sites == 1 else "s" }} and {{ limit_text(quota_defaults.sources) }} source{{ "" if quota_defaults.sources == 1 else "s" }}{% if config.APPS_ENABLED %}, {{ limit_text(quota_defaults.apps) }} app{{ "" if quota_defaults.apps == 1 else "s" }}{% endif %} per person</small><span class="chev">{{ ui.icon('chevron') }}</span></summary>
-  <form class="card-body stack" method="post" action="{{ url_for('admin.update_default_limits') }}" data-loading>
-    {{ ui.csrf() }}
-    <p class="muted">Applies to everyone without a personal limit. Super admins are never limited. Use 0 for unlimited. Existing sites are never removed; people over a new limit just can't add more.</p>
-    <div class="form-row">
-      <label class="field"><span>Max sites per person</span><input type="number" name="max_sites" min="0" max="10000" value="{{ quota_defaults.sites }}" required></label>
-      <label class="field"><span>Max Git sources per person</span><input type="number" name="max_sources" min="0" max="10000" value="{{ quota_defaults.sources }}" required></label>
-      {% if config.APPS_ENABLED %}<label class="field"><span>Max apps per person</span><input type="number" name="max_apps" min="0" max="10000" value="{{ quota_defaults.apps }}" required></label>{% endif %}
-      <button class="btn btn-primary" type="submit">Save defaults</button>
-    </div>
-  </form>
-</details>
-{% endif %}
+{% macro used_of(used, limit, noun) %}{{ used }}{% if limit %}/{{ limit }}{% endif %} {{ noun }}{{ "" if (limit or used) == 1 else "s" }}{% endmacro %}
+
+{% if active_section == "people" and can_manage_users %}
 <div class="toolbar">
-  <label class="search grow"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search name, email, or team" data-filter-input="users"></label>
+  <label class="search grow"><span class="visually-hidden">Filter people</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search name, email, plan or team" data-filter-input="users"></label>
   <div class="segmented" role="radiogroup" aria-label="Show">
     <label><input type="radio" name="people_filter" value="" checked data-filter-kind="users"><span>Everyone <b>{{ users|length }}</b></span></label>
-    <label><input type="radio" name="people_filter" value="active" data-filter-kind="users"><span>Active <b>{{ counts.active_users }}</b></span></label>
     <label><input type="radio" name="people_filter" value="disabled" data-filter-kind="users"><span>Disabled <b>{{ users|length - counts.active_users }}</b></span></label>
-    <label><input type="radio" name="people_filter" value="admin" data-filter-kind="users"><span>Admins <b>{{ users|selectattr("is_admin")|list|length }}</b></span></label>
+    <label><input type="radio" name="people_filter" value="admin" data-filter-kind="users"><span>Super admins <b>{{ users|selectattr("is_admin")|list|length }}</b></span></label>
   </div>
 </div>
 <div class="records">
   {% for user in users %}
-  <details class="record" data-filter-item="users" data-filter-tags="{{ 'active' if user.is_active else 'disabled' }}{{ ' admin' if user.is_admin }}" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ user.group_names or '' }}">
+  {% set plan_name = plan_names.get(user.plan_id) or plan_names.get(default_plan) %}
+  {% set user_limits = limits.get(user.id, {}) %}
+  <details class="record" data-filter-item="users" data-filter-tags="{{ 'active' if user.is_active else 'disabled' }}{{ ' admin' if user.is_admin }}" data-filter-text="{{ user.display_name or '' }} {{ user.email or '' }} {{ user.username }} {{ plan_name or '' }} {{ user.group_names or '' }}">
     <summary>
       <span class="avatar" aria-hidden="true">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
       <span class="record-title">
         <strong>{{ user.display_name or user.username }}</strong>
-        {% set site_limit = none if user.is_admin else (user.max_sites if user.max_sites is not none else quota_defaults.sites) %}
-        {% set source_limit = none if user.is_admin else (user.max_sources if user.max_sources is not none else quota_defaults.sources) %}
-        <small>{{ user.email or user.username }} · {{ usage[user.id].sites }}{% if site_limit %}/{{ site_limit }}{% endif %} sites · {{ usage[user.id].sources }}{% if source_limit %}/{{ source_limit }}{% endif %} sources{% if config.APPS_ENABLED and (usage[user.id].apps or not user.is_admin) %}{% set app_limit = none if user.is_admin else (user.max_apps if user.max_apps is not none else quota_defaults.apps) %} · {{ usage[user.id].apps }}{% if app_limit %}/{{ app_limit }}{% endif %} apps{% endif %} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
+        <small>{{ user.email or user.username }} · {% if user.is_admin %}no limits{% else %}{{ used_of(usage[user.id].sites, user_limits.sites, "site") }} · {{ used_of(usage[user.id].sources, user_limits.sources, "source") }}{% if config.APPS_ENABLED and (usage[user.id].apps or user_hosts_apps.get(user.id)) %} · {{ used_of(usage[user.id].apps, user_limits.apps, "app") }}{% endif %}{% endif %} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
       </span>
       <span class="record-tags">
-        {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% endif %}
-        {% for name in (user.group_names or "").split(", ") if name %}<span class="badge">{{ name }}</span>{% endfor %}
-        <span class="badge {{ 'badge-success' if user.is_active else 'badge-danger' }}">{{ "Active" if user.is_active else "Disabled" }}</span>
+        {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% elif plan_name %}<span class="badge">{{ plan_name }}</span>{% endif %}
+        {% if user.max_sites is not none or user.max_sources is not none or user.max_apps is not none %}{% if not user.is_admin %}<span class="badge" title="Custom limits override the plan">Custom</span>{% endif %}{% endif %}
+        {% if not user.is_active %}<span class="badge badge-danger">Disabled</span>{% endif %}
       </span>
       <span class="chev">{{ ui.icon('chevron') }}</span>
     </summary>
-    <form class="record-body" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
+    <form class="record-body stack" method="post" action="{{ url_for('admin.update_user', user_id=user.id) }}" data-loading>
       {{ ui.csrf() }}
       {% if super_admin %}
-      <fieldset>
-        <legend>Account <span class="hint">{% if user.google_sub %}the email comes from their Google account{% else %}their first Google sign-in with this email links to this account{% endif %}</span></legend>
-        <div class="form-row">
-          <label class="field"><span>Name</span><input name="display_name" maxlength="100" value="{{ user.display_name or '' }}" autocomplete="off"></label>
-          <label class="field"><span>Username</span><input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{2,31}" value="{{ user.username }}" autocomplete="off"></label>
-          {% if user.google_sub %}
-          <label class="field"><span>Email</span><input value="{{ user.email or '' }}" readonly></label>
-          {% else %}
-          <label class="field"><span>Email</span><input type="email" name="email" maxlength="254" value="{{ user.email or '' }}" autocomplete="off"></label>
-          {% endif %}
-        </div>
-      </fieldset>
-      {% endif %}
-      <div class="grid-2">
-        <label class="check">
-          <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
-          <span><strong>Active account</strong><small>Allow this person to sign in.</small></span>
-        </label>
-        {% if super_admin %}
-        <label class="check">
-          <input type="checkbox" name="is_admin" {% if user.is_admin %}checked{% endif %}>
-          <span><strong>Super administrator</strong><small>Full, unrestricted access.</small></span>
-        </label>
-        {% endif %}
+      <div class="form-row">
+        <label class="field"><span>Name</span><input name="display_name" maxlength="100" value="{{ user.display_name or '' }}" autocomplete="off"></label>
+        <label class="field"><span>Email</span>{% if user.google_sub %}<input value="{{ user.email or '' }}" readonly title="Comes from their Google account">{% else %}<input type="email" name="email" maxlength="254" value="{{ user.email or '' }}" autocomplete="off">{% endif %}</label>
       </div>
-      {% if super_admin and not user.is_admin %}
-      <fieldset>
-        <legend>Limits <span class="hint">leave blank to use the default · 0 = unlimited</span></legend>
-        <div class="form-row">
-          <label class="field"><span>Max sites</span><input type="number" name="max_sites" min="0" max="10000" value="{{ user.max_sites if user.max_sites is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sites) }})"></label>
-          <label class="field"><span>Max Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="{{ user.max_sources if user.max_sources is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.sources) }})"></label>
-          {% if config.APPS_ENABLED %}<label class="field"><span>Max apps</span><input type="number" name="max_apps" min="0" max="10000" value="{{ user.max_apps if user.max_apps is not none else '' }}" placeholder="Default ({{ limit_text(quota_defaults.apps) }})"></label>{% endif %}
-        </div>
-      </fieldset>
+      <div class="form-row">
+        <label class="field"><span>Role</span>
+          <select name="role" data-role-select>
+            <option value="member" {% if not user.is_admin %}selected{% endif %}>Member: uses their plan</option>
+            <option value="admin" {% if user.is_admin %}selected{% endif %}>Super admin: everything, no limits</option>
+          </select>
+        </label>
+        <label class="field"><span>Plan</span>
+          <select name="plan_id">
+            <option value="" {% if user.plan_id is none %}selected{% endif %}>Default ({{ plan_names.get(default_plan) or "none" }})</option>
+            {% for plan in plan_list %}<option value="{{ plan.id }}" {% if user.plan_id == plan.id %}selected{% endif %}>{{ plan.name }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <input type="hidden" name="username" value="{{ user.username }}">
       {% endif %}
-      <fieldset>
-        <legend>Teams</legend>
-        <div class="choice-list">
+      <label class="check plain">
+        <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
+        <span><strong>Can sign in</strong><small>Untick to disable the account without deleting anything.</small></span>
+      </label>
+      {% if super_admin and not user.is_admin %}
+      <details class="inline-disclosure"{% if user.max_sites is not none or user.max_sources is not none or user.max_apps is not none %} open{% endif %}>
+        <summary>{{ ui.icon('settings', 14) }}Custom limits <span class="hint">instead of the plan's · blank = the plan's · 0 = unlimited</span></summary>
+        <div class="form-row mt-16">
+          <label class="field"><span>Sites</span><input type="number" name="max_sites" min="0" max="10000" value="{{ user.max_sites if user.max_sites is not none else '' }}" placeholder="Plan ({{ limit_text(user_limits.sites) }})"></label>
+          <label class="field"><span>Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="{{ user.max_sources if user.max_sources is not none else '' }}" placeholder="Plan ({{ limit_text(user_limits.sources) }})"></label>
+          {% if config.APPS_ENABLED %}<label class="field"><span>Apps</span><input type="number" name="max_apps" min="0" max="10000" value="{{ user.max_apps if user.max_apps is not none else '' }}" placeholder="Plan ({{ limit_text(user_limits.apps) }})"></label>{% endif %}
+        </div>
+      </details>
+      {% endif %}
+      {% if groups %}
+      <details class="inline-disclosure"{% if memberships[user.id] %} open{% endif %}>
+        <summary>{{ ui.icon('users', 14) }}Teams <span class="hint">for sharing sites and extra permissions</span></summary>
+        <div class="choice-list mt-16">
           {% for group in groups %}
           <label class="check">
             <input type="checkbox" name="groups" value="{{ group.id }}" {% if group.id in memberships[user.id] %}checked{% endif %}>
             <span>{{ group.name }}</span>
           </label>
-          {% else %}
-          <p class="muted">No teams exist yet. <a href="{{ url_for('admin.dashboard', section='teams') }}">Create one</a>.</p>
           {% endfor %}
         </div>
-      </fieldset>
+      </details>
+      {% endif %}
       <div class="record-actions">
         <small class="faint">Joined {{ ui.when(user.created_at) }}</small>
         {% if super_admin and user.id != g.user.id %}
-        <button class="btn btn-sm btn-danger-outline" type="submit" formaction="{{ url_for('admin.delete_user', user_id=user.id) }}" formnovalidate data-confirm-button="Delete the account of {{ user.display_name or user.username }}? This can't be undone. Their sites and Git sources must be deleted first.">{{ ui.icon('trash', 14) }}Delete account</button>
+        <button class="btn btn-sm btn-danger-outline" type="submit" formaction="{{ url_for('admin.delete_user', user_id=user.id) }}" formnovalidate data-confirm-button="Delete the account of {{ user.display_name or user.username }}? This can't be undone. Their sites and Git sources must be deleted first.">{{ ui.icon('trash', 14) }}Delete</button>
         {% endif %}
-        <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save changes</button>
+        <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save</button>
       </div>
     </form>
   </details>
   {% endfor %}
   <div class="card list-empty" data-filter-empty="users" hidden>No people match that filter.</div>
 </div>
+{% endif %}
+
+{% if active_section == "plans" and super_admin %}
+<div class="records">
+  {% for plan in plan_list %}
+  <details class="record" id="plan-{{ plan.id }}">
+    <summary>
+      <span class="record-icon">{{ ui.icon('grid', 18) }}</span>
+      <span class="record-title">
+        <strong>{{ plan.name }}</strong>
+        <small>{{ limit_text(plan.max_sites)|capitalize }} site{{ "" if plan.max_sites == 1 else "s" }} · {{ limit_text(plan.max_sources) }} Git source{{ "" if plan.max_sources == 1 else "s" }}{% if config.APPS_ENABLED %} · {% if plan.can_host_apps %}{{ limit_text(plan.max_apps) }} app{{ "" if plan.max_apps == 1 else "s" }}{% else %}no apps{% endif %}{% endif %}</small>
+      </span>
+      <span class="record-tags">
+        {% if plan.id == default_plan %}<span class="badge badge-accent">Default</span>{% endif %}
+        <span class="badge">{{ plan.people }} {{ "person" if plan.people == 1 else "people" }}</span>
+      </span>
+      <span class="chev">{{ ui.icon('chevron') }}</span>
+    </summary>
+    <form class="record-body stack" method="post" action="{{ url_for('admin.update_plan', plan_id=plan.id) }}" data-loading>
+      {{ ui.csrf() }}
+      <div class="form-row">
+        <label class="field"><span>Name</span><input name="name" value="{{ plan.name }}" maxlength="40" required></label>
+        <label class="field"><span>Sites</span><input type="number" name="max_sites" min="0" max="10000" value="{{ plan.max_sites }}" required></label>
+        <label class="field"><span>Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="{{ plan.max_sources }}" required></label>
+        <label class="field"><span>Apps</span><input type="number" name="max_apps" min="0" max="10000" value="{{ plan.max_apps }}" required></label>
+      </div>
+      <label class="check plain">
+        <input type="checkbox" name="can_host_apps" value="1" {% if plan.can_host_apps %}checked{% endif %}>
+        <span><strong>Can host apps</strong><small>Apps run their own server code in containers{% if not config.APPS_ENABLED %} (app hosting is off on this server){% endif %}. 0 = unlimited for every number.</small></span>
+      </label>
+      <div class="record-actions">
+        {% if plan.id != default_plan %}
+        <button class="btn btn-sm btn-danger-outline" type="submit" formaction="{{ url_for('admin.delete_plan', plan_id=plan.id) }}" formnovalidate data-confirm-button="Delete the {{ plan.name }} plan? Its people move to the default plan.">{{ ui.icon('trash', 14) }}Delete</button>
+        <button class="btn btn-sm" type="submit" formaction="{{ url_for('admin.default_plan', plan_id=plan.id) }}" formnovalidate>Make default</button>
+        {% else %}<small class="faint">New people start on this plan.</small>{% endif %}
+        <button class="btn btn-primary btn-sm" type="submit" data-loading-text="Saving…">Save</button>
+      </div>
+    </form>
+  </details>
+  {% endfor %}
+</div>
+<details class="card disclosure mt-16" {% if not plan_list %}open{% endif %}>
+  <summary>{{ ui.icon('plus') }}Add a plan<span class="chev">{{ ui.icon('chevron') }}</span></summary>
+  <form class="card-body stack" method="post" action="{{ url_for('admin.create_plan') }}" data-loading>
+    {{ ui.csrf() }}
+    <div class="form-row">
+      <label class="field"><span>Name</span><input name="name" maxlength="40" placeholder="Pro" required></label>
+      <label class="field"><span>Sites</span><input type="number" name="max_sites" min="0" max="10000" value="10" required></label>
+      <label class="field"><span>Git sources</span><input type="number" name="max_sources" min="0" max="10000" value="10" required></label>
+      <label class="field"><span>Apps</span><input type="number" name="max_apps" min="0" max="10000" value="2" required></label>
+    </div>
+    <label class="check plain"><input type="checkbox" name="can_host_apps" value="1"><span><strong>Can host apps</strong><small>0 = unlimited for every number.</small></span></label>
+    <div class="record-actions"><span></span><button class="btn btn-primary btn-sm" type="submit">Add plan</button></div>
+  </form>
+</details>
 {% endif %}
 
 {% macro permission_picker(selected_profile, selected_codes) %}

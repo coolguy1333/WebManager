@@ -1153,7 +1153,8 @@ class RuntimeManager:
                     return
                 raise RuntimeErrorDetail(
                     f"{exc} Another program holds that port, often an earlier copy of "
-                    "WebManager's own Nginx: sudo systemctl restart webmanager clears it."
+                    "WebManager's own web server; restarting WebManager on the server clears it. "
+                    "Tell an administrator if it keeps happening."
                 ) from exc
             # Nginx writes its pid file just after this returns; wait for it so
             # the next change reloads this Nginx instead of starting another.

@@ -843,6 +843,8 @@ def _deploy_choices(repository, candidates, app_candidates, recommended_site) ->
     database = get_db()
     domains = available_domains(database)
     repo_name = _title_from(repository["name"])
+    # Where to fix it, for a super admin; others just ask one.
+    fix = (lambda place: f" Turn it on under System → {place}.") if g.user["is_admin"] else (lambda _place: " Ask an administrator.")
     choices = []
     for app in sorted(app_candidates, key=lambda item: (bool(item["error"]), item["folder"] != ".", item["folder"])):
         parts = [] if app["folder"] == "." else app["folder"].split("/")
@@ -850,11 +852,13 @@ def _deploy_choices(repository, candidates, app_candidates, recommended_site) ->
         name = _title_from(meaningful[-1]) if meaningful else repo_name
         blocked = app["error"]
         if not blocked and not current_app.config.get("APPS_ENABLED"):
-            blocked = "App hosting is turned off on this server. A super admin can turn it on under System → App hosting."
+            blocked = "App hosting is turned off on this server." + fix("App hosting")
         elif not blocked and not can_host_apps():
-            blocked = "You don't have permission to host apps. Ask an administrator for the Host apps permission."
+            blocked = "Your plan doesn't include apps. Ask an administrator."
         elif not blocked and not domains:
-            blocked = "Apps need a public domain. A super admin can add one under System → Domains."
+            blocked = "Apps need a public domain, and this server has none yet." + (
+                " Add one under System → Domains." if g.user["is_admin"] else " Ask an administrator."
+            )
         choices.append({
             "value": f"app:{app['folder']}", "kind": "app", "folder": app["folder"],
             "name": name, "slug": slugify(name), "blocked": blocked,
@@ -869,6 +873,52 @@ def _deploy_choices(repository, candidates, app_candidates, recommended_site) ->
             "index_file": candidate["index_file"], "is_build_output": candidate["is_build_output"],
         })
     return choices
+
+
+@bp.route("/account", methods=("GET", "POST"))
+@login_required
+def account():
+    """Your own account: your plan, what you're using of it, and your name."""
+    database = get_db()
+    if request.method == "POST":
+        validate_csrf()
+        name = " ".join((request.form.get("display_name") or "").split())
+        if len(name) > 100:
+            flash("Names can be at most 100 characters.", "error")
+        else:
+            database.execute("UPDATE users SET display_name = ? WHERE id = ?", (name or None, g.user["id"]))
+            database.commit()
+            flash("Saved.", "success")
+        return redirect(url_for("deployments.account"))
+    from .plans import plan_for
+
+    user = database.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+    return render_template(
+        "account.html",
+        title="Your account",
+        user=user,
+        plan=None if user["is_admin"] else plan_for(database, user),
+        quota=quotas.summary(database, g.user["id"]),
+        custom_limits=not user["is_admin"] and any(
+            user[column] is not None for column in ("max_sites", "max_sources", "max_apps")
+        ),
+    )
+
+
+def deploy_public_key() -> str | None:
+    """The server's SSH public key that Git uses (in its HOME, the data
+    folder), for people to add as a read-only deploy key. None if there's none."""
+    import os
+
+    home = Path(os.environ.get("HOME") or current_app.instance_path)
+    for name in ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"):
+        try:
+            key = (home / ".ssh" / name).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if key.startswith(("ssh-", "ecdsa-")) and len(key) < 2000 and "\n" not in key:
+            return key
+    return None
 
 
 @bp.get("/new")
@@ -890,6 +940,7 @@ def new_site():
         repositories=repositories,
         quota=quotas.summary(database, g.user["id"]),
         source_limit_error=None if g.user["is_admin"] else quotas.check(database, g.user["id"], "sources"),
+        deploy_key=deploy_public_key(),
     )
 
 
@@ -1387,6 +1438,7 @@ def deploy_choice(repository_id):
     """The New site page's one form: whatever was picked (a site folder or an
     app), one name, one address."""
     validate_csrf()
+    owned_repository(repository_id, manage=True)  # before anything else
     kind, _sep, folder = request.form.get("choice", "").partition(":")
     name = request.form.get("site_name", "").strip()
     slug = request.form.get("slug", "").strip().lower()
@@ -1572,6 +1624,7 @@ def docs():
         title="Docs",
         apps_enabled=bool(current_app.config.get("APPS_ENABLED")),
         can_host_apps=can_host_apps(),
+        deploy_key=deploy_public_key(),
         mesh_configured=bool(current_app.extensions["mesh_hub"].urls),
         replica_configured=current_app.extensions["replication_manager"].is_replica,
     )

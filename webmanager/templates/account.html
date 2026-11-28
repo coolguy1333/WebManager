@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Your account</h1>
+    <p>{{ user.email or user.username }}{% if user.google_sub %} · signs in with Google{% endif %}</p>
+  </div>
+</header>
+
+<div class="account-page">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>{% if user.is_admin %}Super admin{% elif plan %}{{ plan.name }} plan{% else %}Your limits{% endif %}</h2>
+        <p>{% if user.is_admin %}You can do everything, with no limits.{% elif custom_limits %}An administrator set custom limits for you.{% else %}What your plan includes. Ask an administrator if you need more.{% endif %}</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="usage-grid">
+        {% for kind, label, show in [("sites", "Sites", true), ("apps", "Apps", config.APPS_ENABLED and (user.is_admin or (plan and plan.can_host_apps) or has_permission('apps.host'))), ("sources", "Git sources", true)] if show %}
+        {% set item = quota[kind] %}
+        <div class="stat">
+          <span>{{ label }}</span>
+          <strong>{{ item.used }}{% if item.limit %} <small class="muted">of {{ item.limit }}</small>{% endif %}</strong>
+          {% if item.limit %}
+          <svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="{{ item.used }} of {{ item.limit }}"><rect class="meter-track" width="100" height="8" rx="4"/><rect class="meter-fill {{ 'hot' if item.full else '' }}" width="{{ [100, (item.used * 100 / item.limit)|round]|min }}" height="8" rx="4"/></svg>
+          <small>{% if item.full %}All used{% else %}{{ item.remaining }} left{% endif %}</small>
+          {% else %}<small>Unlimited</small>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if config.APPS_ENABLED and not user.is_admin and not ((plan and plan.can_host_apps) or has_permission('apps.host')) %}
+      <p class="hint mt-16">Your plan doesn't include apps (sites that run their own server code).</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <form class="card" method="post" data-loading>
+    {{ ui.csrf() }}
+    <div class="card-header"><div><h2>Your name</h2><p>Shown to administrators and on things you own.</p></div></div>
+    <div class="card-body">
+      <label class="field"><span>Name</span><input name="display_name" value="{{ user.display_name or '' }}" maxlength="100" autocomplete="name"></label>
+    </div>
+    <div class="card-footer end"><button class="btn btn-primary" type="submit">Save</button></div>
+  </form>
+</div>
+{% endblock %}
