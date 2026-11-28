@@ -827,6 +827,46 @@ if (deployChoice) {
   applyChoice();
 }
 
+// ---------- Docs: search, and links open their topic ----------
+const docSearch = document.querySelector("[data-doc-search]");
+const docTopics = [...document.querySelectorAll("[data-doc-topic]")];
+if (docTopics.length) {
+  const openFromHash = () => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    const target = id && document.getElementById(id);
+    const topic = target && target.closest("[data-doc-topic]");
+    if (!topic) return;
+    topic.open = true;
+    target.scrollIntoView();
+  };
+  openFromHash();
+  window.addEventListener("hashchange", openFromHash);
+  const empty = document.querySelector("[data-doc-empty]");
+  const groups = [...document.querySelectorAll(".doc-group")];
+  docSearch?.addEventListener("input", () => {
+    const words = docSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    docTopics.forEach((topic) => {
+      const text = topic.textContent.toLowerCase();
+      const match = words.every((word) => text.includes(word));
+      topic.hidden = !match;
+      if (words.length) topic.open = match;
+      if (match) shown += 1;
+    });
+    // A group heading shows while any topic under it does.
+    groups.forEach((heading) => {
+      let next = heading.nextElementSibling;
+      let any = false;
+      while (next && !next.classList.contains("doc-group")) {
+        if (next.matches("[data-doc-topic]") && !next.hidden) any = true;
+        next = next.nextElementSibling;
+      }
+      heading.hidden = !any;
+    });
+    if (empty) empty.hidden = shown > 0;
+  });
+}
+
 // ---------- Tabs within a page (System) ----------
 // One panel shows at a time. A tab links to the first section of its panel,
 // so an address like ?section=updates#apps (or #backups after a form) opens

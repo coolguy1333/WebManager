@@ -376,10 +376,12 @@ Administrators see an **Administration** group in the sidebar:
 
 - **People & access**, with tabs **People**, **Teams**, **Site pools**, and
   **Site exceptions**. Super admins also set **Default limits** here.
-- **Domains** (super admins): deployment domains, dashboard domains, and the
-  domain blocklist.
-- **System** (super admins): resource usage, app hosting status, this
-  server's settings, WebManager updates, and hosted-site update checks.
+- **System** (super admins), with tabs in order of importance: **Health**
+  (checks and resource usage), **Updates**, **Servers**, **Domains**
+  (deployment domains, dashboard domains and the blocklist), **Backups**,
+  **Site updates**, **App hosting**, **Settings**, **Logs** (every change and
+  who made it) and **Notifications**. Server warnings (failover, for example)
+  are shown to super admins only.
 
 Account, team, pool, and site editors stay collapsed until opened. The
 administration pages can:
@@ -500,7 +502,7 @@ new deployments, assigned to another site, or made the default. Existing sites
 using a newly blocked domain remain online and are marked so an administrator
 can move them without an unexpected outage.
 
-For every primary or additional domain used by a site, the Domains page and
+For every primary or additional domain used by a site, the **System → Domains** tab and
 site detail page display the required Cloudflare configuration:
 
 1. For root hosting, add the exact published hostname `example.com` with no
@@ -589,13 +591,10 @@ docs/
 site/
 ```
 
-### 2. Inspect the repository
+### 2. Paste the repository
 
-Open **Sources** from the sidebar:
-
-1. Enter the Git repository URL.
-2. Optionally enter a branch name.
-3. Select **Connect source**.
+Press **New site** and enter the Git repository URL (a branch is optional,
+under **Branch**). Repositories you connected before are listed below it.
 
 Supported URL examples:
 
@@ -607,19 +606,26 @@ git@github.com:example/project.git
 
 Local paths and `file://` URLs are rejected.
 
-### 3. Select the document root
+### 3. Check what WebManager found
 
-WebManager searches the cloned repository for `index.html` and `index.htm`.
+WebManager looks through the repository and lists everything it can deploy,
+with the best match already picked:
 
-Choose the folder that should become the site's document root. Dependency and metadata directories such as `.git`, `node_modules`, `.venv`, and `__pycache__` are ignored.
+- an **app**: a folder with a `Dockerfile` and `webmanager.json` (first);
+- a **website**: a folder with `index.html` or `index.htm`, a build output
+  folder (`dist/`, `build/`…) before its sources.
 
-### 4. Configure the deployment
+A choice that can't be deployed here says why (app hosting off, no *Host
+apps* permission, no domain, or a `Dockerfile` without `webmanager.json`).
+Dependency and metadata directories such as `.git`, `node_modules`, `.venv`,
+and `__pycache__` are ignored.
 
-Choose the domain and address style, then for each ticked folder enter:
+### 4. Name and address
 
-- A site name
-- Its subdomain (the full address is previewed)
-- Whether single-page application fallback should be enabled
+Enter a name and the subdomain and domain (the full address is previewed).
+**More options** has the bare domain, single-page app fallback (on by
+default for websites) and extra domains. To deploy another folder of the same
+repository later, use **Deploy from it** on the source under **Sources**.
 
 WebManager assigns the first free internal port in the configured range. It
 can be changed later under **Settings > Advanced**.
@@ -1248,7 +1254,13 @@ backups, the watchdog and, with app hosting on, the app limits). Saving
 writes this file through the root helper `webmanager-control`, restarts
 WebManager and, if it doesn't come back, puts the previous file back and
 shows why. Each server has its own file, so on a replica it changes that
-replica only. Secrets, addresses, the Google client and the server group
+replica only. On a primary, tick **Also the other servers** to send the same
+change to every replica, one at a time: each saves and restarts before the
+next is asked, and nothing is sent if saving failed on the primary. A
+replica checks the change again, and its own `WEBMANAGER_DASHBOARD_SETTINGS=0`
+still refuses it. Only plain values are ever written (letters, digits and
+`@ . _ + - ,`), and `sudo webmanager-doctor` reads the file as data, never
+as shell code. Secrets, addresses, the Google client and the server group
 can only be changed on the server. Set `WEBMANAGER_DASHBOARD_SETTINGS=0`
 to turn the browser editing off.
 
@@ -1754,7 +1766,7 @@ are told when a site goes down or comes back, the site web server had to be
 restarted, a source update failed or is waiting for approval, WebManager was
 updated or an update failed, a backup failed, or the disk is nearly full.
 
-**Activity.** **Administration → Activity** lists every change made through
+**Logs.** **System → Logs** lists every change made through
 the dashboard (who, what, and the message they were shown) and what WebManager
 did by itself, newest first, with search. The last 5000 entries are kept.
 
@@ -1860,8 +1872,9 @@ Before installing a new commit, the updater:
 4. Requires approval for that exact 40-character commit from a super admin (unless automatic installation is on).
    In a replica group, automatic installs never run on two servers at once:
    the primary goes first, each replica waits until the primary runs the new
-   version (and can be reached), and the primary waits while a replica is
-   updating. The System page says what a server is waiting for. Installing
+   version (and can be reached) and no other replica is updating, and the
+   primary waits while a replica is updating. Replicas take turns by their
+   `replicaN` number, 90 seconds apart, so two never start in the same check. The System page says what a server is waiting for. Installing
    by hand (approving the update) doesn't wait.
 5. Runs the full test suite, reusing the installed virtual environment when
    requirements are unchanged and retrying in a clean one if that fails.
