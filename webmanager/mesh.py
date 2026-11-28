@@ -184,8 +184,15 @@ def local_status(app) -> dict:
         # answer can be public). A primary's updater waits for them before
         # installing by itself (deploy/debian/update.sh).
         "peers_updating": _peers_updating(app),
+        # A replica's replicaN number (its turn when replicas update one by
+        # one, see deploy/debian/update.sh), or None.
+        "replica_number": _replica_number(app),
         "auto_install": auto_install_enabled(),
         **_apps_change(),
+        # The last settings change here (saved from this server or sent by
+        # the primary, see settings_rollout.py), so the primary knows when
+        # this one is done before it sends to the next server.
+        "settings_change": _settings_change(),
         "sites": {"total": sites["total"], "running": sites["running"] or 0},
         "apps_enabled": apps_enabled,
         "apps": apps,
@@ -195,13 +202,32 @@ def local_status(app) -> dict:
     }
 
 
+def _settings_change():
+    status = server_control.read_status()
+    if not status or status.get("action") != "settings":
+        return None
+    return {"state": status["state"], "at": status.get("at"), "message": status.get("message")}
+
+
+def _replica_number(app):
+    manager = app.extensions.get("replication_manager")
+    if manager is None or not manager.is_replica:
+        return None
+    from . import server_aliases
+
+    for number, url in sorted(server_aliases.load(get_db()).items()):
+        if server_aliases.is_this_server(url):
+            return number
+    return None
+
+
 def _peers_updating(app) -> int:
     hub = app.extensions.get("mesh_hub")
     if hub is None:
         return 0
     return sum(
         1 for entry in hub.entries()
-        if entry["reachable"] and entry.get("update_state") in IN_PROGRESS_STATES
+        if entry.get("reachable") and entry.get("update_state") in IN_PROGRESS_STATES
     )
 
 
@@ -209,7 +235,7 @@ def _apps_change() -> dict:
     """A change to app hosting under way here, or one that failed: lets the
     server that asked for it show "Turning on…" or why it didn't work."""
     status = server_control.read_status()
-    if not status or status["state"] == "done":
+    if not status or status["state"] == "done" or status.get("action") == "settings":
         return {"apps_change": None, "apps_change_message": None}
     return {
         "apps_change": status["state"],
@@ -344,8 +370,27 @@ class MeshHub:
 
     def control(self, url: str, action: str) -> tuple[bool, str]:
         """Ask another server to make one of CONTROL_ACTIONS changes."""
-        accepted, message, _body = self._post(url, "/mesh/control", {"action": action})
+        accepted, message, _body = self.post_control(url, action)
         return accepted, message
+
+    def post_control(self, url: str, action: str, extra: dict | None = None) -> tuple[bool, str, dict]:
+        return self._post(url, "/mesh/control", {**(extra or {}), "action": action})
+
+    def remote_data(self, url: str) -> dict:
+        """What the other server reported in its last status (may be {})."""
+        with self._lock:
+            remote = self._remote.get(url) or {}
+            return dict(remote.get("data") or {}) if remote.get("reachable") else {}
+
+    def _advance_rollouts(self):
+        """Settings saved for the whole group go to one server at a time."""
+        from . import settings_rollout
+
+        try:
+            with self.app.app_context():
+                settings_rollout.advance(self.app, self)
+        except Exception:  # never stop polling over it
+            self.app.logger.exception("Could not continue sending settings to the other servers")
 
     def _update_state(self, url: str, data: dict):
         """What the other server says about its update, or "requested" from
@@ -379,11 +424,13 @@ class MeshHub:
             if self._stop_event.wait(1 + index * 0.5):
                 return
             self._poll(url)
+        self._advance_rollouts()
         while not self._stop_event.wait(POLL_SECONDS):
             for url in list(self.urls):
                 if self._stop_event.is_set():
                     return
                 self._poll(url)
+            self._advance_rollouts()
 
     def _poll(self, url):
         req = urllib.request.Request(f"{url}/mesh/status", headers={"Accept": "application/json"})
@@ -641,7 +688,7 @@ def mesh_update():
     ), 202
 
 
-CONTROL_ACTIONS = ("apps_on", "apps_off", "auto_updates_on", "auto_updates_off", "sync_now")
+CONTROL_ACTIONS = ("apps_on", "apps_off", "auto_updates_on", "auto_updates_off", "sync_now", "settings")
 
 
 @bp.post("/mesh/control")
@@ -697,6 +744,9 @@ def mesh_control():
             else "It now waits for approval before installing a WebManager version.",
         })
 
+    if action == "settings":
+        return _apply_settings_from_peer(payload.get("changes"))
+
     # sync_now
     manager = current_app.extensions["replication_manager"]
     if not manager.is_replica:
@@ -706,6 +756,30 @@ def mesh_control():
     data_manager = current_app.extensions["data_replication_manager"]
     threading.Thread(target=data_manager.sync_once, name="webmanager-data-sync-now", daemon=True).start()
     return jsonify({"ok": True, "message": "Its settings are synced; its site and app data is syncing now."})
+
+
+def _apply_settings_from_peer(changes):
+    """The primary saved settings for the whole group (settings_rollout.py).
+    Checked here again, and this server's own WEBMANAGER_DASHBOARD_SETTINGS=0
+    still keeps its file a shell-only matter."""
+    from . import settings_editor
+
+    try:
+        changes = settings_editor.validate(changes)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    current = settings_editor.current_values(current_app.config)
+    changes = {key: value for key, value in changes.items() if current.get(key) != value}
+    if not changes:
+        return jsonify({"ok": True, "unchanged": True, "message": "Its settings were already like that."})
+    reason = server_control.settings_blocked_reason()
+    if reason:
+        return jsonify({"error": reason}), 409
+    try:
+        server_control.request_settings(changes)
+    except OSError as exc:
+        return jsonify({"error": f"It could not file the request: {exc}"}), 500
+    return jsonify({"ok": True, "message": "It is saving the settings and restarting WebManager."}), 202
 
 
 @bp.get("/mesh/join-info")

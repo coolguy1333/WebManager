@@ -251,8 +251,10 @@ def load_manifest(folder: Path, default_memory_mb: int = 256) -> dict:
     return {"type": "app", "health": health, "memory_mb": memory, "env": normalised}
 
 
-def find_app_folders(repository_root: Path, max_depth: int = 4) -> list[dict]:
-    """Folders containing both a Dockerfile and webmanager.json."""
+def find_app_folders(repository_root: Path, max_depth: int = 4, include_incomplete: bool = False) -> list[dict]:
+    """Folders containing both a Dockerfile and webmanager.json. With
+    include_incomplete, also folders with only a Dockerfile (their "error"
+    says webmanager.json is missing, and "needs_manifest" is True)."""
     root = Path(repository_root)
     found = []
     if not root.is_dir():
@@ -271,6 +273,12 @@ def find_app_folders(repository_root: Path, max_depth: int = 4) -> list[dict]:
             except AppError as exc:
                 manifest, error = None, str(exc)
             found.append({"folder": folder, "manifest": manifest, "error": error})
+        elif include_incomplete and DOCKERFILE_NAME in files:
+            folder = "." if relative == Path(".") else relative.as_posix()
+            found.append({
+                "folder": folder, "manifest": None, "needs_manifest": True,
+                "error": f"It has a {DOCKERFILE_NAME} but no {MANIFEST_NAME}, which tells WebManager how to run it.",
+            })
     return found
 
 

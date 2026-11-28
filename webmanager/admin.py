@@ -37,7 +37,7 @@ from .domains import (
 )
 import secrets
 
-from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, settings_editor, system_metrics
+from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, settings_editor, settings_rollout, system_metrics
 from .security import insecure_cookie_reasons, login_required, validate_csrf
 from .version import VERSION
 from .services import RuntimeErrorDetail
@@ -296,6 +296,8 @@ def dashboard():
                 "values": settings_editor.current_values(current_app.config),
                 "status": server_control.read_status(),
                 "blocked": server_control.settings_blocked_reason(),
+                "replicas": _replicas_for_settings(),
+                "rollout": settings_rollout.summary(current_app),
             }
             if active_section == "updates" and super_admin
             else None
@@ -1134,14 +1136,33 @@ def save_settings():
     if lockout:
         flash(lockout, "error")
         return back
+    replicas = _replicas_for_settings()
+    also_replicas = bool(replicas) and request.form.get("also_replicas") == "1"
+    own_status = server_control.read_status()
     try:
         server_control.request_settings(changes)
+        if also_replicas:
+            settings_rollout.start(current_app, changes, replicas, own_status)
     except OSError as exc:
         flash(f"Could not file the request: {exc}", "error")
         return back
     names = ", ".join(settings_editor.BY_KEY[key]["label"] for key in changes)
-    flash(f"Saving {names}. WebManager restarts in a moment; this page shows when it's done.", "success")
+    flash(
+        f"Saving {names}. WebManager restarts in a moment; this page shows when it's done."
+        + (f" Then the {len(replicas)} other server{'' if len(replicas) == 1 else 's'} get the same change, "
+           "one at a time." if also_replicas else ""),
+        "success",
+    )
     return back
+
+
+def _replicas_for_settings() -> list[str]:
+    """The replicas a primary can send its settings to, in replicaN order."""
+    manager = current_app.extensions.get("replication_manager")
+    hub = current_app.extensions.get("mesh_hub")
+    if hub is None or not hub.token or (manager is not None and manager.is_replica):
+        return []
+    return settings_rollout.replicas_in_order(current_app, hub)
 
 
 def _signs_out_yourself(changes) -> str | None:

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
+{% import "admin/_system.html" as system with context %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Domains</h1>
-    <p>Domains that sites can be published on, the addresses WebManager itself answers on, and Cloudflare Tunnel setup.</p>
-  </div>
-  <div class="actions"><span class="badge">{{ domains|length }} deployment domain{{ "" if domains|length == 1 else "s" }}</span></div>
-</header>
+{{ system.header() }}
+{{ system.tabs("domains") }}
+<div class="section-title mb-16">
+  <div><h2>Domains</h2><p>Domains that sites can be published on, the addresses WebManager itself answers on, and Cloudflare Tunnel setup.</p></div>
+  <span class="badge">{{ domains|length }} deployment domain{{ "" if domains|length == 1 else "s" }}</span>
+</div>
 
 {# ---------- Deployment domains ---------- #}
 <section class="mb-24">

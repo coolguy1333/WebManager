@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,14 +69,15 @@ class UpdaterWaitCheckTests(unittest.TestCase):
         self.local.close()
         self.tmp.cleanup()
 
-    def reason(self, settings, promoted=False):
+    def reason(self, settings, promoted=False, local=None, stagger="0"):
         self.env.write_text("".join(f"{key}={value}\n" for key, value in settings.items()), encoding="utf-8")
-        result = subprocess.run(
-            [sys.executable, "-I", "-", str(self.env), NEW, "1" if promoted else "0", self.local.url],
-            input=wait_check_script(), capture_output=True, text=True, timeout=30,
-        )
+        result = subprocess.run(self.command(local or self.local, stagger, promoted),
+                                input=wait_check_script(), capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
+
+    def command(self, local, stagger, promoted=False):
+        return [sys.executable, "-I", "-", str(self.env), NEW, "1" if promoted else "0", local.url, stagger]
 
     def replica(self):
         return {"WEBMANAGER_PEER_TOKEN": TOKEN, "WEBMANAGER_REPLICA_OF": self.primary.url + "/"}
@@ -99,7 +101,51 @@ class UpdaterWaitCheckTests(unittest.TestCase):
         self.assertIn("can be reached", self.reason(self.replica()))
 
     def test_a_replica_goes_once_the_primary_runs_the_version(self):
-        self.primary.answer = {"version": NEW[:12], "update_state": "current"}
+        self.primary.answer = {"version": NEW[:12], "update_state": "current", "peers_updating": 0}
+        self.local.answer = {"replica_number": 1}
+        self.assertEqual(self.reason(self.replica()), "")
+
+    def test_a_replica_waits_while_another_replica_updates(self):
+        self.primary.answer = {"version": NEW[:12], "update_state": "current", "peers_updating": 1}
+        self.local.answer = {"replica_number": 1}
+        self.assertIn("waits for another replica to finish updating", self.reason(self.replica()))
+
+    def test_two_replicas_that_see_the_new_version_together_take_turns(self):
+        """Both start the same check with the primary on the new version and
+        no replica updating. Replica 1 goes; once it is updating the primary
+        reports it, which replica 2 sees after its turn's delay."""
+        self.primary.answer = {"version": NEW[:12], "update_state": "current", "peers_updating": 0}
+        self.env.write_text("".join(f"{k}={v}\n" for k, v in self.replica().items()), encoding="utf-8")
+        second_local = FakeServer()
+        self.addCleanup(second_local.close)
+        self.local.answer = {"replica_number": 1}
+        second_local.answer = {"replica_number": 2}
+        script = wait_check_script()
+        first = subprocess.Popen(self.command(self.local, "2"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        second = subprocess.Popen(self.command(second_local, "2"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        second.stdin.write(script)
+        second.stdin.close()
+        first_out, _ = first.communicate(script, timeout=30)
+        # Both have asked the primary once, and replica 1 again after its
+        # (zero) wait: 3 requests. Replica 2 is still waiting for its turn.
+        deadline = time.time() + 10
+        while len(self.primary.authorizations) < 3 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(self.primary.authorizations), 3)
+        # Replica 1 starts installing; the primary's next look at it says so.
+        self.primary.answer = {**self.primary.answer, "peers_updating": 1}
+        second_out = second.stdout.read()
+        second.wait(timeout=30)
+        decisions = [first_out.strip(), second_out.strip()]
+        self.assertEqual(decisions[0], "")
+        self.assertIn("waits for another server in its group", decisions[1])
+        self.assertEqual(sum(1 for decision in decisions if decision == ""), 1)
+
+    def test_a_replica_without_a_number_still_gets_a_fixed_turn(self):
+        body = UPDATE_SH.split("mesh_wait_reason() {", 1)[1]
+        self.assertIn("zlib.crc32(socket.gethostname().encode()) % 9", body)
+        self.primary.answer = {"version": NEW[:12], "update_state": "current", "peers_updating": 0}
+        self.local.answer = {}
         self.assertEqual(self.reason(self.replica()), "")
 
     def test_a_promoted_replica_acts_as_a_primary(self):

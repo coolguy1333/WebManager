@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
+{% import "admin/_system.html" as system with context %}
 {% block content %}
 {% if active_section == "updates" %}
-<header class="page-header">
-  <div><h1>System</h1><p>Server health, WebManager updates, and hosted site updates. WebManager {{ webmanager_version }}.</p></div>
-</header>
+{{ system.header() }}
 {% else %}
 {% set current_tab = active_section %}
 {% include "admin/_access_header.html" %}
@@ -245,17 +244,9 @@
 {% endif %}
 
 {# Tabs (app.js shows one panel at a time; without scripts every panel shows).
-   Each tab links to the first section in its panel, so links like ?section=updates#apps keep working. #}
-<nav class="tabs system-tabs" role="tablist" aria-label="System sections" data-tabs>
-  <a href="#health" role="tab" id="tab-health" aria-controls="panel-health" data-tab="health">{{ ui.icon('activity', 14) }} Health</a>
-  <a href="#updates" role="tab" id="tab-updates" aria-controls="panel-updates" data-tab="updates">{{ ui.icon('download', 14) }} Updates{% if nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}</a>
-  <a href="#servers" role="tab" id="tab-servers" aria-controls="panel-servers" data-tab="servers">{{ ui.icon('server', 14) }} Servers</a>
-  <a href="#backups" role="tab" id="tab-backups" aria-controls="panel-backups" data-tab="backups">{{ ui.icon('archive', 14) }} Backups</a>
-  <a href="#site-updates" role="tab" id="tab-site-updates" aria-controls="panel-site-updates" data-tab="site-updates">{{ ui.icon('git', 14) }} Site updates</a>
-  <a href="#apps" role="tab" id="tab-apps" aria-controls="panel-apps" data-tab="apps">{{ ui.icon('box', 14) }} App hosting</a>
-  {% if settings_form %}<a href="#settings" role="tab" id="tab-settings" aria-controls="panel-settings" data-tab="settings">{{ ui.icon('settings', 14) }} Settings</a>{% endif %}
-  <a href="#notifications" role="tab" id="tab-notifications" aria-controls="panel-notifications" data-tab="notifications">{{ ui.icon('bell', 14) }} Notifications</a>
-</nav>
+   Each tab links to the first section in its panel, so links like ?section=updates#apps keep working.
+   Domains and Logs are pages of their own. #}
+{{ system.tabs() }}
 
 <div class="tab-panel" id="panel-health" role="tabpanel" aria-labelledby="tab-health" data-tab-panel="health">
 {# ---------- Health checks ---------- #}
@@ -663,7 +654,7 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
     {% elif change and change.state == "error" %}
     <div class="alert error">{{ ui.icon('alert') }}<div class="alert-body"><strong>The last change didn't work</strong>{{ change.message }}{% if change.detail %}<details class="mt-8"><summary>Details</summary><pre><code>{{ change.detail }}</code></pre></details>{% endif %}</div></div>
     {% endif %}
-    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %}</p>{% endif %}
+    {% if app_hosting and apps_configured %}<p class="hint">{% if apps_on %}Running with {{ app_hosting[1] }}.{% else %}It is switched on, but apps can't run: {{ app_hosting[1] }}{% endif %} <a href="{{ url_for('admin.apps_dashboard') }}">See every app on this server</a></p>{% endif %}
     {% if not apps_configured %}
     <p class="hint">Turning it on installs Docker if needed and restarts WebManager. Containers get the internet but not your network. Docker access is equivalent to root on this machine, so only give <strong>Host apps</strong> to people you trust.{% if is_replica %} On a replica, apps stay stopped until it is promoted, but their data is copied here so it can take over.{% endif %}</p>
     {% endif %}
@@ -705,6 +696,21 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
       <div class="alert success">{{ ui.icon('check') }}<div class="alert-body">{{ change.message }}{% if change.at %} <span class="faint">({{ change.at }} UTC)</span>{% endif %}</div></div>
       {% endif %}
       {% if settings_form.blocked and not busy %}<p class="hint">{{ settings_form.blocked }}</p>{% endif %}
+      {% set rollout = settings_form.rollout %}
+      {% if rollout %}
+      <div class="alert {{ 'info' if not rollout.finished else ('warning' if rollout.aborted or rollout.results|rejectattr('ok')|list else 'success') }}" id="settings-rollout">
+        {{ ui.icon('server') }}
+        <div class="alert-body">
+          <strong>{% if rollout.aborted %}Not sent to the other servers{% elif rollout.finished %}The other servers have the change{% else %}Sending the change to the other servers, one at a time…{% endif %}</strong>
+          {% if rollout.aborted %}{{ rollout.aborted }}{% elif rollout.waiting_here %}First this server saves and restarts.{% endif %}
+          <ul class="plain-list mt-8">
+            {% for result in rollout.results %}<li>{{ ui.icon('check' if result.ok else 'alert', 12) }} <code>{{ result.url }}</code>: {{ result.message or ("Done." if result.ok else "Didn't work.") }}</li>{% endfor %}
+            {% if rollout.current %}<li>{{ ui.icon('refresh', 12) }} <code>{{ rollout.current }}</code>: saving and restarting…</li>{% endif %}
+            {% for url in rollout.queue %}<li class="faint">{{ ui.icon('clock', 12) }} <code>{{ url }}</code>: waiting its turn</li>{% endfor %}
+          </ul>
+        </div>
+      </div>
+      {% endif %}
       {% set groups = [] %}{% for setting in settings_form.settings %}{% if setting.group not in groups %}{% set _ = groups.append(setting.group) %}{% endif %}{% endfor %}
       {% for group in groups %}
       <fieldset{% if settings_form.blocked %} disabled{% endif %}>
@@ -740,6 +746,12 @@ bash setup.sh --replica-of {{ join_address }} --peer-token {{ mesh_token }} --an
     </div>
     {% if not settings_form.blocked and not busy %}
     <div class="card-footer end">
+      {% if settings_form.replicas %}
+      <label class="check plain grow">
+        <input type="checkbox" name="also_replicas" value="1" checked>
+        <span><strong>Also the {{ settings_form.replicas|length }} other server{{ "" if settings_form.replicas|length == 1 else "s" }} in this group</strong><small>One at a time, after this one: each saves and restarts before the next starts, so the group never restarts all at once.</small></span>
+      </label>
+      {% endif %}
       <button class="btn btn-primary" type="submit" data-loading-text="Saving…">Save and restart WebManager</button>
     </div>
     {% endif %}

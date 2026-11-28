@@ -771,6 +771,102 @@ if (appStatus) {
   poll(refreshAppStatus, { again: true });
 }
 
+// ---------- New site: one choice, one name, one address ----------
+const deployChoice = document.querySelector("[data-deploy-choice]");
+if (deployChoice) {
+  const nameInput = deployChoice.querySelector("[data-choice-name]");
+  const slugInput = deployChoice.querySelector("[data-choice-slug]");
+  const domainSelect = deployChoice.querySelector("[data-choice-domain]");
+  const rootBox = deployChoice.querySelector("[data-choice-root]");
+  const urlHint = deployChoice.querySelector("[data-choice-url]");
+  const label = deployChoice.querySelector("[data-choice-label]");
+  const note = deployChoice.querySelector("[data-choice-note]");
+  const scheme = deployChoice.dataset.publicScheme || "https";
+  const slugify = (value) => value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
+  // Typed by hand: then a different choice no longer replaces it.
+  let nameEdited = false;
+  let slugEdited = false;
+  const chosen = () => deployChoice.querySelector('input[name="choice"]:checked');
+  const showUrl = () => {
+    if (!urlHint || !domainSelect) return;
+    const domain = domainSelect.selectedOptions[0]?.dataset.domain || "";
+    const atRoot = rootBox?.checked;
+    if (slugInput) slugInput.disabled = Boolean(atRoot);
+    const host = atRoot ? domain : `${slugInput.value || "…"}.${domain}`;
+    urlHint.textContent = `${scheme}://${host}`;
+  };
+  const applyChoice = () => {
+    const radio = chosen();
+    if (!radio) return;
+    const isApp = radio.dataset.kind === "app";
+    if (nameInput && !nameEdited) nameInput.value = radio.dataset.name;
+    if (slugInput && !slugEdited) slugInput.value = radio.dataset.slug;
+    deployChoice.querySelectorAll("[data-site-only]").forEach((item) => { item.hidden = isApp; });
+    if (label) label.textContent = isApp ? "Deploy app" : "Deploy website";
+    if (note) {
+      note.textContent = isApp
+        ? "The first build can take a few minutes. You'll be asked for any required settings first."
+        : "It's live in a few seconds.";
+    }
+    deployChoice.querySelectorAll(".choice-card").forEach((card) => {
+      card.classList.toggle("selected", card.contains(radio));
+    });
+    showUrl();
+  };
+  deployChoice.addEventListener("change", (event) => {
+    if (event.target.name === "choice") applyChoice();
+    else showUrl();
+  });
+  nameInput?.addEventListener("input", () => {
+    nameEdited = true;
+    if (slugInput && !slugEdited) slugInput.value = slugify(nameInput.value);
+    showUrl();
+  });
+  slugInput?.addEventListener("input", () => { slugEdited = true; showUrl(); });
+  applyChoice();
+}
+
+// ---------- Docs: search, and links open their topic ----------
+const docSearch = document.querySelector("[data-doc-search]");
+const docTopics = [...document.querySelectorAll("[data-doc-topic]")];
+if (docTopics.length) {
+  const openFromHash = () => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    const target = id && document.getElementById(id);
+    const topic = target && target.closest("[data-doc-topic]");
+    if (!topic) return;
+    topic.open = true;
+    target.scrollIntoView();
+  };
+  openFromHash();
+  window.addEventListener("hashchange", openFromHash);
+  const empty = document.querySelector("[data-doc-empty]");
+  const groups = [...document.querySelectorAll(".doc-group")];
+  docSearch?.addEventListener("input", () => {
+    const words = docSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    docTopics.forEach((topic) => {
+      const text = topic.textContent.toLowerCase();
+      const match = words.every((word) => text.includes(word));
+      topic.hidden = !match;
+      if (words.length) topic.open = match;
+      if (match) shown += 1;
+    });
+    // A group heading shows while any topic under it does.
+    groups.forEach((heading) => {
+      let next = heading.nextElementSibling;
+      let any = false;
+      while (next && !next.classList.contains("doc-group")) {
+        if (next.matches("[data-doc-topic]") && !next.hidden) any = true;
+        next = next.nextElementSibling;
+      }
+      heading.hidden = !any;
+    });
+    if (empty) empty.hidden = shown > 0;
+  });
+}
+
 // ---------- Tabs within a page (System) ----------
 // One panel shows at a time. A tab links to the first section of its panel,
 // so an address like ?section=updates#apps (or #backups after a form) opens

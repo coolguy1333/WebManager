@@ -18,8 +18,16 @@ import re
 import sys
 import tempfile
 
-EMAIL_RE = re.compile(r"^[^@\s,=\"'\\]+@[^@\s,=\"'\\]+\.[^@\s,=\"'\\]+$")
-DOMAIN_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+# Values end up in a file that shell scripts have read (and a person may
+# still `source`), so only plain characters are ever written: no quotes,
+# spaces, $ ` & | ; < > ( ) { } * or anything else a shell treats specially.
+DOMAIN_PATTERN = r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+DOMAIN_RE = re.compile(rf"^{DOMAIN_PATTERN}$")
+# Local part: letters, digits and . _ + -, not starting or ending with a dot,
+# no two dots in a row. Domain: as DOMAIN_RE.
+EMAIL_RE = re.compile(r"^[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*@" + DOMAIN_PATTERN + "$")
+# Every value normalize() can return. apply_to_file refuses anything else.
+SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9@._+,-]*$")
 MAX_REQUEST_BYTES = 16 * 1024
 
 
@@ -118,7 +126,13 @@ def validate(changes) -> dict:
     """{key: file value} for a request. Raises ValueError."""
     if not isinstance(changes, dict) or not changes:
         raise ValueError("No settings were given.")
-    return {key: normalize(key, value) for key, value in changes.items()}
+    values = {key: normalize(key, value) for key, value in changes.items()}
+    for key, value in values.items():
+        # The last safety net: whatever the rules above allow, nothing but
+        # these characters ever reaches the file.
+        if not SAFE_VALUE_RE.fullmatch(value):
+            raise ValueError(f"{BY_KEY[key]['label']}: only letters, digits and @ . _ + - , are allowed.")
+    return values
 
 
 def current_values(config) -> dict:
@@ -142,6 +156,9 @@ def apply_to_file(path: str, changes: dict) -> list[str]:
     (other settings, comments, order, owner and mode). Returns the keys whose
     value changed."""
     changes = validate(changes)
+    for key, value in changes.items():  # validate() checked this; never skip it
+        if key not in BY_KEY or not SAFE_VALUE_RE.fullmatch(value):
+            raise ValueError(f"{key}: refused.")
     with open(path, encoding="utf-8") as handle:
         lines = handle.read().splitlines()
     changed, seen = [], set()

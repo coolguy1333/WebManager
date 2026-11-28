@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
+{% import "admin/_system.html" as system with context %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Activity</h1>
-    <p>Every change made through WebManager, and what it did by itself (restarts, backups, updates). Newest first.</p>
-  </div>
+{{ system.header() }}
+{{ system.tabs("logs") }}
+<div class="section-title mb-16">
+  <div><h2>Logs</h2><p>Every change made through WebManager, and what it did by itself (restarts, backups, updates). Newest first.</p></div>
   <form class="actions" method="get" role="search">
-    <input type="search" name="q" value="{{ query }}" placeholder="Search person, action or site…" aria-label="Search activity">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search person, action or site…" aria-label="Search logs">
     <button class="btn" type="submit">Search</button>
   </form>
-</header>
+</div>
 
 {% if entries %}
 <div class="list activity-list" role="table" aria-label="Activity">

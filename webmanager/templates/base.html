@@ -65,18 +65,8 @@
           {{ ui.icon('users') }}<span>People &amp; access</span>
         </a>
         {% if g.user.is_admin %}
-        <a class="{{ 'active' if ep == 'admin.domains_dashboard' }}" href="{{ url_for('admin.domains_dashboard') }}">
-          {{ ui.icon('link') }}<span>Domains</span>
-        </a>
-        {% if config.APPS_ENABLED %}
-        <a class="{{ 'active' if ep == 'admin.apps_dashboard' }}" href="{{ url_for('admin.apps_dashboard') }}">
-          {{ ui.icon('box') }}<span>App hosting</span>
-        </a>
-        {% endif %}
-        <a class="{{ 'active' if ep == 'admin.activity_log' }}" href="{{ url_for('admin.activity_log') }}">
-          {{ ui.icon('activity') }}<span>Activity</span>
-        </a>
-        <a class="{{ 'active' if ep == 'admin.dashboard' and section == 'updates' }}" href="{{ url_for('admin.dashboard', section='updates') }}">
+        {# Domains, Logs and the list of every app are tabs of System. #}
+        <a class="{{ 'active' if (ep == 'admin.dashboard' and section == 'updates') or ep in ['admin.domains_dashboard', 'admin.activity_log', 'admin.apps_dashboard'] }}" href="{{ url_for('admin.dashboard', section='updates') }}">
           {{ ui.icon('cpu') }}<span>System</span>{% if nav_badges.system %}<span class="nav-badge" title="WebManager update available">1</span>{% endif %}
         </a>
         {% endif %}

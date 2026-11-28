@@ -12,7 +12,7 @@
     {% if quota.sites.full %}
     <span class="btn btn-primary" aria-disabled="true" title="You've reached your site limit">{{ ui.icon('plus') }}New site</span>
     {% else %}
-    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}New site</a>
+    <a class="btn btn-primary" href="{{ url_for('deployments.new_site') }}">{{ ui.icon('plus') }}New site</a>
     {% endif %}
   </div>
 </header>
@@ -99,7 +99,7 @@
   <span class="record-icon">{{ ui.icon('globe', 22) }}</span>
   <h2>No sites yet</h2>
   <p>Connect a Git repository, pick the folder that contains your <code>index.html</code>, and WebManager will host it.</p>
-  <div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Deploy your first site</a></div>
+  <div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.new_site') }}">{{ ui.icon('plus') }}Deploy your first site</a></div>
 </section>
 {% endif %}
 
@@ -112,7 +112,7 @@
   <div class="actions">
     {% if quota.apps.limit %}<span class="badge {{ 'badge-warning' if quota.apps.full else '' }}" title="Your app limit">{{ quota.apps.used }} of {{ quota.apps.limit }} apps used</span>{% endif %}
     {% if can_host_apps and not quota.apps.full %}
-    <a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Deploy an app</a>
+    <a class="btn btn-primary" href="{{ url_for('deployments.new_site') }}">{{ ui.icon('plus') }}Deploy an app</a>
     {% elif quota.apps.full %}
     <span class="btn btn-primary" aria-disabled="true" title="You've reached your app limit">{{ ui.icon('plus') }}Deploy an app</span>
     {% endif %}
@@ -171,7 +171,7 @@
   <span class="record-icon">{{ ui.icon('box', 22) }}</span>
   <h2>No apps yet</h2>
   <p>An app is a repository with its own <code>Dockerfile</code> and <code>webmanager.json</code>. Connect one under Sources, then pick a folder that has both.</p>
-  {% if can_host_apps %}<div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.dashboard', view='sources', connect=1) }}#connect">{{ ui.icon('plus') }}Connect a repository</a></div>{% endif %}
+  {% if can_host_apps %}<div class="actions"><a class="btn btn-primary" href="{{ url_for('deployments.new_site') }}">{{ ui.icon('plus') }}Connect a repository</a></div>{% endif %}
   <p class="hint">See <a href="{{ url_for('deployments.docs') }}#app-hosting">Docs</a> for the full app contract.</p>
 </section>
 {% endif %}
@@ -343,7 +343,7 @@
             {{ ui.csrf() }}
             <button class="btn btn-sm" type="submit" data-loading-text="Checking…">{{ ui.icon('refresh', 14) }}Check now</button>
           </form>
-          {% if repository.status in ["ready", "update_available"] %}<a class="btn btn-sm btn-primary" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">{{ ui.icon('plus', 14) }}Deploy a folder</a>{% endif %}
+          {% if repository.status in ["ready", "update_available"] %}<a class="btn btn-sm btn-primary" href="{{ url_for('deployments.select_folder', repository_id=repository.id) }}">{{ ui.icon('plus', 14) }}Deploy from it</a>{% endif %}
         </div>
       </div>
       {% else %}

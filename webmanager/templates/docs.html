@@ -1,269 +1,206 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
+{#- Short, task-first answers. Every topic is a <details> that a link to its
+    #id opens (app.js), and the search box shows only matching topics. Keep the
+    ids: other pages link to them (#deploy, #apps, #app-hosting,
+    #private-repositories, #replication, #troubleshooting). -#}
+{% macro topic(id, title, icon, open=false, admin=false) -%}
+<details class="card doc-topic" id="{{ id }}" data-doc-topic {% if open %}open{% endif %}>
+  <summary>
+    <span class="record-icon">{{ ui.icon(icon, 16) }}</span>
+    <span class="doc-topic-title">{{ title }}{% if admin %} <span class="badge">Super admins</span>{% endif %}</span>
+    <span class="chev">{{ ui.icon('chevron') }}</span>
+  </summary>
+  <div class="card-body prose">{{ caller() }}</div>
+</details>
+{%- endmacro %}
 {% block content %}
 <header class="page-header">
   <div>
     <h1>Docs</h1>
-    <p>How WebManager hosts sites and apps, and what to check when something goes wrong.</p>
+    <p>Short answers to "how do I…". Open a topic, or search.</p>
   </div>
 </header>
 
-<nav class="card mb-24" aria-label="On this page">
-  <div class="card-body">
-    <ul class="doc-toc">
-      <li><a href="#sites-vs-apps">Sites vs. apps</a></li>
-      <li><a href="#sites">Hosting a static site</a></li>
-      {% if apps_enabled %}<li><a href="#app-hosting">App hosting</a></li>
-      <li><a href="#manifest">webmanager.json reference</a></li>{% endif %}
-      <li><a href="#updates">Git sources &amp; updates</a></li>
-      <li><a href="#production">Backups, alerts &amp; deploy hooks</a></li>
-      <li><a href="#mesh">Multi-server mesh</a></li>
-      <li><a href="#troubleshooting">Troubleshooting</a></li>
-    </ul>
-  </div>
-</nav>
+<div class="docs">
+  <label class="search doc-search"><span class="visually-hidden">Search the docs</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search the docs, e.g. domain, backup, private" data-doc-search></label>
+  <p class="muted" data-doc-empty hidden>Nothing matches. Try another word, or see <a href="#troubleshooting">Something's wrong</a>.</p>
 
-<section class="card mb-16" id="sites-vs-apps">
-  <div class="card-body prose">
-    <h2>Sites vs. apps</h2>
-    <p>WebManager hosts two kinds of deployments, both from a Git repository:</p>
-    <ul>
-      <li><strong>Sites</strong> serve static files (HTML, a built SPA, …) directly. No server process, no data, nothing to configure beyond an index page.</li>
-      <li><strong>Apps</strong>{% if not apps_enabled %} (turned off on this installation){% endif %} run their own server in a container: they can accept logins, keep a database, and expose settings you edit in WebManager instead of a config file.</li>
-    </ul>
-    <p>They're managed in separate places: <a href="{{ url_for('deployments.dashboard', view='sites') }}">Sites</a> and{% if apps_enabled %} <a href="{{ url_for('deployments.dashboard', view='apps') }}">Apps</a>{% else %} Apps (once an administrator turns app hosting on){% endif %} in the sidebar. Both are deployed the same way: connect a repository under <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a>, then pick the folder to publish.</p>
-  </div>
-</section>
+  {# ===================== Getting started ===================== #}
+  <h2 class="doc-group">Getting started</h2>
 
-<section class="card mb-16" id="sites">
-  <div class="card-body prose">
-    <h2>Hosting a static site</h2>
-    <p>A folder is deployable as a site if it has an index page (usually <code>index.html</code>). WebManager finds candidate folders for you when you connect a repository — pick one, choose an address, and it's live.</p>
-    <ul>
-      <li>New commits are checked on a schedule; you choose whether they're installed automatically or need your approval (per source, under Sources).</li>
-      <li>A site with no matching index page or a hosting failure shows under <strong>Needs attention</strong> with the reason.</li>
-      <li>Single-page apps can turn on SPA fallback (unknown paths serve the index page) in Settings.</li>
-    </ul>
-  </div>
-</section>
-
-{% if apps_enabled %}
-<section class="card mb-16" id="app-hosting">
-  <div class="card-body prose">
-    <h2>App hosting</h2>
-    <p>An app is a repository that runs its own server in a hardened container: read-only filesystem outside <code>/data</code>, no Linux capabilities, memory/CPU/process limits, and network access to the internet but not your LAN or the cloud metadata address.</p>
-    <h3>What a repository needs</h3>
-    <p>In the folder you deploy (or its root):</p>
-    <table class="table">
-      <thead><tr><th>File</th><th>Required</th><th>Purpose</th></tr></thead>
-      <tbody>
-        <tr><td><code>Dockerfile</code></td><td>Yes</td><td>Builds and runs the app; the folder is the build context.</td></tr>
-        <tr><td><code>webmanager.json</code></td><td>Yes</td><td>Health check path, memory limit, and the settings shown on the Variables page.</td></tr>
-        <tr><td><code>.dockerignore</code></td><td>Recommended</td><td>Keep <code>.git</code>, <code>node_modules</code>, <code>data/</code>, <code>.env</code> out of the build.</td></tr>
-      </tbody>
-    </table>
-    <p>WebManager <strong>refuses to deploy a folder that contains a <code>.env</code> file</strong> — commit no secrets; enter them under Variables instead.</p>
-    <h3>The app contract</h3>
-    <p>An app must:</p>
-    <ol>
-      <li>Listen on <code>0.0.0.0:$PORT</code> (always <code>8080</code> inside the container).</li>
-      <li>Keep all persistent data under <code>$DATA_DIR</code> (<code>/data</code>) — the only writable, backed-up path. Make it owned by the app's user in the Dockerfile.</li>
-      <li>Use file-based storage there (SQLite, JSON, …); separate database servers aren't provided.</li>
-      <li>Answer its health check with <code>2xx</code>/<code>3xx</code> within the start timeout (60s by default).</li>
-      <li>Read configuration from environment variables listed in <code>webmanager.json</code>.</li>
-      <li>Run as a non-root <code>USER</code> and stop cleanly on <code>SIGTERM</code>.</li>
-      <li>Log to stdout/stderr and honor <code>X-Forwarded-*</code> / <code>PUBLIC_URL</code> behind the proxy.</li>
+  {% call topic("deploy", "Put a website or app online", "play", open=true) %}
+    <ol class="doc-steps">
+      <li>Press <a href="{{ url_for('deployments.new_site') }}"><strong>New site</strong></a> and paste your Git repository's address (for example <code>https://github.com/you/project</code>).</li>
+      <li>WebManager looks inside and picks what to deploy: a <strong>website</strong> if it finds an <code>index.html</code>, an <strong>app</strong> if it finds a <code>Dockerfile</code> with a <code>webmanager.json</code>. Choose another if it guessed wrong.</li>
+      <li>Check the name and address, then press <strong>Deploy</strong>. A website is live in seconds; an app's first build takes a few minutes.</li>
     </ol>
-    <p>It must not need privileged mode, host networking, extra capabilities, devices, the Docker socket, or more than one port.</p>
-    <h3>Variables WebManager always sets</h3>
-    <table class="table">
-      <thead><tr><th>Variable</th><th>Value</th></tr></thead>
-      <tbody>
-        <tr><td><code>PORT</code></td><td><code>8080</code></td></tr>
-        <tr><td><code>HOST</code></td><td><code>0.0.0.0</code></td></tr>
-        <tr><td><code>DATA_DIR</code></td><td><code>/data</code></td></tr>
-        <tr><td><code>PUBLIC_URL</code></td><td>The app's main address, e.g. <code>https://status.example.com</code></td></tr>
-        <tr><td><code>TRUST_PROXY</code></td><td><code>true</code></td></tr>
-        <tr><td><code>WEBMANAGER_APP_ID</code></td><td>The app's numeric ID in WebManager</td></tr>
-      </tbody>
-    </table>
-    <h3>Editing settings</h3>
-    <p>Each app's <strong>Variables</strong> page is built from its <code>webmanager.json</code>. Fields marked <code>secret</code> are write-only: encrypted at rest, and never shown again once saved — leave one blank to keep its value, or tick <em>Remove saved value</em>. Saving restarts the app with the new values.</p>
-    <h3>Restarts, updates, and rollback</h3>
-    <p>A restart, a settings change, or a new commit backs up <code>/data</code>, stops the running container, and starts the new one. If it fails its health check, the previous version is <strong>restored automatically</strong> and the app is flagged <strong>Needs attention</strong> with the failure and new logs; visitors briefly see "Site temporarily unavailable" during the switch. Data backups (last 3) live under the app's page.</p>
-    <h3>Limits</h3>
-    <ul>
-      <li>Deploying apps needs the <strong>Host apps</strong> permission (or super admin), granted under People &amp; access → Teams.</li>
-      <li>Each person has a max-apps limit (People &amp; access → Default limits); an app also counts toward their site limit.</li>
-      <li>Request bodies up to 25&nbsp;MB; responses must start within 300 seconds.</li>
-    </ul>
-  </div>
-</section>
+    <p>Everything can be changed later on the site's <strong>Settings</strong>. To deploy another folder from the same repository, open <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> and press <strong>Deploy from it</strong>.</p>
+  {% endcall %}
 
-<section class="card mb-16" id="manifest">
-  <div class="card-body prose">
-    <h2><code>webmanager.json</code> reference</h2>
-    <pre><code>{
+  {% call topic("sites-vs-apps", "Website or app: which is mine?", "info") %}
+    <ul>
+      <li><strong>Website</strong>: files a browser opens directly: HTML, CSS, images, or the <em>built</em> output of React, Vue, Vite, Hugo and similar. No server code runs. If your project needs a build step, commit the built folder (<code>dist/</code>, <code>build/</code>…); WebManager prefers it.</li>
+      <li><strong>App</strong>{% if not apps_enabled %} (turned off on this server){% endif %}: anything that runs its own server (Node, Python, PHP…), can have logins, and keeps data. It needs a <code>Dockerfile</code> and a <code>webmanager.json</code>; see <a href="#apps">Make your project an app</a>.</li>
+    </ul>
+  {% endcall %}
+
+  {% call topic("private-repositories", "Use a private repository", "shield") %}
+    <p>Give the server read access with a <strong>deploy key</strong>. A super admin does this once, on the server:</p>
+    <pre><code>sudo install -d -o webmanager -g webmanager -m 0700 /var/lib/webmanager/.ssh
+sudo -u webmanager ssh-keygen -t ed25519 -f /var/lib/webmanager/.ssh/id_ed25519 -N ""
+sudo cat /var/lib/webmanager/.ssh/id_ed25519.pub</code></pre>
+    <p>Add the printed key to the repository as a <strong>read-only deploy key</strong> (GitHub: <em>Settings → Deploy keys</em>), then use the repository's SSH address on New site, for example <code>git@github.com:you/project.git</code>.</p>
+  {% endcall %}
+
+  {# ===================== Sites ===================== #}
+  <h2 class="doc-group">Websites</h2>
+
+  {% call topic("sites", "Change a site's address, name or folder", "globe") %}
+    <p>Open the site and choose <strong>Settings</strong>. You can change its name, its subdomain or domain, use the bare domain (<code>example.com</code> instead of <code>name.example.com</code>), add more domains, and turn <strong>Single-page app</strong> on or off (unknown paths show the index page, which React and Vue routers need).</p>
+    <p>A site with a problem shows <strong>Needs attention</strong> with the reason, usually a missing index page or folder after a new commit.</p>
+  {% endcall %}
+
+  {% call topic("updates", "Get new commits onto the site", "refresh") %}
+    <p>Each repository under <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> is checked for new commits on a schedule. Per repository, choose:</p>
+    <ul>
+      <li><strong>Install automatically</strong>: new commits go live by themselves once they pass the checks.</li>
+      <li><strong>Ask me to approve</strong>: they wait as <strong>Update ready</strong> until you approve or discard them.</li>
+    </ul>
+    <p><strong>Check now</strong> looks straight away. For updates the moment you push, open the repository's <strong>Deploy hook</strong> and add its address as a webhook on GitHub or GitLab.</p>
+    <p>A commit that would break a site (its folder or index page is gone) is refused. If that's intended, <strong>Force update anyway</strong> installs it.</p>
+  {% endcall %}
+
+  {# ===================== Apps ===================== #}
+  <h2 class="doc-group">Apps</h2>
+
+  {% call topic("apps", "Make your project an app", "box") %}
+    <span id="app-hosting"></span>
+    <p>Add two files to the folder you deploy:</p>
+    <ol>
+      <li>A <code>Dockerfile</code> that builds and starts your server. It must listen on port <code>$PORT</code> (8080), run as a non-root user and keep everything it must not lose in <code>/data</code>.</li>
+      <li>A <code>webmanager.json</code>:
+        <pre><code>{
   "type": "app",
-  "health": "/api/health",
-  "memory_mb": 256,
+  "health": "/health",
   "env": [
-    {
-      "name": "ADMIN_PASSWORD",
-      "description": "Password for the admin account.",
-      "secret": true,
-      "required": true
-    },
-    {
-      "name": "SITE_TITLE",
-      "description": "Title shown on the status page.",
-      "default": "Uptime Monitor"
-    },
-    {
-      "name": "PUBLIC_DASHBOARD",
-      "description": "Show the dashboard without signing in.",
-      "default": "true",
-      "choices": ["true", "false"]
-    }
+    {"name": "ADMIN_PASSWORD", "secret": true, "required": true},
+    {"name": "SITE_TITLE", "default": "My app"}
   ]
 }</code></pre>
+        <code>health</code> is a page that answers once the app is ready. Each <code>env</code> entry becomes a field on the app's <strong>Variables</strong> page, so secrets never go in the repository.</li>
+    </ol>
+    <p>Don't commit a <code>.env</code> file: a folder with one is refused. Add a <code>.dockerignore</code> with <code>.git</code>, <code>node_modules</code> and <code>.env</code>.</p>
+    {% if not apps_enabled %}<p class="hint">App hosting is turned off on this server. A super admin can turn it on under System → App hosting.</p>{% elif not can_host_apps %}<p class="hint">You don't have the <em>Host apps</em> permission yet. Ask an administrator.</p>{% endif %}
+  {% endcall %}
+
+  {% call topic("manifest", "webmanager.json: every field", "code") %}
     <table class="table">
-      <thead><tr><th>Field</th><th>Required</th><th>Rules</th></tr></thead>
+      <thead><tr><th>Field</th><th>Needed</th><th>What it does</th></tr></thead>
       <tbody>
-        <tr><td><code>type</code></td><td>Yes</td><td>Must be <code>"app"</code>.</td></tr>
-        <tr><td><code>health</code></td><td>Yes</td><td>A path starting with <code>/</code>.</td></tr>
-        <tr><td><code>memory_mb</code></td><td>No</td><td>Whole number, 64–4096. Defaults to the installation's default (usually 256). The app's <strong>Resources</strong> page can override it.</td></tr>
-        <tr><td><code>env</code></td><td>No</td><td>Up to 100 settings shown on the Variables page.</td></tr>
+        <tr><td><code>type</code></td><td>Yes</td><td>Always <code>"app"</code>.</td></tr>
+        <tr><td><code>health</code></td><td>Yes</td><td>A path such as <code>/health</code> that answers 2xx or 3xx when the app is ready.</td></tr>
+        <tr><td><code>memory_mb</code></td><td>No</td><td>Memory limit, 64–4096 (default 256). The app's <strong>Resources</strong> page can change it.</td></tr>
+        <tr><td><code>env</code></td><td>No</td><td>Up to 100 settings for the Variables page.</td></tr>
       </tbody>
     </table>
-    <p>Each <code>env</code> entry: <code>name</code> (UPPER_SNAKE_CASE, unique), <code>description</code>, <code>secret</code> (write-only once saved), <code>required</code> (the app won't start without a value or a <code>default</code>), <code>default</code>, and <code>choices</code> (shown as a dropdown).</p>
-  </div>
-</section>
-{% endif %}
+    <p>Each <code>env</code> entry has a <code>name</code> (UPPER_SNAKE_CASE) and optionally <code>description</code>, <code>default</code>, <code>choices</code> (a dropdown), <code>required</code> (the app won't start without it) and <code>secret</code> (write-only once saved).</p>
+    <p>WebManager always sets <code>PORT=8080</code>, <code>HOST=0.0.0.0</code>, <code>DATA_DIR=/data</code>, <code>PUBLIC_URL</code> (the app's address), <code>TRUST_PROXY=true</code> and <code>WEBMANAGER_APP_ID</code>.</p>
+  {% endcall %}
 
-<section class="card mb-16" id="updates">
-  <div class="card-body prose">
-    <h2>Git sources &amp; updates</h2>
-    <p>Every site and app comes from a connected Git source. Under Sources, choose per repository whether new commits are:</p>
+  {% call topic("app-running", "Settings, restarts and updates of an app", "settings") %}
     <ul>
-      <li><strong>Installed automatically</strong> — checked, tested, and activated on a schedule you set, or</li>
-      <li><strong>Approved by you</strong> — checked on the same schedule, but held as "Update ready" until you approve or discard it.</li>
+      <li><strong>Variables</strong>: change settings; saving restarts the app. Secret values are never shown again; leave one blank to keep it.</li>
+      <li><strong>Resources</strong>: memory and CPU. Applies without a restart.</li>
+      <li>A restart or a new commit backs up <code>/data</code> first. If the new version fails its health check, the previous one comes back by itself and the app shows <strong>Needs attention</strong> with the logs.</li>
+      <li>Apps reach the internet but not your local network. One port, no privileged mode, no Docker socket.</li>
     </ul>
-    <p>A pending or failed update shows on the source, and on every site/app it affects, until resolved.</p>
-    <p>A failed check normally means the new commit would break something (a missing folder, index page, or app manifest) and is refused automatically. If you're sure that's fine, <strong>Force update anyway</strong> on the source skips that safety check and installs the commit immediately — the affected site(s) may go missing or fail their health check until you push a fix.</p>
-  </div>
-</section>
+  {% endcall %}
 
-<section class="card mb-16" id="production">
-  <div class="card-body prose">
-    <h2>Backups, alerts &amp; deploy hooks</h2>
-    <ul>
-      <li><strong>Deploy on push.</strong> Under <em>Sources</em>, open a source's <em>Deploy hook</em> and create one. Add the address as a webhook on GitHub or GitLab (or <code>curl -X POST</code> it from CI) and WebManager checks that source the moment you push. Whether the update installs by itself or waits for approval still follows the source's own setting.</li>
-      <li><strong>Uptime.</strong> WebManager checks every running site once a minute. Each site's page shows its uptime; an app that stops answering is started again, and so is the web server in front of the sites.</li>
-      <li><strong>Notifications</strong> (administrators, <em>System → Notifications</em>). Paste a Discord, Slack or other webhook address to be told when a site goes down or comes back, an update fails or is waiting, a backup fails, or the disk is nearly full.</li>
-      <li><strong>Backups</strong> (administrators, <em>System → Backups</em>). One is made every day; download one now and then and keep it elsewhere. Restore on the server with <code>sudo webmanager-restore FILE</code>; sites are cloned again from their Git sources by themselves.</li>
-      <li><strong>Activity</strong> (administrators). Every change, who made it and how it went, plus what WebManager did by itself.</li>
-    </ul>
-  </div>
-</section>
+  {# ===================== Running the server ===================== #}
+  <h2 class="doc-group">Running the server</h2>
 
-<section class="card mb-16" id="mesh">
-  <div class="card-body prose">
-    <h2>Multi-server mesh{% if mesh_configured %} <span class="badge badge-success">Configured</span>{% endif %}{% if replica_configured %} <span class="badge badge-accent">This server is a replica</span>{% endif %}</h2>
-    <p>Run WebManager on more than one server and have them keep track of each other — the same leaderless "peer federation" pattern used by <a href="https://github.com/coolguy1333/Uptime-Monitor" target="_blank" rel="noopener noreferrer">Uptime-Monitor</a>'s multi-server mode. By default this is visibility only: no leader, no shared database, no distributed deployment. Setting <code>WEBMANAGER_REPLICA_OF</code> turns it into real replication — see <a href="#replication">below</a>.</p>
-    <p><strong>Quickest way to add a server:</strong> open <em>System → Servers</em>, press <em>Turn on server sharing</em>, and copy the command it shows onto the new server. It announces itself and appears in the list; no settings files to edit and nothing to restart.</p>
-    <p>Each server keeps hosting and updating its own sites and apps exactly as it would alone. The base mesh only adds visibility: every server independently polls its siblings every 20 seconds and shows the result — who's up, and how busy — in a <strong>Servers</strong> panel on the System page. One server going down never takes the others' visibility into the group down with it.</p>
-    <h3>Setting it up</h3>
-    <p>On <strong>each</strong> server, in <code>/etc/webmanager/webmanager.env</code> (use each server's dashboard address — the one you sign in to, not a hosted site's address):</p>
-    <pre><code>WEBMANAGER_PEERS=https://server-b.example.com,https://server-c.example.com
-WEBMANAGER_PEER_TOKEN=some-long-shared-secret</code></pre>
+  {% call topic("system", "The System page", "cpu", admin=true) %}
+    <p>Everything about this server, as tabs:</p>
     <ul>
-      <li><code>WEBMANAGER_PEERS</code> lists the <strong>other</strong> servers in the group — never this one's own address. Each server's list is the rest of the group.</li>
-      <li><code>WEBMANAGER_PEER_TOKEN</code> is a shared secret, <strong>the same value on every server</strong>, sent as <code>Authorization: Bearer &lt;token&gt;</code>. Without it, <code>/mesh/status</code> is public and unauthenticated — it never exposes site names, hostnames, or repository details, only aggregate counts and resource usage, but setting a token is still strongly recommended.</li>
+      <li><strong>Health</strong>: checks with what to do about anything wrong, and CPU, memory and disk.</li>
+      <li><strong>Updates</strong>: install WebManager updates, or let them install by themselves.</li>
+      <li><strong>Servers</strong>: the other servers in the group and replication.</li>
+      <li><strong>Domains</strong>: domains sites can use, and the dashboard's own addresses.</li>
+      <li><strong>Backups</strong>, <strong>Site updates</strong>, <strong>App hosting</strong>, <strong>Settings</strong>, <strong>Logs</strong> (every change and who made it) and <strong>Notifications</strong>.</li>
     </ul>
-    <p>Restart WebManager on each server after editing (<code>sudo systemctl restart webmanager</code>). No database, load balancer, or shared storage is needed between them, and no new port needs opening: <code>/mesh/status</code> is served on the same address and port as this dashboard.</p>
-    <h4>Which address to use for a peer</h4>
+    <p>Server warnings (a failover, for example) are shown to super admins only.</p>
+  {% endcall %}
+
+  {% call topic("settings", "Change WebManager's settings", "settings", admin=true) %}
+    <p><strong>System → Settings</strong> changes this server's settings: who may sign in with Google, Secure cookies, http or https for sites, scheduled checks, backups, the watchdog and app limits. Saving restarts WebManager; if it doesn't come back, the old settings are put back.</p>
+    <p>On a primary with replicas, tick <strong>Also the other servers</strong> to send the change to each replica too, one at a time, so the group never restarts all at once.</p>
+    <p>Secrets, addresses and the server group can only be changed on the server, in <code>/etc/webmanager/webmanager.env</code>.</p>
+  {% endcall %}
+
+  {% call topic("people", "Let someone sign in", "users", admin=true) %}
+    <p>Add their Google email to <strong>Allowed Google emails</strong> (System → Settings), or their company domain to <strong>Allowed Google Workspace domains</strong>. With both lists empty, only people who already have an account can sign in.</p>
+    <p>Under <strong>People &amp; access</strong>: put people in teams, decide what each team may do, set limits, and edit or delete an account.</p>
+  {% endcall %}
+
+  {% call topic("domains", "Add a domain", "link", admin=true) %}
+    <p>Under <strong>System → Domains</strong>, add the domain. Point it at the server: in Cloudflare Tunnel, add <code>example.com</code> and <code>*.example.com</code> as public hostnames to <code>http://localhost:8080</code> (keep the <code>:8080</code>). The Domains tab shows the exact entries for each domain.</p>
+  {% endcall %}
+
+  {% call topic("production", "Backups and notifications", "archive", admin=true) %}
     <ul>
-      <li><strong>The dashboard's public address</strong>, e.g. <code>https://webmgr.example.com</code> — works from anywhere and is encrypted.</li>
-      <li><strong>On a private network, the server's IP address and dashboard port</strong>, e.g. <code>http://192.168.10.20:8080</code>. The server must have run the latest <code>setup.sh</code> once (it teaches Nginx to route requests addressed to a bare IP to WebManager). Plain <code>http://</code> is fine on a network you trust, but the token and any replicated data cross it unencrypted.</li>
-      <li>Not a hosted site's address, not port 80, and not an address that only answers for a site hostname: those reach the site gateway and return a <strong>404 "No site here"</strong> page. That 404 is also what the Servers panel reports when an address is wrong.</li>
+      <li><strong>Backups</strong>: one is made every day (System → Backups). Download one now and then and keep it elsewhere. Restore on the server with <code>sudo webmanager-restore FILE</code>.</li>
+      <li><strong>Notifications</strong>: paste a Discord, Slack or other webhook address to hear when a site goes down or comes back, an update fails, a backup fails or the disk is nearly full.</li>
+      <li><strong>Uptime</strong>: every running site is checked each minute; an app that stops answering is started again.</li>
     </ul>
-    <h3>What's shared, and what isn't</h3>
+  {% endcall %}
+
+  {# ===================== Several servers ===================== #}
+  <h2 class="doc-group">Several servers{% if mesh_configured %} <span class="badge badge-success">Set up</span>{% endif %}{% if replica_configured %} <span class="badge badge-accent">This is a replica</span>{% endif %}</h2>
+
+  {% call topic("mesh", "Add a second server (replica)", "server", admin=true) %}
+    <ol class="doc-steps">
+      <li>Install WebManager on the new server.</li>
+      <li>On this server, open <strong>System → Servers</strong> and press <strong>Turn on server sharing</strong>.</li>
+      <li>Copy the command it shows and run it on the new server. It joins as a replica and appears in the list.</li>
+    </ol>
+    <p>A replica copies the primary's settings every 15 seconds and site and app data every 60 seconds, and serves the websites too. Changes made on it are passed to the primary. Apps stay stopped on a replica until it is promoted.</p>
+    <p>Each replica gets an address under the dashboard's domain (<code>replica1.…</code>), and <strong>Sign in through the primary</strong> on its sign-in page.</p>
+    <p class="hint">Every server in a group is fully trusted: a replica holds the primary's secret key and a full copy of its data.</p>
+  {% endcall %}
+
+  {% call topic("replication", "If the primary goes down", "alert", admin=true) %}
+    <p>Replicas keep serving websites; changes can't be saved until there's a primary again. To make a replica the primary, open its <strong>System → Servers</strong> and choose <strong>Promote to primary</strong>, or run <code>sudo webmanager-promote</code> on it.</p>
+    <p>When the old primary comes back, join it to the new one as a replica (the join command from System → Servers), or keep it off. Otherwise two servers accept changes and a large warning says so.</p>
+  {% endcall %}
+
+  {% call topic("group-updates", "Updating a group of servers", "download", admin=true) %}
+    <p>With automatic updates on, servers take turns: the primary installs first, then each replica one at a time, by their replica number. A server waiting for its turn says so on its Updates tab. You can also press <strong>Update</strong> next to a replica in System → Servers. All servers must follow the same update branch.</p>
+  {% endcall %}
+
+  {# ===================== Help ===================== #}
+  <h2 class="doc-group">Help</h2>
+
+  {% call topic("troubleshooting", "Something's wrong", "alert") %}
+    <p>Super admins: start with <strong>System → Health</strong>; every problem there says what to do. If the dashboard won't open, run <code>sudo webmanager-doctor</code> on the server.</p>
     <table class="table">
-      <thead><tr><th>Shared across the mesh</th><th>Stays local to each server</th></tr></thead>
+      <thead><tr><th>You see</th><th>Do this</th></tr></thead>
       <tbody>
-        <tr><td>Liveness (online/unreachable) and version</td><td>Sites, apps, Git sources, and their data<sup>*</sup></td></tr>
-        <tr><td>Site/app counts and how many are running</td><td>Users, teams, and permissions<sup>*</sup></td></tr>
-        <tr><td>CPU, memory, and disk usage percentages</td><td>Domains, TLS, and Nginx configuration</td></tr>
-      </tbody>
-    </table>
-    <p class="hint"><sup>*</sup> Unless replication is turned on for this server — see below.</p>
-
-    <h3 id="replication">Replication: turning a peer into a real replica</h3>
-    <p>The mesh above only shares status. Setting <code>WEBMANAGER_REPLICA_OF</code> on a server makes it an actual <strong>replica</strong> that mirrors a primary, not just aware of it:</p>
-    <pre><code>WEBMANAGER_REPLICA_OF=https://primary.example.com</code></pre>
-    <p>Leave it blank for a primary (the default — a standalone server is its own primary). On a replica:</p>
-    <ul>
-      <li><strong>Config</strong> (users, teams, permissions, domains, site/app definitions) mirrors the primary's database every 15 seconds, in full each time. A site started, stopped or changed on the primary is served the same way here within that time; a change made through the replica shows here at once.</li>
-      <li><strong>Site/app data</strong> (Git checkouts, each app's own data volume) mirrors every 60 seconds, also in full each time — there's no incremental sync, so this is heavier the more data there is.</li>
-      <li>It fetches the primary's <code>SECRET_KEY</code> once, automatically, at startup (over the same token-authenticated channel) so a session works on every server in the group.</li>
-      <li><strong>It never writes its own database.</strong> A write it receives — from someone using its own address — is silently forwarded to the primary and the response relayed back, so every function works the same regardless of which server you're on. Reads are always served locally.</li>
-      <li>Once data is synced, it starts serving its <strong>static sites</strong> itself (safe: stateless files). <strong>Apps stay stopped.</strong> Running the same app against a volume that a sync round is about to wipe and restore would corrupt it.</li>
-    </ul>
-    <p class="hint"><strong>Trust:</strong> every server in the group is fully trusted. A replica holds the primary's secret key (so it can sign sessions and decrypt saved app variables) and a complete copy of its database — only add servers you would give admin access. App data volumes are copied while the app runs, so a database that is mid-write at that instant is captured mid-write (SQLite and Postgres recover on start); a replica is not a point-in-time backup.</p>
-    <p>The System page's <strong>Replication</strong> panel shows the role, last sync times for both config and data, and manual <strong>Sync config now</strong> / <strong>Sync data now</strong> buttons.</p>
-    <h4>Signing in on a replica</h4>
-    <p>A replica needs no Google setup of its own. Its sign-in page has <strong>Sign in through the primary</strong>: you sign in on the primary as usual and are sent straight back, signed in. (The primary only does this for servers in its Servers list.)</p>
-    <h4>Failing over</h4>
-    <p>If the primary goes down, a replica keeps serving its static sites; changes can't be saved until there is a primary again. To make a replica the new primary, open its System page and select <strong>Promote to primary</strong>, or run this on the server itself (it works even when you can't sign in):</p>
-    <pre><code>sudo webmanager-promote</code></pre>
-    <p>It immediately serves its sites and apps from whatever it last synced, accepts changes itself, starts its own scheduled Git update checks, and stays the primary after restarts.</p>
-    <ul>
-      <li>WebManager has no way to tell the old primary it has been replaced. When it comes back, join it to the new primary as a replica (run the join command from the new primary's <strong>System → Servers</strong> on it) or take it offline — otherwise two servers accept changes at once.</li>
-      <li>Joining a server again as a replica undoes an earlier promotion on it.</li>
-    </ul>
-    <h4>Replica addresses</h4>
-    <p>Each replica gets a name under the dashboard domain: <code>replica1.&lt;dashboard domain&gt;</code>, <code>replica2…</code>, in the order the primary first sees them. The Servers list opens it there. The primary passes that name through to the replica over the local network, so it works from anywhere the dashboard does, with no DNS or tunnel changes as long as names under the dashboard domain reach the primary (as site addresses do). <strong>Sign in through the primary</strong> then goes through the primary's public address.</p>
-    <h4>Managing another server</h4>
-    <p>Each row in <strong>System → Servers</strong> has a <strong>Manage</strong> panel: turn app hosting on or off there (it installs Docker if needed and restarts WebManager on that server; a replica needs it to copy app data), switch its automatic WebManager updates, make a replica sync now, or open its own System page.</p>
-    <h4>The failover warning</h4>
-    <p>While a server has taken over as the primary, every page on it shows super admins a large warning with what to check, until one of them confirms they have checked. A replica whose primary stops answering, and two servers that both act as the primary, get the same kind of warning, and with notifications set up each also sends a message.</p>
-    <h4>Updating every server</h4>
-    <p>Each server installs WebManager updates itself. Update the primary first (System → <strong>Approve and install</strong>), then press <strong>Update</strong> next to each replica in the primary's <strong>System → Servers</strong> list. The replica tests, backs up and installs the version the primary now runs (a failed update is rolled back), and the list shows <strong>Updating…</strong> until it is done. All servers must follow the same update branch.</p>
-  </div>
-</section>
-
-<section class="card mb-16" id="troubleshooting">
-  <div class="card-body prose">
-    <h2>Troubleshooting</h2>
-    <p><strong>Start with the health checks</strong> on <em>System → Health checks</em>: they test the web server, your sites, the traffic log, disk space, sign-in, DNS, the updater and more, and say what to do about anything wrong. If you can't open the dashboard, run <code>sudo webmanager-doctor</code> on the server for the same report.</p>
-    <table class="table">
-      <thead><tr><th>Symptom</th><th>What to check</th></tr></thead>
-      <tbody>
-        <tr><td>Site shows <strong>Needs attention</strong></td><td>Read the reason on the site's page — usually a missing index file, a missing folder, or a failed source update check.</td></tr>
-        <tr><td>Visitors see "Site temporarily unavailable"</td><td>The site/app is stopped, or (for apps) mid-restart. It clears itself once the new container passes its health check.</td></tr>
-        <tr><td>A source update won't apply</td><td>Check <strong>Update check failed</strong> on the source for the error; "Check now" retries immediately. If the new commit is intentionally missing something WebManager checks for, use <strong>Force update anyway</strong> to install it regardless.</td></tr>
+        <tr><td><strong>Needs attention</strong> on a site</td><td>Open it and read the reason, usually a missing index page or folder in the latest commit.</td></tr>
+        <tr><td>"No site here" (404)</td><td>The address isn't set up as a site. Check the site's address under Settings, and the domain under System → Domains.</td></tr>
+        <tr><td>"Site temporarily unavailable"</td><td>The site is stopped, or an app is restarting. It clears once the app passes its health check.</td></tr>
+        <tr><td>"This Google account isn't allowed"</td><td>Ask a super admin to add your email under System → Settings.</td></tr>
+        <tr><td>Nothing to deploy found</td><td>Commit an <code>index.html</code> (or the built <code>dist/</code> folder), or a <code>Dockerfile</code> with <code>webmanager.json</code>, push, and press <strong>Look again</strong>.</td></tr>
         {% if apps_enabled %}
-        <tr><td>System says <strong>App hosting: Off</strong></td><td>A super admin turns it on under <strong>System → App hosting</strong> (or, for another server, <strong>System → Servers → Manage</strong>), or runs <code>sudo webmanager-enable-apps</code> on the server.</td></tr>
-        <tr><td>"The container runtime isn't reachable"</td><td>The WebManager service account can't talk to Docker yet: turn app hosting off and on again on the System page, or run <code>sudo webmanager-enable-apps</code> on the server.</td></tr>
-        <tr><td>App build fails</td><td>Read <strong>Build log</strong> on the app's page. The base image must be downloadable from the server.</td></tr>
-        <tr><td>"…didn't pass its health check"</td><td>Check the app logs on its page. Common causes: listening on the wrong host/port, <code>/data</code> not writable, or a required variable still unset.</td></tr>
-        <tr><td>"Saved app settings could not be decrypted"</td><td>The server's secret key changed since the values were saved. Re-enter them under Variables.</td></tr>
-        <tr><td>App restarts repeatedly</td><td>Check the restart count on the app's page — usually it's being killed for using more memory than its limit; raise its memory under <strong>Resources</strong> on the app's page (it applies without a restart).</td></tr>
-        <tr><td>Deploying is greyed out for a folder</td><td>It's missing a <code>Dockerfile</code> or a valid <code>webmanager.json</code> — the reason is shown on the folder picker.</td></tr>
+        <tr><td>App build fails</td><td>Read the <strong>Build log</strong> on the app's page. "Couldn't reach the internet" means the server's DNS or firewall is blocking downloads.</td></tr>
+        <tr><td>"…didn't pass its health check"</td><td>Check the app's logs: it must listen on <code>$PORT</code> and answer the health path; <code>/data</code> must be writable; required variables must be set.</td></tr>
+        <tr><td>App keeps restarting</td><td>It's probably out of memory: raise it under <strong>Resources</strong>.</td></tr>
         {% endif %}
-        <tr><td>Can't see a site/app someone else owns</td><td>Ask an administrator to grant you view or manage access under People &amp; access, or add you to a pool.</td></tr>
-        <tr><td>A server shows "Unreachable" in the Servers panel</td><td>The row says why. <strong>HTTP 404</strong>: the address doesn't reach a WebManager (see "Which address to use" above). <strong>Rejected the token</strong>: <code>WEBMANAGER_PEER_TOKEN</code> differs between the servers. <strong>Nothing is listening / timed out</strong>: wrong port, the service is down, or a firewall is in the way.</td></tr>
-        <tr><td>"WEBMANAGER_PEER_TOKEN is not set" warning</td><td>Set the same <code>WEBMANAGER_PEER_TOKEN</code> value in <code>/etc/webmanager/webmanager.env</code> on every server and restart each one.</td></tr>
-        <tr><td>A replica won't start (fails at boot)</td><td>Its primary must be reachable the <em>first</em> time a replica starts, to fetch the shared secret key. Check <code>WEBMANAGER_REPLICA_OF</code> and <code>WEBMANAGER_PEER_TOKEN</code>, and that the primary's address is reachable from this server.</td></tr>
-        <tr><td>Replication panel shows "Config sync failed" / "Data sync failed"</td><td>Read the error shown — usually the primary is unreachable, or its token doesn't match. Use <strong>Sync config/data now</strong> to retry immediately after fixing it.</td></tr>
-        <tr><td>A replica's sites aren't updating</td><td>Check "Site/app data last synced" on the Replication panel; a large repository or app dataset can take a while each round. Use <strong>Sync data now</strong> to force an immediate retry.</td></tr>
-        <tr><td>Writes fail on a replica with a 502</td><td>Its primary is unreachable. Either restore the primary, or promote this replica (System page, or <code>sudo webmanager-promote</code> on the server) if the primary is actually down for good.</td></tr>
+        <tr><td>A server shows "Unreachable"</td><td>The row says why: a wrong address (404), a different token on each server, or a firewall.</td></tr>
+        <tr><td>Changes fail on a replica</td><td>Its primary can't be reached. Bring it back, or promote the replica if the primary is gone for good.</td></tr>
+        <tr><td>Can't see someone else's site</td><td>Ask an administrator for access under People &amp; access.</td></tr>
       </tbody>
     </table>
-    {% if not can_host_apps and apps_enabled %}
-    <p class="hint">You don't currently have the "Host apps" permission — that's why deploying an app isn't available to you.</p>
-    {% endif %}
-  </div>
-</section>
+  {% endcall %}
+</div>
 {% endblock %}

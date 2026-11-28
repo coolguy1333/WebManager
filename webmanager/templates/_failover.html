@@ -27,7 +27,7 @@
       <li>Make sure <code>{{ failover["from"] or "the old primary" }}</code> stays off, or join it to this server as a replica (run the command from <a href="{{ url_for('admin.dashboard', section='updates') }}#servers">System → Servers</a> on it). Otherwise both accept changes.</li>
       <li>Point your domain's DNS, router or load balancer at this server, if it isn't already.</li>
       <li>Check that your sites and apps are up, and the <a href="{{ url_for('admin.dashboard', section='updates') }}#health">health checks</a>.</li>
-      <li>Look at <a href="{{ url_for('admin.activity_log') }}">Activity</a> and redo anything that was changed on the old primary after the last copy.</li>
+      <li>Look at <a href="{{ url_for('admin.activity_log') }}">System → Logs</a> and redo anything that was changed on the old primary after the last copy.</li>
       <li>Make a <a href="{{ url_for('admin.dashboard', section='updates') }}#backups">backup</a> of this server.</li>
       {% elif failover.kind == "primary_down" %}
       <li>Check the primary: is the machine on, is WebManager running (<code>sudo webmanager-doctor</code> there), can this server reach it?</li>

@@ -8,10 +8,35 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
-set -a
-# shellcheck disable=SC1091
-source /etc/webmanager/webmanager.env
-set +a
+# --- load_env_file: begin (tests/test_settings_editor.py runs this function) ---
+# Export the settings the way systemd's EnvironmentFile= hands them to the
+# service, without ever running the file as shell code: `source` would
+# execute anything in it (a value like a@b.co&reboot) as root. Blank lines and
+# comments are skipped, keys must look like NAME_1, and one pair of matching
+# outer quotes is removed. Nothing in a value is expanded.
+load_env_file() {
+    local line key value
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+        # Leading and trailing whitespace, as systemd ignores it.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z $line || $line == "#"* || $line == ";"* ]] && continue
+        [[ $line == *=* ]] || continue
+        key=${line%%=*}
+        value=${line#*=}
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        [[ $key =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+        if [[ ${#value} -ge 2 && ( ( $value == \"*\" ) || ( $value == \'*\' ) ) ]]; then
+            value=${value:1:${#value}-2}
+        fi
+        export "$key=$value"
+    done <"$1"
+}
+# --- load_env_file: end ---
+
+load_env_file /etc/webmanager/webmanager.env
 export HOME=/var/lib/webmanager
 
 echo "Service: $(systemctl is-active webmanager 2>/dev/null || true)"

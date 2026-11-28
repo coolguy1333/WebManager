@@ -137,10 +137,15 @@ mesh_wait_reason() {
     "$APP_DIR/.venv/bin/python" -I - "$APP_ENV_FILE" "$1" "$promoted" \
         "http://${app_host:-127.0.0.1}:${app_port:-5000}" <<'PY' 2>/dev/null || true
 import json
+import socket
 import sys
+import time
 import urllib.request
+import zlib
 
-env_file, new_commit, promoted, local_url = sys.argv[1:]
+env_file, new_commit, promoted, local_url = sys.argv[1:5]
+# Seconds between one replica's turn and the next (tests pass a shorter one).
+STAGGER_SECONDS = float(sys.argv[5]) if len(sys.argv) > 5 else 90.0
 settings = {}
 with open(env_file, encoding="utf-8") as handle:
     for line in handle:
@@ -170,8 +175,39 @@ if primary and promoted != "1":
         sys.exit(0)
     if data.get("update_state") in BUSY:
         print("This replica waits for its primary to finish updating.")
-    elif data.get("version") != new_commit[:12]:
+        sys.exit(0)
+    if data.get("version") != new_commit[:12]:
         print(f"This replica waits for its primary to install this version first (it runs {data.get('version') or 'an unknown version'}).")
+        sys.exit(0)
+    # The primary sees every replica: one of them is updating already.
+    if (data.get("peers_updating") or 0) > 0:
+        print("This replica waits for another replica to finish updating.")
+        sys.exit(0)
+    # Replicas take turns. Several can see the primary on the new version in
+    # the same check (their timers are only 15 minutes apart, give or take a
+    # few), so each waits (its number - 1) x STAGGER_SECONDS first: replica1
+    # goes at once, replica2 90 seconds later, and so on, by the replicaN
+    # numbers the primary hands out (in the order it first saw each replica).
+    # Then it asks the primary again; by then the primary (which checks every
+    # replica every 20 seconds) reports the earlier one as updating, and this
+    # one waits for the next check. A replica without a number yet takes a
+    # fixed position from its host name instead.
+    try:
+        number = status(local_url).get("replica_number")
+    except Exception:
+        number = None
+    if not isinstance(number, int) or number < 1:
+        number = 1 + zlib.crc32(socket.gethostname().encode()) % 9
+    time.sleep(min(number - 1, 9) * STAGGER_SECONDS)
+    try:
+        data = status(primary)
+    except Exception:
+        print(f"This replica waits until its primary ({primary}) can be reached and runs this version.")
+        sys.exit(0)
+    if data.get("update_state") in BUSY or (data.get("peers_updating") or 0) > 0:
+        print("This replica waits for another server in its group to finish updating.")
+    elif data.get("version") != new_commit[:12]:
+        print("This replica waits for its primary to install this version first.")
     sys.exit(0)
 try:
     data = status(local_url)
@@ -417,6 +453,11 @@ if [[ ! -r "$ENV_FILE" ]]; then
     exit 0
 fi
 
+# Safe to source: /etc/webmanager/updater.env is written only by install.sh
+# (as root, root:root 0600). The dashboard can't write it: the web app runs as
+# the webmanager user, which can't write /etc/webmanager (root:webmanager
+# 0750), and the root helper's settings editor only ever writes
+# /etc/webmanager/webmanager.env (deploy/debian/control.sh).
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
