@@ -217,6 +217,9 @@ def load_logged_in_user():
         from .plans import plan_for
 
         g.plan = plan_for(get_db(), {"id": user_id})
+        # What teams grant can be handed on (access_control.delegable); what
+        # the plan grants can't, or a delegated admin could get round plans.
+        g.delegable_permissions = set(g.permissions)
         if g.plan is not None and g.plan["can_host_apps"]:
             g.permissions.add("apps.host")
 

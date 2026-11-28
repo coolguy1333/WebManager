@@ -384,4 +384,4 @@ class ConcurrentStartTests(unittest.TestCase):
         with self.app.app_context(), patch.object(runtime, "_wait_for_nginx", return_value=False):
             with self.assertRaises(Exception) as caught:
                 runtime.apply_nginx_configs()
-        self.assertIn("sudo systemctl restart webmanager", str(caught.exception))
+        self.assertIn("restarting WebManager on the server clears it", str(caught.exception))

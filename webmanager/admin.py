@@ -23,6 +23,7 @@ from .access_control import (
     GROUPS_MANAGE,
     USERS_MANAGE,
     admin_access_required,
+    delegable,
     has_permission,
     is_admin,
 )
@@ -118,7 +119,7 @@ def _selected_permissions(database):
         selected = set(request.form.getlist("permissions"))
     if not selected <= _permission_codes(database):
         abort(400, "Unknown permission.")
-    if not is_admin() and not selected <= g.permissions:
+    if not is_admin() and not selected <= delegable():
         abort(403)
     return selected
 
@@ -272,6 +273,7 @@ def dashboard():
     return render_template(
         "admin/dashboard.html",
         title="System" if active_section == "updates" else ("Plans" if active_section == "plans" else "People & access"),
+        user_hosts_apps=_who_hosts_apps(database, users, plan_list, default_plan) if active_section == "people" else {},
         plan_list=plan_list,
         default_plan=default_plan,
         plan_names=plan_names,
@@ -1782,7 +1784,7 @@ def update_user(user_id):
                 tuple(sorted(group_ids)),
             ).fetchall()
         }
-        if not delegated_permissions <= g.permissions:
+        if not delegated_permissions <= delegable():
             abort(403)
 
     username, display_name, email = user["username"], user["display_name"], user["email"]
@@ -1903,6 +1905,26 @@ def delete_user(user_id):
     database.commit()
     flash(f"Deleted the account of {name}.", "success")
     return back
+
+
+def _who_hosts_apps(database, users, plan_list, default_plan) -> dict:
+    """{user id: may host apps} from their plan or their teams."""
+    by_id = {plan["id"]: plan for plan in plan_list}
+    from_teams = {
+        row["user_id"]
+        for row in database.execute(
+            """
+            SELECT user_groups.user_id FROM user_groups
+            JOIN group_permissions ON group_permissions.group_id = user_groups.group_id
+            WHERE group_permissions.permission_code = 'apps.host'
+            """
+        ).fetchall()
+    }
+    result = {}
+    for user in users:
+        plan = by_id.get(user["plan_id"]) or by_id.get(default_plan)
+        result[user["id"]] = bool(user["is_admin"] or user["id"] in from_teams or (plan and plan["can_host_apps"]))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2057,7 +2079,7 @@ def update_group(group_id):
             (group_id,),
         ).fetchall()
     }
-    if not is_admin() and not existing_permissions <= g.permissions:
+    if not is_admin() and not existing_permissions <= delegable():
         abort(403)
     name = request.form.get("name", "").strip()
     description = request.form.get("description", "").strip()
@@ -2104,7 +2126,7 @@ def delete_group(group_id):
             (group_id,),
         ).fetchall()
     }
-    if not is_admin() and not existing_permissions <= g.permissions:
+    if not is_admin() and not existing_permissions <= delegable():
         abort(403)
     database.execute("DELETE FROM groups WHERE id = ?", (group_id,))
     database.commit()

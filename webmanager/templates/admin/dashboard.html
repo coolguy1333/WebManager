@@ -12,7 +12,7 @@
   {{ ui.icon('alert') }}
   <div class="alert-body">
     <strong>No allowed Google accounts are listed.</strong>
-    Only people who already have an account here can sign in; anyone new is refused. To let someone new in, add their email to <code>WEBMANAGER_GOOGLE_ALLOWED_EMAILS</code> (run <code>bash configure-google.sh</code> on the server).
+    Only people who already have an account here can sign in; anyone new is refused. To let someone new in, add their email under <a href="{{ url_for('admin.dashboard', section='updates') }}#settings">System → Settings → Allowed Google emails</a>.
   </div>
 </div>
 {% endif %}
@@ -39,7 +39,7 @@
       <span class="avatar" aria-hidden="true">{{ (user.display_name or user.email or user.username)[0]|upper }}</span>
       <span class="record-title">
         <strong>{{ user.display_name or user.username }}</strong>
-        <small>{{ user.email or user.username }} · {% if user.is_admin %}no limits{% else %}{{ used_of(usage[user.id].sites, user_limits.sites, "site") }} · {{ used_of(usage[user.id].sources, user_limits.sources, "source") }}{% if config.APPS_ENABLED %} · {{ used_of(usage[user.id].apps, user_limits.apps, "app") }}{% endif %}{% endif %} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
+        <small>{{ user.email or user.username }} · {% if user.is_admin %}no limits{% else %}{{ used_of(usage[user.id].sites, user_limits.sites, "site") }} · {{ used_of(usage[user.id].sources, user_limits.sources, "source") }}{% if config.APPS_ENABLED and (usage[user.id].apps or user_hosts_apps.get(user.id)) %} · {{ used_of(usage[user.id].apps, user_limits.apps, "app") }}{% endif %}{% endif %} · {% if user.last_login_at %}signed in {{ user.last_login_at|ago }}{% else %}never signed in{% endif %}</small>
       </span>
       <span class="record-tags">
         {% if user.is_admin %}<span class="badge badge-accent">Super admin</span>{% elif plan_name %}<span class="badge">{{ plan_name }}</span>{% endif %}

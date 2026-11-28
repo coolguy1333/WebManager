@@ -18,6 +18,11 @@ def has_permission(code):
     return bool(g.user) and (is_admin() or code in getattr(g, "permissions", set()))
 
 
+def delegable():
+    """Permissions this person may grant to others: their teams', not their plan's."""
+    return set(getattr(g, "delegable_permissions", getattr(g, "permissions", set())))
+
+
 def can_view_resource(owner_id):
     return bool(g.user) and (
         owner_id == g.user["id"]

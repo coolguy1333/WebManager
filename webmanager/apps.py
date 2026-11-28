@@ -142,9 +142,9 @@ def network_failure_hint(output: str) -> str:
         return ""
     return (
         "The build couldn't reach the internet: looking up or downloading packages failed. "
-        "If this server's DNS server is on your local network (a router or Pi-hole), update "
-        "WebManager or run sudo webmanager-enable-apps --refresh-firewall on the server so "
-        "containers can reach it, then deploy again."
+        "Try again in a minute; if it keeps failing, tell an administrator. (For them: when the "
+        "server's DNS server is on the local network, webmanager-enable-apps --refresh-firewall "
+        "lets apps reach it.)"
     )
 
 

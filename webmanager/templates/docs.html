@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
-{#- Short, task-first answers. Every topic is a <details> that a link to its
-    #id opens (app.js), and the search box shows only matching topics. Keep the
-    ids: other pages link to them (#deploy, #apps, #app-hosting,
-    #private-repositories, #replication, #troubleshooting). -#}
-{% macro topic(id, title, icon, open=false, admin=false) -%}
+{#- Help for people using this site: no server setup, no shell. Super admins
+    also see a short "Running the server" group. Every topic is a <details>
+    that a link to its #id opens (app.js); the search box shows only matching
+    topics. Keep the ids: other pages link to them (#deploy, #apps,
+    #app-hosting, #private-repositories, #troubleshooting). -#}
+{% set super_admin = g.user.is_admin %}
+{% macro topic(id, title, icon, open=false) -%}
 <details class="card doc-topic" id="{{ id }}" data-doc-topic {% if open %}open{% endif %}>
   <summary>
     <span class="record-icon">{{ ui.icon(icon, 16) }}</span>
-    <span class="doc-topic-title">{{ title }}{% if admin %} <span class="badge">Super admins</span>{% endif %}</span>
+    <span class="doc-topic-title">{{ title }}</span>
     <span class="chev">{{ ui.icon('chevron') }}</span>
   </summary>
   <div class="card-body prose">{{ caller() }}</div>
@@ -23,7 +25,7 @@
 </header>
 
 <div class="docs">
-  <label class="search doc-search"><span class="visually-hidden">Search the docs</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search the docs, e.g. domain, backup, private" data-doc-search></label>
+  <label class="search doc-search"><span class="visually-hidden">Search the docs</span>{{ ui.icon('search', 14) }}<input type="search" placeholder="Search, e.g. address, private, app" data-doc-search></label>
   <p class="muted" data-doc-empty hidden>Nothing matches. Try another word, or see <a href="#troubleshooting">Something's wrong</a>.</p>
 
   {# ===================== Getting started ===================== #}
@@ -31,54 +33,67 @@
 
   {% call topic("deploy", "Put a website or app online", "play", open=true) %}
     <ol class="doc-steps">
-      <li>Press <a href="{{ url_for('deployments.new_site') }}"><strong>New site</strong></a> and paste your Git repository's address (for example <code>https://github.com/you/project</code>).</li>
-      <li>WebManager looks inside and picks what to deploy: a <strong>website</strong> if it finds an <code>index.html</code>, an <strong>app</strong> if it finds a <code>Dockerfile</code> with a <code>webmanager.json</code>. Choose another if it guessed wrong.</li>
-      <li>Check the name and address, then press <strong>Deploy</strong>. A website is live in seconds; an app's first build takes a few minutes.</li>
+      <li>Press <a href="{{ url_for('deployments.new_site') }}"><strong>New site</strong></a> and paste your Git repository's address, for example <code>https://github.com/you/project</code>.</li>
+      <li>WebManager looks inside and picks what to put online: a <strong>website</strong> if it finds an <code>index.html</code>, an <strong>app</strong> if it finds a <code>Dockerfile</code> and a <code>webmanager.json</code>. Choose another if it guessed wrong.</li>
+      <li>Check the name and address and press <strong>Deploy</strong>. A website is live in seconds; an app's first build takes a few minutes.</li>
     </ol>
-    <p>Everything can be changed later on the site's <strong>Settings</strong>. To deploy another folder from the same repository, open <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> and press <strong>Deploy from it</strong>.</p>
+    <p>To put another folder of the same repository online, open <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> and press <strong>Deploy from it</strong>.</p>
   {% endcall %}
 
   {% call topic("sites-vs-apps", "Website or app: which is mine?", "info") %}
     <ul>
-      <li><strong>Website</strong>: files a browser opens directly: HTML, CSS, images, or the <em>built</em> output of React, Vue, Vite, Hugo and similar. No server code runs. If your project needs a build step, commit the built folder (<code>dist/</code>, <code>build/</code>…); WebManager prefers it.</li>
-      <li><strong>App</strong>{% if not apps_enabled %} (turned off on this server){% endif %}: anything that runs its own server (Node, Python, PHP…), can have logins, and keeps data. It needs a <code>Dockerfile</code> and a <code>webmanager.json</code>; see <a href="#apps">Make your project an app</a>.</li>
+      <li><strong>Website</strong>: files a browser opens directly, like HTML, CSS and images, or the <em>built</em> output of React, Vue, Vite or Hugo. If your project has a build step, commit the built folder (<code>dist/</code>, <code>build/</code>); WebManager picks it first.</li>
+      <li><strong>App</strong>: anything that runs its own server (Node, Python, PHP…), can have logins and keeps data. See <a href="#apps">Make your project an app</a>.{% if not apps_enabled %} Apps are turned off on this server.{% elif not can_host_apps %} Your plan doesn't include apps.{% endif %}</li>
     </ul>
   {% endcall %}
 
   {% call topic("private-repositories", "Use a private repository", "shield") %}
-    <p>Give the server read access with a <strong>deploy key</strong>. A super admin does this once, on the server:</p>
-    <pre><code>sudo install -d -o webmanager -g webmanager -m 0700 /var/lib/webmanager/.ssh
-sudo -u webmanager ssh-keygen -t ed25519 -f /var/lib/webmanager/.ssh/id_ed25519 -N ""
-sudo cat /var/lib/webmanager/.ssh/id_ed25519.pub</code></pre>
-    <p>Add the printed key to the repository as a <strong>read-only deploy key</strong> (GitHub: <em>Settings → Deploy keys</em>), then use the repository's SSH address on New site, for example <code>git@github.com:you/project.git</code>.</p>
+    {% if deploy_key %}
+    <p>Add this key to your repository as a <strong>read-only deploy key</strong> (on GitHub: the repository's <em>Settings → Deploy keys</em>). Then use the repository's SSH address on New site, for example <code>git@github.com:you/project.git</code>.</p>
+    <div class="copy-row"><code class="mono" data-copy-source>{{ deploy_key }}</code><button class="btn btn-sm" type="button" data-copy>Copy</button></div>
+    {% else %}
+    <p>This server isn't set up for private repositories yet, so only public ones work. Ask an administrator.</p>
+    {% endif %}
   {% endcall %}
 
-  {# ===================== Sites ===================== #}
-  <h2 class="doc-group">Websites</h2>
+  {% call topic("limits", "How many sites can I have?", "grid") %}
+    <p>Your plan sets how many sites, apps and repositories you can have. See what you've used on <a href="{{ url_for('deployments.account') }}"><strong>Your account</strong></a> (your name at the bottom of the menu). Need more? Ask an administrator.</p>
+  {% endcall %}
 
-  {% call topic("sites", "Change a site's address, name or folder", "globe") %}
-    <p>Open the site and choose <strong>Settings</strong>. You can change its name, its subdomain or domain, use the bare domain (<code>example.com</code> instead of <code>name.example.com</code>), add more domains, and turn <strong>Single-page app</strong> on or off (unknown paths show the index page, which React and Vue routers need).</p>
-    <p>A site with a problem shows <strong>Needs attention</strong> with the reason, usually a missing index page or folder after a new commit.</p>
+  {# ===================== Your sites ===================== #}
+  <h2 class="doc-group">Your sites</h2>
+
+  {% call topic("sites", "Change a site's address or name", "globe") %}
+    <p>Open the site and choose <strong>Settings</strong>. You can change its name and its address, use the bare domain (<code>example.com</code> instead of <code>name.example.com</code>), add more domains, and turn <strong>Single-page app</strong> on or off. React, Vue and similar routers need it on.</p>
   {% endcall %}
 
   {% call topic("updates", "Get new commits onto the site", "refresh") %}
-    <p>Each repository under <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> is checked for new commits on a schedule. Per repository, choose:</p>
+    <p>Each repository under <a href="{{ url_for('deployments.dashboard', view='sources') }}">Sources</a> is checked for new commits on a schedule. Choose per repository:</p>
     <ul>
       <li><strong>Install automatically</strong>: new commits go live by themselves once they pass the checks.</li>
       <li><strong>Ask me to approve</strong>: they wait as <strong>Update ready</strong> until you approve or discard them.</li>
     </ul>
-    <p><strong>Check now</strong> looks straight away. For updates the moment you push, open the repository's <strong>Deploy hook</strong> and add its address as a webhook on GitHub or GitLab.</p>
-    <p>A commit that would break a site (its folder or index page is gone) is refused. If that's intended, <strong>Force update anyway</strong> installs it.</p>
+    <p><strong>Check now</strong> looks straight away. To update the moment you push, open the repository's <strong>Deploy hook</strong> and add its address as a webhook on GitHub or GitLab.</p>
+    <p>A commit that would break a site, for example because its folder or index page is gone, is refused. If that's intended, <strong>Force update anyway</strong> installs it.</p>
+  {% endcall %}
+
+  {% call topic("analytics", "See who visits", "activity") %}
+    <p><a href="{{ url_for('deployments.analytics') }}">Analytics</a> shows visits, visitors, popular pages and errors for the sites you can see, over 7, 30 or 90 days. Each site's own page shows its last 30 days and its uptime.</p>
+  {% endcall %}
+
+  {% call topic("sharing", "Share a site with someone", "users") %}
+    <p>An administrator can let other people view or manage your site. Ask one, and say who and whether they should be able to change it or only look.</p>
   {% endcall %}
 
   {# ===================== Apps ===================== #}
+  {% if apps_enabled %}
   <h2 class="doc-group">Apps</h2>
 
   {% call topic("apps", "Make your project an app", "box") %}
     <span id="app-hosting"></span>
     <p>Add two files to the folder you deploy:</p>
     <ol>
-      <li>A <code>Dockerfile</code> that builds and starts your server. It must listen on port <code>$PORT</code> (8080), run as a non-root user and keep everything it must not lose in <code>/data</code>.</li>
+      <li>A <code>Dockerfile</code> that builds and starts your server. It must listen on port <code>$PORT</code> (8080), run as a non-root user, and keep everything it must not lose in <code>/data</code>.</li>
       <li>A <code>webmanager.json</code>:
         <pre><code>{
   "type": "app",
@@ -90,8 +105,8 @@ sudo cat /var/lib/webmanager/.ssh/id_ed25519.pub</code></pre>
 }</code></pre>
         <code>health</code> is a page that answers once the app is ready. Each <code>env</code> entry becomes a field on the app's <strong>Variables</strong> page, so secrets never go in the repository.</li>
     </ol>
-    <p>Don't commit a <code>.env</code> file: a folder with one is refused. Add a <code>.dockerignore</code> with <code>.git</code>, <code>node_modules</code> and <code>.env</code>.</p>
-    {% if not apps_enabled %}<p class="hint">App hosting is turned off on this server. A super admin can turn it on under System → App hosting.</p>{% elif not can_host_apps %}<p class="hint">You don't have the <em>Host apps</em> permission yet. Ask an administrator.</p>{% endif %}
+    <p>Don't commit a <code>.env</code> file; a folder with one is refused. Add a <code>.dockerignore</code> with <code>.git</code>, <code>node_modules</code> and <code>.env</code>.</p>
+    {% if not can_host_apps %}<p class="hint">Your plan doesn't include apps. Ask an administrator.</p>{% endif %}
   {% endcall %}
 
   {% call topic("manifest", "webmanager.json: every field", "code") %}
@@ -104,103 +119,67 @@ sudo cat /var/lib/webmanager/.ssh/id_ed25519.pub</code></pre>
         <tr><td><code>env</code></td><td>No</td><td>Up to 100 settings for the Variables page.</td></tr>
       </tbody>
     </table>
-    <p>Each <code>env</code> entry has a <code>name</code> (UPPER_SNAKE_CASE) and optionally <code>description</code>, <code>default</code>, <code>choices</code> (a dropdown), <code>required</code> (the app won't start without it) and <code>secret</code> (write-only once saved).</p>
-    <p>WebManager always sets <code>PORT=8080</code>, <code>HOST=0.0.0.0</code>, <code>DATA_DIR=/data</code>, <code>PUBLIC_URL</code> (the app's address), <code>TRUST_PROXY=true</code> and <code>WEBMANAGER_APP_ID</code>.</p>
+    <p>Each <code>env</code> entry has a <code>name</code> (UPPER_SNAKE_CASE) and, optionally, a <code>description</code>, <code>default</code>, <code>choices</code> (shown as a dropdown), <code>required</code> (the app won't start without it) and <code>secret</code> (write-only once saved).</p>
+    <p>Your app always gets <code>PORT=8080</code>, <code>HOST=0.0.0.0</code>, <code>DATA_DIR=/data</code>, <code>PUBLIC_URL</code> (its address), <code>TRUST_PROXY=true</code> and <code>WEBMANAGER_APP_ID</code>.</p>
   {% endcall %}
 
   {% call topic("app-running", "Settings, restarts and updates of an app", "settings") %}
     <ul>
       <li><strong>Variables</strong>: change settings; saving restarts the app. Secret values are never shown again; leave one blank to keep it.</li>
       <li><strong>Resources</strong>: memory and CPU. Applies without a restart.</li>
-      <li>A restart or a new commit backs up <code>/data</code> first. If the new version fails its health check, the previous one comes back by itself and the app shows <strong>Needs attention</strong> with the logs.</li>
-      <li>Apps reach the internet but not your local network. One port, no privileged mode, no Docker socket.</li>
+      <li>A restart or a new commit backs up <code>/data</code> first. If the new version fails its health check, the previous one comes back by itself and the app shows <strong>Needs attention</strong> with its logs.</li>
+      <li>Apps can reach the internet but not the server's local network.</li>
     </ul>
   {% endcall %}
-
-  {# ===================== Running the server ===================== #}
-  <h2 class="doc-group">Running the server</h2>
-
-  {% call topic("system", "The System page", "cpu", admin=true) %}
-    <p>Everything about this server, as tabs:</p>
-    <ul>
-      <li><strong>Health</strong>: checks with what to do about anything wrong, and CPU, memory and disk.</li>
-      <li><strong>Updates</strong>: install WebManager updates, or let them install by themselves.</li>
-      <li><strong>Servers</strong>: the other servers in the group and replication.</li>
-      <li><strong>Domains</strong>: domains sites can use, and the dashboard's own addresses.</li>
-      <li><strong>Backups</strong>, <strong>Site updates</strong>, <strong>App hosting</strong>, <strong>Settings</strong>, <strong>Logs</strong> (every change and who made it) and <strong>Notifications</strong>.</li>
-    </ul>
-    <p>Server warnings (a failover, for example) are shown to super admins only.</p>
-  {% endcall %}
-
-  {% call topic("settings", "Change WebManager's settings", "settings", admin=true) %}
-    <p><strong>System → Settings</strong> changes this server's settings: who may sign in with Google, Secure cookies, http or https for sites, scheduled checks, backups, the watchdog and app limits. Saving restarts WebManager; if it doesn't come back, the old settings are put back.</p>
-    <p>On a primary with replicas, tick <strong>Also the other servers</strong> to send the change to each replica too, one at a time, so the group never restarts all at once.</p>
-    <p>Secrets, addresses and the server group can only be changed on the server, in <code>/etc/webmanager/webmanager.env</code>.</p>
-  {% endcall %}
-
-  {% call topic("people", "Let someone sign in", "users", admin=true) %}
-    <p>Add their Google email to <strong>Allowed Google emails</strong> (System → Settings), or their company domain to <strong>Allowed Google Workspace domains</strong>. With both lists empty, only people who already have an account can sign in.</p>
-    <p>Under <strong>People &amp; access</strong>: put people in teams, decide what each team may do, set limits, and edit or delete an account.</p>
-  {% endcall %}
-
-  {% call topic("domains", "Add a domain", "link", admin=true) %}
-    <p>Under <strong>System → Domains</strong>, add the domain. Point it at the server: in Cloudflare Tunnel, add <code>example.com</code> and <code>*.example.com</code> as public hostnames to <code>http://localhost:8080</code> (keep the <code>:8080</code>). The Domains tab shows the exact entries for each domain.</p>
-  {% endcall %}
-
-  {% call topic("production", "Backups and notifications", "archive", admin=true) %}
-    <ul>
-      <li><strong>Backups</strong>: one is made every day (System → Backups). Download one now and then and keep it elsewhere. Restore on the server with <code>sudo webmanager-restore FILE</code>.</li>
-      <li><strong>Notifications</strong>: paste a Discord, Slack or other webhook address to hear when a site goes down or comes back, an update fails, a backup fails or the disk is nearly full.</li>
-      <li><strong>Uptime</strong>: every running site is checked each minute; an app that stops answering is started again.</li>
-    </ul>
-  {% endcall %}
-
-  {# ===================== Several servers ===================== #}
-  <h2 class="doc-group">Several servers{% if mesh_configured %} <span class="badge badge-success">Set up</span>{% endif %}{% if replica_configured %} <span class="badge badge-accent">This is a replica</span>{% endif %}</h2>
-
-  {% call topic("mesh", "Add a second server (replica)", "server", admin=true) %}
-    <ol class="doc-steps">
-      <li>Install WebManager on the new server.</li>
-      <li>On this server, open <strong>System → Servers</strong> and press <strong>Turn on server sharing</strong>.</li>
-      <li>Copy the command it shows and run it on the new server. It joins as a replica and appears in the list.</li>
-    </ol>
-    <p>A replica copies the primary's settings every 15 seconds and site and app data every 60 seconds, and serves the websites too. Changes made on it are passed to the primary. Apps stay stopped on a replica until it is promoted.</p>
-    <p>Each replica gets an address under the dashboard's domain (<code>replica1.…</code>), and <strong>Sign in through the primary</strong> on its sign-in page.</p>
-    <p class="hint">Every server in a group is fully trusted: a replica holds the primary's secret key and a full copy of its data.</p>
-  {% endcall %}
-
-  {% call topic("replication", "If the primary goes down", "alert", admin=true) %}
-    <p>Replicas keep serving websites; changes can't be saved until there's a primary again. To make a replica the primary, open its <strong>System → Servers</strong> and choose <strong>Promote to primary</strong>, or run <code>sudo webmanager-promote</code> on it.</p>
-    <p>When the old primary comes back, join it to the new one as a replica (the join command from System → Servers), or keep it off. Otherwise two servers accept changes and a large warning says so.</p>
-  {% endcall %}
-
-  {% call topic("group-updates", "Updating a group of servers", "download", admin=true) %}
-    <p>With automatic updates on, servers take turns: the primary installs first, then each replica one at a time, by their replica number. A server waiting for its turn says so on its Updates tab. You can also press <strong>Update</strong> next to a replica in System → Servers. All servers must follow the same update branch.</p>
-  {% endcall %}
+  {% endif %}
 
   {# ===================== Help ===================== #}
-  <h2 class="doc-group">Help</h2>
+  <h2 class="doc-group">When something's wrong</h2>
 
   {% call topic("troubleshooting", "Something's wrong", "alert") %}
-    <p>Super admins: start with <strong>System → Health</strong>; every problem there says what to do. If the dashboard won't open, run <code>sudo webmanager-doctor</code> on the server.</p>
     <table class="table">
       <thead><tr><th>You see</th><th>Do this</th></tr></thead>
       <tbody>
-        <tr><td><strong>Needs attention</strong> on a site</td><td>Open it and read the reason, usually a missing index page or folder in the latest commit.</td></tr>
-        <tr><td>"No site here" (404)</td><td>The address isn't set up as a site. Check the site's address under Settings, and the domain under System → Domains.</td></tr>
-        <tr><td>"Site temporarily unavailable"</td><td>The site is stopped, or an app is restarting. It clears once the app passes its health check.</td></tr>
-        <tr><td>"This Google account isn't allowed"</td><td>Ask a super admin to add your email under System → Settings.</td></tr>
+        <tr><td><strong>Needs attention</strong> on a site</td><td>Open it and read the reason. Usually the latest commit is missing the index page or folder.</td></tr>
+        <tr><td>"No site here" (404)</td><td>That address isn't set up for a site. Check the site's address under its Settings.</td></tr>
+        <tr><td>"Site temporarily unavailable"</td><td>The site is stopped, or an app is restarting. It clears once the app is ready.</td></tr>
+        <tr><td>"This Google account isn't allowed"</td><td>Ask an administrator to let your account in.</td></tr>
         <tr><td>Nothing to deploy found</td><td>Commit an <code>index.html</code> (or the built <code>dist/</code> folder), or a <code>Dockerfile</code> with <code>webmanager.json</code>, push, and press <strong>Look again</strong>.</td></tr>
+        <tr><td>"You've reached your limit"</td><td>Delete something you no longer need, or ask an administrator for a bigger plan.</td></tr>
         {% if apps_enabled %}
-        <tr><td>App build fails</td><td>Read the <strong>Build log</strong> on the app's page. "Couldn't reach the internet" means the server's DNS or firewall is blocking downloads.</td></tr>
-        <tr><td>"…didn't pass its health check"</td><td>Check the app's logs: it must listen on <code>$PORT</code> and answer the health path; <code>/data</code> must be writable; required variables must be set.</td></tr>
+        <tr><td>App build fails</td><td>Read the <strong>Build log</strong> on the app's page. It says which step failed.</td></tr>
+        <tr><td>"…didn't pass its health check"</td><td>Check the app's logs. It must listen on <code>$PORT</code> and answer its health path; <code>/data</code> must be writable; required variables must be set.</td></tr>
         <tr><td>App keeps restarting</td><td>It's probably out of memory: raise it under <strong>Resources</strong>.</td></tr>
         {% endif %}
-        <tr><td>A server shows "Unreachable"</td><td>The row says why: a wrong address (404), a different token on each server, or a firewall.</td></tr>
-        <tr><td>Changes fail on a replica</td><td>Its primary can't be reached. Bring it back, or promote the replica if the primary is gone for good.</td></tr>
-        <tr><td>Can't see someone else's site</td><td>Ask an administrator for access under People &amp; access.</td></tr>
+        <tr><td>Can't see someone else's site</td><td>Ask an administrator to share it with you.</td></tr>
       </tbody>
     </table>
   {% endcall %}
+
+  {# ===================== Super admins only ===================== #}
+  {% if super_admin %}
+  <h2 class="doc-group">Running the server <span class="badge">Only super admins see this</span></h2>
+
+  {% call topic("people", "People, plans and sign-in", "users") %}
+    <ul>
+      <li><strong>Who may sign in</strong>: add their Google email under <strong>System → Settings → Allowed Google emails</strong> (or a whole company domain). With both lists empty, only people who already have an account can sign in.</li>
+      <li><strong>Plans</strong> (People &amp; access → Plans): Starter, Basic, Advanced or your own. Each sets how many sites, apps and repositories its people may have, and whether they may host apps. New people start on the default plan.</li>
+      <li><strong>A person</strong> (People &amp; access → People): change their plan or role, turn their sign-in off, give them custom limits, or delete their account.</li>
+      <li><strong>Sharing</strong>: Teams, Site pools and Site exceptions let people view or manage sites they don't own.</li>
+    </ul>
+  {% endcall %}
+
+  {% call topic("system", "The System page", "cpu") %}
+    <ul>
+      <li><strong>Health</strong>: checks that say what to do about anything wrong, plus CPU, memory and disk.</li>
+      <li><strong>Updates</strong>: install WebManager updates, or let them install by themselves. In a group of servers the primary goes first, then each replica in turn.</li>
+      <li><strong>Servers</strong>: other servers in the group, replication, promoting a replica.</li>
+      <li><strong>Domains</strong>: the domains sites can use and the dashboard's own addresses. Each domain shows the exact Cloudflare entries.</li>
+      <li><strong>Settings</strong>: who may sign in, cookies, http/https for sites, backups and more. On a primary, tick <em>Also the other servers</em> to send a change to every replica, one at a time.</li>
+      <li><strong>Backups</strong>, <strong>Site updates</strong>, <strong>App hosting</strong>, <strong>Logs</strong> (every change and who made it) and <strong>Notifications</strong>.</li>
+    </ul>
+    <p>Server warnings, like a failover, are shown to super admins only.</p>
+  {% endcall %}
+  {% endif %}
 </div>
 {% endblock %}
