@@ -559,7 +559,9 @@ details > summary::-webkit-details-marker { display: none; }
 
 /* ---------- Tabs ---------- */
 
-.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+/* Scrolls sideways only (a narrow screen); never up and down, which the tabs'
+   -1px overlap with the border would otherwise allow, showing a scrollbar. */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .tabs a {
   padding: 10px 14px; margin-bottom: -1px;
   border-bottom: 2px solid transparent;
@@ -567,7 +569,20 @@ details > summary::-webkit-details-marker { display: none; }
 }
 .tabs a:hover { color: var(--text); text-decoration: none; }
 .tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
-.system-tabs a { display: inline-flex; align-items: center; gap: 6px; }
+.system-tabs a { display: inline-flex; align-items: center; gap: 6px; padding: 10px 11px; }
+/* Ten tabs: on a wide screen they wrap to a second row rather than scroll;
+   on a phone they swipe sideways (app.js keeps the chosen one in sight). */
+@media (min-width: 720px) {
+  .system-tabs { flex-wrap: wrap; overflow-x: visible; }
+}
+/* Below that, the labels alone keep all ten on one row on most screens. */
+@media (min-width: 720px) and (max-width: 1439px) {
+  .system-tabs a > .icon { display: none; }
+}
+@media (max-width: 719px) {
+  .system-tabs { scrollbar-width: none; }
+  .system-tabs::-webkit-scrollbar { display: none; }
+}
 .system-tabs .nav-badge { margin-left: 2px; }
 .tab-panel[hidden] { display: none; }
 .plain-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
