@@ -37,6 +37,13 @@ from webmanager.nginx import (
 from webmanager.services import RuntimeErrorDetail, allocate_port
 
 
+def recent(minutes=0):
+    """An access-log time a few minutes ago (Analytics keeps 90 days)."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(minutes=10 - minutes)).isoformat()
+
+
 class WebManagerTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_directory = tempfile.TemporaryDirectory()
@@ -2133,7 +2140,7 @@ class WebManagerTestCase(unittest.TestCase):
                 (
                     json.dumps(
                         {
-                            "time": "2026-06-11T12:00:00+00:00",
+                            "time": recent(minutes=0),
                             "host": "demo.webmanager.example",
                             "status": 200,
                             "bytes": 512,
@@ -2143,7 +2150,7 @@ class WebManagerTestCase(unittest.TestCase):
                     ),
                     json.dumps(
                         {
-                            "time": "2026-06-11T12:01:00+00:00",
+                            "time": recent(minutes=1),
                             "host": "other.webmanager.example",
                             "status": 200,
                             "bytes": 100,
@@ -2152,13 +2159,13 @@ class WebManagerTestCase(unittest.TestCase):
                         }
                     ),
                 )
-            ),
+            ) + "\n",
             encoding="utf-8",
         )
         analytics = site_analytics(
             log_path,
             "demo.webmanager.example",
-            days=365,
+            days=30,
         )
         self.assertEqual(analytics["requests"], 1)
         self.assertEqual(analytics["visitors"], 1)
@@ -2168,17 +2175,17 @@ class WebManagerTestCase(unittest.TestCase):
     def test_site_analytics_ignores_other_sites_that_only_mention_the_host(self):
         log_path = Path(self.app.config["NGINX_ROOT"]) / "access.log"
         entries = [
-            {"time": "2026-06-11T12:00:00+00:00", "host": "demo.example", "status": 200,
+            {"time": recent(minutes=0), "host": "demo.example", "status": 200,
              "bytes": 10, "client": "203.0.113.5", "uri": "/"},
             # Another site whose request happens to contain this site's hostname.
-            {"time": "2026-06-11T12:01:00+00:00", "host": "other.example", "status": 200,
+            {"time": recent(minutes=1), "host": "other.example", "status": 200,
              "bytes": 99, "client": "203.0.113.6", "uri": "/redirect?to=demo.example"},
-            {"time": "2026-06-11T12:02:00+00:00", "host": "DEMO.example", "status": 404,
+            {"time": recent(minutes=2), "host": "DEMO.example", "status": 404,
              "bytes": 5, "client": "203.0.113.7", "uri": "/missing"},
         ]
-        log_path.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+        log_path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
 
-        analytics = site_analytics(log_path, "demo.example", days=3650)
+        analytics = site_analytics(log_path, "demo.example", days=30)
 
         self.assertEqual(analytics["requests"], 2)
         self.assertEqual(analytics["bytes"], 15)

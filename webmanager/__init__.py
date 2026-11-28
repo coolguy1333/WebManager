@@ -420,6 +420,10 @@ def create_app(test_config=None):
             app.extensions["backup_scheduler"].start()
         if app.config["WATCHDOG_ENABLED"]:
             app.extensions["watchdog"].start()
+        # Analytics reads from running totals kept by this thread.
+        from .analytics import keep_index_fresh
+
+        keep_index_fresh(app, Path(app.config["NGINX_ROOT"]) / "access.log")
         if not replication_manager.is_replica:
             # After a restore on a new machine (or a lost disk) the checkouts
             # are gone; clone them again without holding startup up.
