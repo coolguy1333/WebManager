@@ -871,6 +871,36 @@ def _deploy_choices(repository, candidates, app_candidates, recommended_site) ->
     return choices
 
 
+@bp.route("/account", methods=("GET", "POST"))
+@login_required
+def account():
+    """Your own account: your plan, what you're using of it, and your name."""
+    database = get_db()
+    if request.method == "POST":
+        validate_csrf()
+        name = " ".join((request.form.get("display_name") or "").split())
+        if len(name) > 100:
+            flash("Names can be at most 100 characters.", "error")
+        else:
+            database.execute("UPDATE users SET display_name = ? WHERE id = ?", (name or None, g.user["id"]))
+            database.commit()
+            flash("Saved.", "success")
+        return redirect(url_for("deployments.account"))
+    from .plans import plan_for
+
+    user = database.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+    return render_template(
+        "account.html",
+        title="Your account",
+        user=user,
+        plan=None if user["is_admin"] else plan_for(database, user),
+        quota=quotas.summary(database, g.user["id"]),
+        custom_limits=not user["is_admin"] and any(
+            user[column] is not None for column in ("max_sites", "max_sources", "max_apps")
+        ),
+    )
+
+
 @bp.get("/new")
 @login_required
 def new_site():

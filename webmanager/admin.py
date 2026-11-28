@@ -37,7 +37,7 @@ from .domains import (
 )
 import secrets
 
-from . import activity, app_limits, backups, failover, health, mesh, notifications, quotas, server_aliases, server_control, settings_editor, settings_rollout, system_metrics
+from . import activity, app_limits, backups, failover, health, mesh, notifications, plans, quotas, server_aliases, server_control, settings_editor, settings_rollout, system_metrics
 from .security import insecure_cookie_reasons, login_required, validate_csrf
 from .version import VERSION
 from .services import RuntimeErrorDetail
@@ -173,6 +173,7 @@ def dashboard():
         available_sections.add("teams")
     if super_admin:
         available_sections.add("updates")
+        available_sections.add("plans")
     requested_section = request.args.get("section", "overview")
     active_section = {
         "users": "people",
@@ -242,6 +243,14 @@ def dashboard():
         ],
     }
     quota_defaults = quotas.get_defaults(database)
+    plan_list = plans.all_plans(database)
+    default_plan = plans.default_plan_id(database)
+    plan_names = {plan["id"]: plan["name"] for plan in plan_list}
+    # What each person may have, after their plan and any custom limits.
+    limits = {
+        user["id"]: {kind: quotas.limit_for(database, user["id"], kind) for kind in quotas.KINDS}
+        for user in users
+    } if active_section == "people" else {}
     usage = {
         row["id"]: {"sites": row["site_count"], "sources": row["source_count"], "apps": row["app_count"]}
         for row in database.execute(
@@ -262,7 +271,11 @@ def dashboard():
         source_updates = _source_update_summary(database)
     return render_template(
         "admin/dashboard.html",
-        title="System" if active_section == "updates" else "People & access",
+        title="System" if active_section == "updates" else ("Plans" if active_section == "plans" else "People & access"),
+        plan_list=plan_list,
+        default_plan=default_plan,
+        plan_names=plan_names,
+        limits=limits,
         active_section=active_section,
         counts=counts,
         users=users,
@@ -1469,6 +1482,13 @@ def update_default_limits():
         return redirect(url_for("admin.dashboard", section="people"))
     database = get_db()
     quotas.set_defaults(database, sites, sources, apps)
+    # Limits come from plans now: these are the default plan's.
+    default_plan = plans.default_plan_id(database)
+    if default_plan is not None:
+        database.execute(
+            "UPDATE plans SET max_sites = ?, max_sources = ?, max_apps = COALESCE(?, max_apps) WHERE id = ?",
+            (sites, sources, apps, default_plan),
+        )
     database.commit()
     describe = lambda n, noun: "unlimited " + noun + "s" if n == 0 else f"{n} {noun}{'' if n == 1 else 's'}"
     parts = [describe(sites, "site"), describe(sources, "source")]
@@ -1721,7 +1741,12 @@ def update_user(user_id):
         abort(403)
 
     active = request.form.get("is_active") == "on"
-    admin = request.form.get("is_admin") == "on" if is_admin() else bool(user["is_admin"])
+    if not is_admin():
+        admin = bool(user["is_admin"])
+    elif "role" in request.form:
+        admin = request.form.get("role") == "admin"
+    else:
+        admin = request.form.get("is_admin") == "on"
     if user_id == g.user["id"] and not active:
         flash("You cannot disable your own account.", "error")
         return redirect(url_for("admin.dashboard", section="people"))
@@ -1768,6 +1793,16 @@ def update_user(user_id):
             flash(str(exc), "error")
             return redirect(url_for("admin.dashboard", section="people"))
 
+    plan_id = user["plan_id"]
+    if is_admin() and "plan_id" in request.form:
+        raw_plan = request.form.get("plan_id", "")
+        if raw_plan == "":
+            plan_id = None  # the default plan
+        elif raw_plan.isdigit() and database.execute("SELECT 1 FROM plans WHERE id = ?", (int(raw_plan),)).fetchone():
+            plan_id = int(raw_plan)
+        else:
+            abort(400, "Unknown plan.")
+
     max_sites, max_sources, max_apps = user["max_sites"], user["max_sources"], user["max_apps"]
     if is_admin() and "max_sites" in request.form:
         try:
@@ -1781,10 +1816,10 @@ def update_user(user_id):
     database.execute(
         """
         UPDATE users SET is_active = ?, is_admin = ?, max_sites = ?, max_sources = ?, max_apps = ?,
-                         username = ?, display_name = ?, email = ?
+                         username = ?, display_name = ?, email = ?, plan_id = ?
         WHERE id = ?
         """,
-        (int(active), int(admin), max_sites, max_sources, max_apps, username, display_name, email, user_id),
+        (int(active), int(admin), max_sites, max_sources, max_apps, username, display_name, email, plan_id, user_id),
     )
     database.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
     database.executemany(
@@ -1868,6 +1903,112 @@ def delete_user(user_id):
     database.commit()
     flash(f"Deleted the account of {name}.", "success")
     return back
+
+
+# ---------------------------------------------------------------------------
+# Plans (super admins): named limits such as Starter, Basic, Advanced.
+# ---------------------------------------------------------------------------
+def _plans_back():
+    return redirect(url_for("admin.dashboard", section="plans"))
+
+
+def _super_admin_post():
+    validate_csrf()
+    if not is_admin():
+        abort(403)
+
+
+@bp.post("/plans")
+@login_required
+def create_plan():
+    _super_admin_post()
+    database = get_db()
+    try:
+        values = plans.parse(request.form)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _plans_back()
+    if database.execute("SELECT 1 FROM plans WHERE name = ? COLLATE NOCASE", (values["name"],)).fetchone():
+        flash(f"There is already a plan called {values['name']}.", "error")
+        return _plans_back()
+    position = database.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM plans").fetchone()[0]
+    database.execute(
+        """
+        INSERT INTO plans (name, max_sites, max_apps, max_sources, can_host_apps, position)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (values["name"], values["max_sites"], values["max_apps"], values["max_sources"],
+         values["can_host_apps"], position),
+    )
+    database.commit()
+    flash(f"Added the {values['name']} plan.", "success")
+    return _plans_back()
+
+
+@bp.post("/plans/<int:plan_id>")
+@login_required
+def update_plan(plan_id):
+    _super_admin_post()
+    database = get_db()
+    if database.execute("SELECT 1 FROM plans WHERE id = ?", (plan_id,)).fetchone() is None:
+        abort(404)
+    try:
+        values = plans.parse(request.form)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _plans_back()
+    if database.execute(
+        "SELECT 1 FROM plans WHERE name = ? COLLATE NOCASE AND id != ?", (values["name"], plan_id)
+    ).fetchone():
+        flash(f"There is already a plan called {values['name']}.", "error")
+        return _plans_back()
+    database.execute(
+        """
+        UPDATE plans SET name = ?, max_sites = ?, max_apps = ?, max_sources = ?, can_host_apps = ?
+        WHERE id = ?
+        """,
+        (values["name"], values["max_sites"], values["max_apps"], values["max_sources"],
+         values["can_host_apps"], plan_id),
+    )
+    database.commit()
+    flash(f"Saved the {values['name']} plan. Existing sites are never removed; people over a new limit just can't add more.", "success")
+    return _plans_back()
+
+
+@bp.post("/plans/<int:plan_id>/default")
+@login_required
+def default_plan(plan_id):
+    _super_admin_post()
+    database = get_db()
+    plan = database.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+    if plan is None:
+        abort(404)
+    plans.set_default(database, plan_id)
+    database.commit()
+    flash(f"New people now start on the {plan['name']} plan.", "success")
+    return _plans_back()
+
+
+@bp.post("/plans/<int:plan_id>/delete")
+@login_required
+def delete_plan(plan_id):
+    _super_admin_post()
+    database = get_db()
+    plan = database.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+    if plan is None:
+        abort(404)
+    if plan_id == plans.default_plan_id(database):
+        flash("The default plan can't be deleted. Make another plan the default first.", "error")
+        return _plans_back()
+    moved = database.execute("UPDATE users SET plan_id = NULL WHERE plan_id = ?", (plan_id,)).rowcount
+    database.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+    database.commit()
+    flash(
+        f"Deleted the {plan['name']} plan."
+        + (f" {moved} {'person is' if moved == 1 else 'people are'} on the default plan now." if moved else ""),
+        "success",
+    )
+    return _plans_back()
 
 
 @bp.post("/groups")

@@ -213,6 +213,12 @@ def load_logged_in_user():
                 (user_id,),
             ).fetchall()
         }
+        # A plan can let its people host apps.
+        from .plans import plan_for
+
+        g.plan = plan_for(get_db(), {"id": user_id})
+        if g.plan is not None and g.plan["can_host_apps"]:
+            g.permissions.add("apps.host")
 
 
 @bp.app_context_processor

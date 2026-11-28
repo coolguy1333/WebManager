@@ -185,6 +185,8 @@ li + li { margin-top: 4px; }
 .sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
 .account { display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
 .account-text { min-width: 0; flex: 1; }
+.account-link { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; color: inherit; text-decoration: none; border-radius: 8px; padding: 4px; margin: -4px; }
+.account-link:hover, .account-link.active { background: var(--surface-hover); text-decoration: none; }
 .account-text strong, .account-text small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-text small { color: var(--text-faint); }
 .avatar {
@@ -1104,3 +1106,8 @@ fieldset.field legend { margin-bottom: 6px; }
 .doc-topic-title { font-weight: 600; }
 .doc-topic > .card-body { padding-top: 0; }
 .doc-steps li + li { margin-top: 6px; }
+
+/* ---------- Your account ---------- */
+.account-page { display: grid; gap: 16px; max-width: 760px; }
+.usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.usage-grid .stat strong small { font-size: 0.9rem; font-weight: 500; }

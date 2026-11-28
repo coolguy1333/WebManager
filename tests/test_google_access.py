@@ -282,7 +282,7 @@ class AccountEditingTests(Case):
         self.login_user(manager)
         self.edit(bob, username="robert")
         self.assertEqual(self.users()[-1]["username"], "bob")
-        self.assertNotIn("Delete account", self.client.get("/admin/?section=people").get_data(as_text=True))
+        self.assertNotIn("/delete\"", self.client.get("/admin/?section=people").get_data(as_text=True))
 
 
 class AccountDeletionTests(Case):
@@ -299,7 +299,7 @@ class AccountDeletionTests(Case):
 
     def test_a_super_admin_can_delete_an_account(self):
         bob = self.add_user("bob", "bob@example.com")
-        self.assertIn("Delete account", self.client.get("/admin/?section=people").get_data(as_text=True))
+        self.assertIn(f"/admin/users/{bob}/delete", self.client.get("/admin/?section=people").get_data(as_text=True))
         _response, page = self.delete(bob)
         self.assertIn("Deleted the account of bob", page)
         self.assertEqual([user["id"] for user in self.users()], [self.root])

@@ -75,11 +75,13 @@
 
       <div class="sidebar-footer">
         <div class="account">
-          <span class="avatar" aria-hidden="true">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
-          <span class="account-text">
-            <strong>{{ g.user.display_name or g.user.username }}</strong>
-            <small>{{ "Super admin" if g.user.is_admin else (g.user.email or "Member") }}</small>
-          </span>
+          <a class="account-link{{ ' active' if ep == 'deployments.account' }}" href="{{ url_for('deployments.account') }}" title="Your account">
+            <span class="avatar" aria-hidden="true">{{ (g.user.display_name or g.user.email or g.user.username)[0]|upper }}</span>
+            <span class="account-text">
+              <strong>{{ g.user.display_name or g.user.username }}</strong>
+              <small>{{ "Super admin" if g.user.is_admin else ((g.plan.name ~ " plan") if g.plan else (g.user.email or "Member")) }}</small>
+            </span>
+          </a>
           <form method="post" action="{{ url_for('auth.logout') }}">
             {{ ui.csrf() }}
             <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">{{ ui.icon('logout') }}</button>
