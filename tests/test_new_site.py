@@ -2,7 +2,6 @@
 WebManager works out what's in it (an app, a website, or both) and picks the
 best match; one name and one address, and it's deployed."""
 
-import json
 import re
 import unittest
 from unittest.mock import patch
